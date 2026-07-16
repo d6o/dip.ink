@@ -2,59 +2,69 @@
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: wiki-mcp-cache
+  name: memory-data
   namespace: dipink
 spec:
   accessModes: ["ReadWriteOnce"]
   resources:
     requests:
-      storage: 1Gi
+      storage: 2Gi
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: wiki-mcp
+  name: memory
   namespace: dipink
 spec:
   replicas: 1
   strategy:
-    type: Recreate   # RWO PVC (embedding cache + clone) -> Recreate
+    type: Recreate   # RWO PVC (clone + embedding cache + metrics) -> Recreate
   selector:
     matchLabels:
-      app: wiki-mcp
+      app: memory
   template:
     metadata:
       labels:
-        app: wiki-mcp
+        app: memory
     spec:
       containers:
-        - name: wiki-mcp
-          image: ghcr.io/d6o/dip.ink/wiki-mcp:latest
+        - name: memory
+          image: ghcr.io/d6o/dip.ink/memory:latest
           ports:
             - name: http
               containerPort: 8080
           env:
+            # wiki side
             - name: WIKI_REPO_URL
               valueFrom: {secretKeyRef: {name: dipink-secrets, key: WIKI_REPO_URL}}
             - name: WIKI_REPO_USER
               valueFrom: {secretKeyRef: {name: dipink-secrets, key: WIKI_REPO_USER}}
             - name: WIKI_REPO_TOKEN
               valueFrom: {secretKeyRef: {name: dipink-secrets, key: WIKI_REPO_TOKEN}}
+            - {name: CACHE_DIR, value: /var/lib/memory/cache}
+            - {name: WIKI_CLONE_PATH, value: /var/lib/memory/wiki}
+            # Add your ingress hostname here (DNS-rebinding protection).
+            - name: MCP_ALLOWED_HOSTS
+              value: "localhost,127.0.0.1,memory,memory.dipink.svc.cluster.local"
+            # graph side
+            - {name: NEO4J_URI, value: bolt://neo4j:7687}
+            - {name: NEO4J_USER, value: neo4j}
+            - name: NEO4J_PASSWORD
+              valueFrom: {secretKeyRef: {name: dipink-secrets, key: NEO4J_PASSWORD}}
             - name: OPENAI_API_KEY
               valueFrom: {secretKeyRef: {name: dipink-secrets, key: OPENAI_API_KEY}}
-            - name: WIKI_MCP_CACHE_DIR
-              value: /var/lib/wiki-mcp/cache
-            - name: WIKI_CLONE_PATH
-              value: /var/lib/wiki-mcp/wiki
-            # Add your ingress hostname here (DNS-rebinding protection).
-            - name: WIKI_MCP_ALLOWED_HOSTS
-              value: "localhost,127.0.0.1,wiki-mcp,wiki-mcp.dipink.svc.cluster.local"
+            - name: LLM_BASE_URL
+              valueFrom: {secretKeyRef: {name: dipink-secrets, key: LLM_BASE_URL}}
+            - name: LLM_API_KEY
+              valueFrom: {secretKeyRef: {name: dipink-secrets, key: LLM_API_KEY}}
+            - {name: LLM_MODEL, value: gpt-4.1-mini}
+            - {name: GROUP_ID, value: main}
           volumeMounts:
-            - name: cache
-              mountPath: /var/lib/wiki-mcp
+            - name: data
+              mountPath: /var/lib/memory
           resources:
-            requests: {cpu: "100m", memory: 256Mi}
-            limits: {cpu: "1", memory: 1Gi}
+            requests: {cpu: "200m", memory: 512Mi}
+            limits: {cpu: "1", memory: 1.5Gi}
           livenessProbe:
             httpGet: {path: /live, port: 8080}
             initialDelaySeconds: 10
@@ -65,18 +75,18 @@ spec:
             periodSeconds: 10
             failureThreshold: 30
       volumes:
-        - name: cache
+        - name: data
           persistentVolumeClaim:
-            claimName: wiki-mcp-cache
+            claimName: memory-data
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: wiki-mcp
+  name: memory
   namespace: dipink
 spec:
   selector:
-    app: wiki-mcp
+    app: memory
   ports:
     - name: http
       port: 80

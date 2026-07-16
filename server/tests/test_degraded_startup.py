@@ -13,7 +13,7 @@ os.environ["WIKI_MCP_EMBED_PROVIDER"] = "openai"
 os.environ["WIKI_MCP_BACKGROUND_REINDEX"] = "0"
 os.environ["WIKI_ROOT"] = "/tmp/wiki-mcp-test-global-root"
 
-import server  # noqa: E402
+import wiki as server  # noqa: E402  (the wiki-side module of the combined server)
 
 
 class FakeProviderError(RuntimeError):

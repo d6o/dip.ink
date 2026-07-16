@@ -1,22 +1,21 @@
 """memory-gaps miner — closes the retrieval feedback loop.
 
-Weekly job: pull both MCPs' query logs (wiki-mcp queries.jsonl via kubectl-less
-HTTP where possible; graphiti-mcp /api/metrics), find the queries agents ran
-that retrieved NOTHING USEFUL (zero hits, or low relevance), cluster them, and
-drop a `memory-gaps` note into the wiki inbox via wiki-mcp's note_drop tool.
+Weekly job: pull the memory server's query log (/api/metrics — one JSONL for
+both wiki_* and graph_* tools), find the queries agents ran that retrieved
+NOTHING USEFUL (zero hits, or low relevance), cluster them, and drop a
+`memory-gaps` note into the wiki inbox via the note_drop tool.
 
 That note is itself ingested by graphiti (the loop!), and the operator +
 future sessions see exactly what agents wanted to know but couldn't find — the
 system learns what it's missing.
 
-Also reports usage split (wiki vs graphiti call counts) — client-preference
+Also reports usage split (wiki vs graph call counts) — client-preference
 instrumentation.
 
-Runs in-cluster (CronJob). Env:
-  WIKI_MCP_BASE       default http://wiki-mcp:8080
-  GRAPHITI_MCP_BASE   default http://graphiti-mcp:8080
-  DAYS                lookback window (default 7)
-  DRY_RUN             "1" = print, don't drop the note
+Env:
+  MCP_BASE   default http://memory:8080 (the combined server)
+  DAYS       lookback window (default 7)
+  DRY_RUN    "1" = print, don't drop the note
 """
 from __future__ import annotations
 
@@ -29,8 +28,9 @@ import urllib.request
 from collections import Counter
 from datetime import datetime, timezone
 
-WIKI_BASE = os.environ.get("WIKI_MCP_BASE", "http://wiki-mcp:8080").rstrip("/")
-GRAPHITI_BASE = os.environ.get("GRAPHITI_MCP_BASE", "http://graphiti-mcp:8080").rstrip("/")
+MCP_BASE = os.environ.get("MCP_BASE", os.environ.get("WIKI_MCP_BASE", "http://memory:8080")).rstrip("/")
+WIKI_BASE = MCP_BASE
+GRAPHITI_BASE = MCP_BASE
 DAYS = float(os.environ.get("DAYS", "7"))
 DRY_RUN = os.environ.get("DRY_RUN", "0") in ("1", "true")
 LOW_SCORE = 0.45  # wiki cosine below this = poor retrieval
@@ -77,27 +77,20 @@ def _recurring_gaps(current_gaps: list[dict]) -> list[str]:
     return out
 
 
-def wiki_events() -> list[dict]:
-    """wiki-mcp has no /api/metrics; its log is on the pod PVC. Expose via the
-    same pattern later; for now use the search API's own instrumentation dump
-    if present, else skip (graphiti side still works)."""
-    data = _get(f"{WIKI_BASE}/api/metrics?days={DAYS}")
-    if isinstance(data, dict) and "events" in data:
-        return data["events"]
-    return []
-
-
-def graphiti_events() -> list[dict]:
-    data = _get(f"{GRAPHITI_BASE}/api/metrics?days={DAYS}")
+def all_events() -> list[dict]:
+    """The combined server keeps ONE query log for both tool families."""
+    data = _get(f"{MCP_BASE}/api/metrics?days={DAYS}")
     if isinstance(data, dict) and "events" in data:
         return data["events"]
     return []
 
 
 def main() -> None:
-    wev = wiki_events()
-    gev = graphiti_events()
-    print(f"[gaps] events: wiki={len(wev)} graphiti={len(gev)} (last {DAYS:g}d)")
+    events = all_events()
+    wiki_tools = {"search", "get", "backlinks"}
+    wev = [e for e in events if e.get("tool") in wiki_tools]
+    gev = [e for e in events if str(e.get("tool", "")).startswith("graph_")]
+    print(f"[gaps] events: wiki={len(wev)} graph={len(gev)} (last {DAYS:g}d)")
 
     # --- usage split (client preference) ---
     wiki_searches = [e for e in wev if e.get("tool") == "search"]
@@ -181,7 +174,7 @@ def main() -> None:
             "**TRIGGER: learned ranking is now buildable.** graph_search has "
             f"{len(graph_searches)} calls this week (≥200). Build usage-weighted "
             "fact ranking: boost facts/notes by retrieval frequency, decay "
-            "ephemeral operational facts. See graphiti/mcp/server.py.")
+            "ephemeral operational facts. See server/graph.py.")
     # T3b: gap auto-classifier — needs recurrence across weeks to be meaningful.
     recur = _recurring_gaps(uniq_gaps)
     if len(recur) >= 5:
@@ -264,7 +257,7 @@ current memory gaps" will surface it.
         print(note_md)
         return
 
-    # drop via wiki-mcp MCP tool (plain JSON-RPC, stateless)
+    # drop via the memory server MCP tool (plain JSON-RPC, stateless)
     body = {
         "jsonrpc": "2.0", "id": "drop", "method": "tools/call",
         "params": {"name": "wiki_note_drop", "arguments": {

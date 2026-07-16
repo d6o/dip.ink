@@ -21,16 +21,16 @@ community age, /health). This is the daily full-loop verification:
                     rate lost to max-turns failures); (4) .deferred backlog
                     size warning. Requires the clone to carry recent history
                     (initContainer uses --shallow-since, not --depth 1).
-  D. EXPOSING     — both MCPs healthy on the EXTERNAL (agent-facing) URL, with
-                    internal-service fallback probing to distinguish "ingress
+  D. EXPOSING     — the memory server healthy on the EXTERNAL (agent-facing)
+                    URL, with internal fallback probing to distinguish "ingress
                     broken" from "service down". graph_search returns facts;
                     graph_answer answers a known question (confidence high/med,
                     non-null) AND refuses a nonsense question (not_found +
                     escalate — the no-hallucination safety property).
   E. INDEXING     — the newest curated source note (>6h old) is fetchable from
-                    wiki-mcp's index (its 5-min reindex loop is alive).
-  F. USAGE        — last-24h call counts for both MCPs (excluding test-tagged
-                    events). Zero combined usage = warning, not failure.
+                    the wiki index (its 5-min reindex loop is alive).
+  F. USAGE        — last-24h tool-call counts (excluding test-tagged events).
+                    Zero usage = warning, not failure.
 
 Alerting: exit 1 = failed Job (visible in kubectl/k9s) + a best-effort
 `memory-healthcheck-failed` note dropped into the wiki inbox so the operator
@@ -42,10 +42,9 @@ metrics or the weekly gaps report.
 
 Env:
   NOTES_DIR              default /notes (wiki repo checkout root)
-  WIKI_MCP_BASE          agent-facing wiki-mcp base URL
-  GRAPHITI_MCP_BASE      agent-facing graphiti-mcp base URL
-  WIKI_MCP_INTERNAL      internal-network wiki-mcp URL (fallback probe)
-  GRAPHITI_MCP_INTERNAL  internal-network graphiti-mcp URL (fallback probe)
+  MCP_BASE               agent-facing memory-server base URL
+  MCP_INTERNAL           internal-network URL (fallback probe — distinguishes
+                         "ingress broken" from "service down")
   ANSWER_PROBE           a question your graph should answer with high confidence
   FRESH_WRITE_HOURS      default 48
   INGEST_GRACE_HOURS     default 2
@@ -73,10 +72,11 @@ from pathlib import Path
 sys.path.insert(0, "/app")
 
 NOTES_DIR = Path(os.environ.get("NOTES_DIR", "/notes"))
-WIKI_EXT = os.environ.get("WIKI_MCP_BASE", "http://wiki-mcp:8080").rstrip("/")
-GRAPHITI_EXT = os.environ.get("GRAPHITI_MCP_BASE", "http://graphiti-mcp:8080").rstrip("/")
-WIKI_INT = os.environ.get("WIKI_MCP_INTERNAL", WIKI_EXT).rstrip("/")
-GRAPHITI_INT = os.environ.get("GRAPHITI_MCP_INTERNAL", GRAPHITI_EXT).rstrip("/")
+# The combined memory server. MCP_BASE is the agent-facing URL; MCP_INTERNAL
+# is the internal-network fallback used to distinguish "ingress broken" from
+# "service down" when they differ.
+MCP_EXT = os.environ.get("MCP_BASE", os.environ.get("WIKI_MCP_BASE", "http://memory:8080")).rstrip("/")
+MCP_INT = os.environ.get("MCP_INTERNAL", MCP_EXT).rstrip("/")
 ANSWER_PROBE = os.environ.get("ANSWER_PROBE", "what is this memory system's note inbox called")
 NEGATIVE_PROBE = "what is the name of the operator's pet unicorn's favorite constellation"
 FRESH_WRITE_H = float(os.environ.get("FRESH_WRITE_HOURS", "48"))
@@ -179,12 +179,12 @@ def collect_notes() -> tuple[list[tuple[str, datetime]], list[tuple[str, datetim
 
 
 def drop_note(slug: str, note_md: str) -> dict | None:
-    """wiki_note_drop via wiki-mcp MCP JSON-RPC (stateless). None on failure."""
+    """wiki_note_drop via the memory server MCP JSON-RPC (stateless). None on failure."""
     body = {
         "jsonrpc": "2.0", "id": "drop", "method": "tools/call",
         "params": {"name": "wiki_note_drop", "arguments": {"slug": slug, "note_md": note_md}},
     }
-    for base in (WIKI_EXT, WIKI_INT):
+    for base in (MCP_EXT, MCP_INT):
         try:
             req = urllib.request.Request(
                 f"{base}/mcp", data=json.dumps(body).encode(),
@@ -333,13 +333,13 @@ def check_curation(inbox, deferred, curated) -> None:
 
 # ---------------------------------------------------------------- D: exposing
 def check_exposing() -> None:
-    gbase = _probe("graphiti-mcp", GRAPHITI_EXT, GRAPHITI_INT, "/health")
-    wbase = _probe("wiki-mcp", WIKI_EXT, WIKI_INT, "/health")
+    base = _probe("memory-server", MCP_EXT, MCP_INT, "/health")
+    gbase = wbase = base
 
     if gbase:
         q = urllib.parse.quote(_known_query())
         try:
-            pkt = _get_json(f"{gbase}/api/search?q={q}&test=1", timeout=60)
+            pkt = _get_json(f"{gbase}/api/graph/search?q={q}&test=1", timeout=60)
             if not (pkt.get("facts") or pkt.get("entities")):
                 failures.append("graph_search: 0 facts AND 0 entities for a known-good query")
             else:
@@ -387,32 +387,30 @@ def check_indexing(curated) -> None:
         return
     slug, ts = candidates[0]
     try:
-        status, _ = _get(f"{WIKI_EXT}/api/page/{urllib.parse.quote(slug)}", timeout=30)
+        status, _ = _get(f"{MCP_EXT}/api/page/{urllib.parse.quote(slug)}", timeout=30)
         if status == 200:
             print(f"[E] index OK: newest curated note ({_age_h(ts):.0f}h old) is fetchable: {slug}")
             return
-        failures.append(f"index stale: {slug} ({_age_h(ts):.0f}h old) HTTP {status} from wiki-mcp")
+        failures.append(f"index stale: {slug} ({_age_h(ts):.0f}h old) HTTP {status} from the wiki index")
     except Exception as e:
         failures.append(f"index check errored for {slug}: {e}")
 
 
 # ---------------------------------------------------------------- F: usage
 def check_usage() -> None:
-    counts = {}
-    for name, base in (("graphiti", GRAPHITI_EXT), ("wiki", WIKI_EXT)):
-        try:
-            data = _get_json(f"{base}/api/metrics?days=1", timeout=30)
-            ev = [e for e in data.get("events", []) if not e.get("test")]
-            by_tool: dict[str, int] = {}
-            for e in ev:
-                by_tool[e.get("tool", "?")] = by_tool.get(e.get("tool", "?"), 0) + 1
-            counts[name] = by_tool
-        except Exception as e:
-            warnings.append(f"usage metrics ({name}) unavailable: {e}")
-    total = sum(sum(v.values()) for v in counts.values())
-    print(f"[F] usage last 24h (test-tagged excluded): {json.dumps(counts)}")
-    if counts and total == 0:
-        warnings.append("zero MCP usage in 24h across both servers — agents idle, or extensions/logging broken")
+    by_tool: dict[str, int] = {}
+    try:
+        data = _get_json(f"{MCP_EXT}/api/metrics?days=1", timeout=30)
+        for e in data.get("events", []):
+            if e.get("test"):
+                continue
+            by_tool[e.get("tool", "?")] = by_tool.get(e.get("tool", "?"), 0) + 1
+    except Exception as e:
+        warnings.append(f"usage metrics unavailable: {e}")
+        return
+    print(f"[F] usage last 24h (test-tagged excluded): {json.dumps(by_tool)}")
+    if not by_tool:
+        warnings.append("zero MCP usage in 24h — agents idle, or registration/logging broken")
 
 
 # ---------------------------------------------------------------- main

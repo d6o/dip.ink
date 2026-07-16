@@ -144,7 +144,7 @@ The live `wiki/log.md` keeps roughly the last 14 days. Older entries rotate into
 
 ### Process notes (`/processnotes`)
 
-Agent sessions drop notes into `notes/` when they learn things (via the `wiki_note_drop` MCP tool — see `SKILL.md` in the dip.ink repo). Each note is a **folder** named `YYYY-MM-DD-HHMMSS-<slug>/` containing `<folder>.md` (or legacy `NOTE.md`) plus any attachments. The `/processnotes` command drains this inbox — see `.claude/commands/processnotes.md` for the full workflow (dedup via log, secret scan with redact-and-reference, discuss-or-announce, write pages, validate, move note folders to `wiki/sources/notes/`, log, commit, push).
+Agent sessions drop notes into `notes/` when they learn things (via the `wiki_note_drop` MCP tool — see `AGENTS.md` in the dip.ink repo). Each note is a **folder** named `YYYY-MM-DD-HHMMSS-<slug>/` containing `<folder>.md` (or legacy `NOTE.md`) plus any attachments. The `/processnotes` command drains this inbox — see `.claude/commands/processnotes.md` for the full workflow (dedup via log, secret scan with redact-and-reference, discuss-or-announce, write pages, validate, move note folders to `wiki/sources/notes/`, log, commit, push).
 
 ### Auto-curate (headless)
 

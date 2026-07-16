@@ -1,8 +1,8 @@
-"""graphiti-mcp — native MCP server over the Graphiti knowledge graph.
+"""graph — the Graphiti knowledge-graph side of the dip.ink memory server.
 
-Sister to wiki-mcp, but reads from Graphiti (Neo4j) instead of the markdown
-index, and exposes Graphiti's native strengths directly rather than forcing
-them into a "page" shape:
+Reads from Graphiti (Neo4j) instead of the markdown index, and exposes
+Graphiti's native strengths directly rather than forcing them into a "page"
+shape. Registers on the shared FastMCP instance (core.mcp):
 
   - graph_answer(question): server-side DISTILLED ANSWER — assembles the fat
     retrieval packet internally, then one LLM call boils it down to
@@ -19,46 +19,35 @@ them into a "page" shape:
   - graph_current_facts(subject): what's true NOW about a subject — the temporal
     angle plain document search has no answer to.
 
-Read-only. Writes (note capture) stay with wiki-mcp → git (source of truth);
-Graphiti's ingest cron turns dropped notes into the graph. This server just
+Read-only. Writes (note capture) stay with wiki_note_drop → git (source of
+truth); the ingest cron turns dropped notes into the graph. This module just
 serves the graph.
 
-Every call is instrumented to a JSONL log (mirrors wiki-mcp's queries.jsonl) so
-clients' usage / preference can be compared across servers.
+Every call is instrumented to the shared JSONL query log (core.record_query).
 """
 from __future__ import annotations
 
 import asyncio
 import json
-import logging
 import os
-import sys
 import time
-from contextlib import asynccontextmanager
-from pathlib import Path
 
-from mcp.server.fastmcp import FastMCP
-from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse
-from starlette.routing import Mount, Route
+from starlette.routing import Route
 
 # Reuse the ingest client wiring (Graphiti extraction LLM, OpenAI embedder,
-# the roomy Neo4j pool, patch_community_clustering). ingest.py is on sys.path
-# via /app in the image; this file lives at /app/mcp/server.py.
-sys.path.insert(0, "/app")
-from ingest import build_graphiti  # noqa: E402
-from graphiti_core.search.search_config_recipes import COMBINED_HYBRID_SEARCH_RRF  # noqa: E402
+# the roomy Neo4j pool, patch_community_clustering).
+from ingest import build_graphiti
+from graphiti_core.search.search_config_recipes import COMBINED_HYBRID_SEARCH_RRF
 
-HOST = os.environ.get("HOST", "0.0.0.0")
-PORT = int(os.environ.get("PORT", "8080"))
+from core import log, mcp, now_iso as _now_iso, record_query as _record_query
 
-# Fusion: merge wiki-mcp's SEMANTIC note/page hits into the graph_search packet.
-# Covers graphiti's structural blind spot (episodes are BM25-keyword-only) using
-# the embeddings wiki-mcp already maintains — no episode-embedding infra needed.
-# Best-effort: if wiki-mcp is down, the packet just lacks semantic_notes.
-WIKI_MCP_BASE = os.environ.get("WIKI_MCP_BASE", "http://wiki-mcp:8080").rstrip("/")
-FUSION = os.environ.get("GRAPHITI_MCP_FUSION", "1").lower() in ("1", "true", "yes")
+# Fusion: merge the wiki index's SEMANTIC note/page hits into the graph_search
+# packet. Covers graphiti's structural blind spot (episodes are BM25-keyword-
+# only) using the embeddings the wiki side already maintains. Same process now
+# — a direct function call into wiki.idx, no HTTP hop.
+FUSION = os.environ.get("GRAPH_FUSION", "1").lower() in ("1", "true", "yes")
 
 # Distiller (graph_answer): plain chat completion against any OpenAI-compatible
 # endpoint — NOT the graphiti llm_client (its retry/schema wrappers hide
@@ -79,37 +68,6 @@ DISTILL_FALLBACK_MODEL = os.environ.get("DISTILL_FALLBACK_MODEL", "")
 ANSWER_CACHE_TTL = float(os.environ.get("ANSWER_CACHE_TTL", "3600"))  # seconds; 0 disables
 _ANSWER_CACHE: dict[str, tuple[float, dict, int]] = {}  # key -> (expires_at, result, packet_tokens_est)
 _ANSWER_CACHE_MAX = 500
-
-# --- Instrumentation (mirrors wiki-mcp: PVC JSONL so it survives restarts) ---
-CACHE_DIR = Path(os.environ["GRAPHITI_MCP_CACHE_DIR"]) if os.environ.get("GRAPHITI_MCP_CACHE_DIR") else None
-_m_env = os.environ.get("GRAPHITI_MCP_METRICS_PATH", "").strip()
-if _m_env.lower() in {"", "auto"}:
-    METRICS_PATH = (CACHE_DIR / "queries.jsonl") if CACHE_DIR else None
-elif _m_env.lower() in {"off", "none", "0", "disabled"}:
-    METRICS_PATH = None
-else:
-    METRICS_PATH = Path(_m_env)
-
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-log = logging.getLogger("graphiti-mcp")
-
-
-def _now_iso() -> str:
-    import datetime
-    return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def _record_query(event: dict) -> None:
-    """Append a usage event to METRICS_PATH (best-effort)."""
-    if METRICS_PATH is None:
-        return
-    try:
-        METRICS_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with METRICS_PATH.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(event, ensure_ascii=False) + "\n")
-    except Exception as e:
-        log.warning("failed to record metric to %s: %s", METRICS_PATH, e)
-
 
 # --- Graphiti client (one per process; created in lifespan) ---
 _g = None
@@ -167,28 +125,25 @@ async def _resolve_episode_slugs(g, edges) -> dict[str, str]:
 
 
 async def _wiki_semantic_hits(query: str, k: int = 3) -> list[dict]:
-    """Fusion helper: wiki-mcp's semantic (embedding) search over all pages+notes.
-    Runs in a thread (urllib is sync) with a short timeout; [] on any failure."""
+    """Fusion helper: the wiki index's semantic (embedding) search over all
+    pages+notes. Same process — direct call into wiki.idx, run in a thread
+    (the embed call is sync); [] on any failure (index unready, provider down)."""
     if not FUSION:
         return []
-    import urllib.parse
-    import urllib.request
 
     def _fetch() -> list[dict]:
-        url = f"{WIKI_MCP_BASE}/api/search?q={urllib.parse.quote(query)}&k={k}"
-        with urllib.request.urlopen(url, timeout=6) as r:
-            data = json.loads(r.read())
+        import wiki
         return [{
             "name": p.get("name", ""),
             "score": round(float(p.get("score", 0)), 3),
             "type": p.get("type", ""),
             "description": (p.get("description") or "")[:200],
-        } for p in data.get("results", [])[:k]]
+        } for p in wiki.idx.search(query, k)]
 
     try:
         return await asyncio.to_thread(_fetch)
     except Exception as e:
-        log.warning("fusion: wiki-mcp semantic fetch failed: %s", e)
+        log.warning("fusion: wiki semantic search unavailable: %s", e)
         return []
 
 
@@ -242,7 +197,7 @@ async def _assemble_packet(
             "slug": getattr(episodes[0], "name", "") if episodes else "",
             "content": (getattr(episodes[0], "content", "") or "")[:excerpt_chars] if episodes else "",
         } if episodes else None,
-        # Fusion: wiki-mcp's semantic hits (pages AND notes, incl. curated pages
+        # Fusion: the wiki index's semantic hits (pages AND notes, incl. curated
         # graphiti doesn't have). Fetch a full page/note via wiki_get or
         # graph_get_note using the name.
         "semantic_notes": semantic_notes,
@@ -353,8 +308,7 @@ async def _distill(question: str, packet_json: str) -> dict | None:
     return None
 
 
-# --- MCP tools (native Graphiti surface) ---
-mcp = FastMCP("graphiti-mcp", stateless_http=True, host=HOST, port=PORT)
+# --- MCP tools (registered on the shared core.mcp instance) ---
 
 
 async def _graph_answer_impl(question: str, is_test: bool = False) -> dict:
@@ -601,7 +555,7 @@ async def graph_changes(subject: str, since_days: int = 14) -> dict:
     return out
 
 
-# --- Plain HTTP routes (parity with wiki-mcp /api/* for non-MCP clients) ---
+# --- Plain HTTP routes (for non-MCP clients + the memory loops) ---
 async def _http_graph_search(req: Request) -> JSONResponse:
     q = req.query_params.get("q", "").strip()
     if not q:
@@ -631,68 +585,32 @@ async def _http_graph_answer(req: Request) -> JSONResponse:
     return JSONResponse(await _graph_answer_impl(q, is_test=is_test))
 
 
-async def _http_health(_req: Request) -> JSONResponse:
-    return JSONResponse({"ok": _g is not None, "metrics_path": str(METRICS_PATH) if METRICS_PATH else None})
-
-
-async def _http_metrics(req: Request) -> JSONResponse:
-    """Tail of the query log (for the weekly gap-miner). ?days=7 filters by ts."""
-    days = float(req.query_params.get("days", "7"))
-    cutoff = time.time() - days * 86400
-    events = []
-    if METRICS_PATH and METRICS_PATH.exists():
-        try:
-            with METRICS_PATH.open(encoding="utf-8") as fh:
-                for line in fh:
-                    try:
-                        e = json.loads(line)
-                        if e.get("ts", 0) >= cutoff:
-                            events.append(e)
-                    except Exception:
-                        continue
-        except Exception as e:
-            return JSONResponse({"error": str(e)}, status_code=500)
-    return JSONResponse({"events": events[-5000:], "days": days})
+async def _http_graph_health(_req: Request) -> JSONResponse:
+    """Graph-side readiness (the graphiti client is warm). The combined
+    /health in server.py aggregates this with the wiki index state."""
+    return JSONResponse({"ok": _g is not None})
 
 
 http_routes = [
-    Route("/health", _http_health),
-    Route("/api/search", _http_graph_search),
+    Route("/api/graph/health", _http_graph_health),
+    Route("/api/graph/search", _http_graph_search),
     Route("/api/answer", _http_graph_answer),
-    Route("/api/metrics", _http_metrics),
 ]
 
-mcp_app = mcp.streamable_http_app()
 
-
-@asynccontextmanager
-async def lifespan(_app):
-    # Warm the Graphiti client at startup so the first query isn't slow.
+async def warm() -> None:
+    """Warm the Graphiti client at startup so the first query isn't slow.
+    Called from server.py's lifespan; failures are logged, not fatal."""
     try:
         await _get_graph()
         log.info("graphiti client ready")
     except Exception as e:
         log.error("failed to warm graphiti client at startup: %s", e)
-    async with mcp_app.router.lifespan_context(mcp_app):
-        yield
+
+
+async def close() -> None:
     if _g is not None:
         try:
             await _g.close()
         except Exception:
             pass
-
-
-app = Starlette(
-    routes=http_routes + [Mount("/", app=mcp_app)],
-    lifespan=lifespan,
-)
-
-
-def main():
-    import uvicorn
-    log.info("starting graphiti-mcp on %s:%d (metrics=%s)", HOST, PORT, METRICS_PATH)
-    uvicorn.run(app, host=HOST, port=PORT, log_level="info")
-
-
-if __name__ == "__main__":
-    main()

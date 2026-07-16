@@ -1,15 +1,15 @@
-"""wiki-mcp — semantic search MCP server over a markdown wiki.
+"""wiki — the markdown-wiki side of the dip.ink memory server.
 
 Indexes wiki/*.md (excluding frozen note folders + READMEs) using OpenAI
-embeddings (default) or a local fastembed model. Exposes:
+embeddings (default) or a local fastembed model. Registers on the shared
+FastMCP instance (core.mcp):
 
-  - MCP tools (HTTP transport at /mcp): wiki_search, wiki_get, wiki_backlinks,
-    wiki_note_drop
-  - Plain HTTP at /api/search, /api/page/<name>, /api/backlinks/<name>, /live, /health
+  - MCP tools: wiki_search, wiki_get, wiki_backlinks, wiki_note_drop
+  - Plain HTTP routes (mounted by server.py): /api/search, /api/page/<name>,
+    /api/backlinks/<name>, /api/reindex, /live, /health
 
-Designed to run as a single container/pod, registered as an MCP server in any
-agent session that wants wiki context. The wiki repo is mounted (or
-git-cloned) at /wiki inside the container.
+The wiki repo is mounted (or git-cloned) at WIKI_CLONE_PATH inside the
+container.
 
 Index strategy: bind HTTP first, then bootstrap in a supervised background
 thread. Cached unchanged vectors are published with freshly scanned metadata
@@ -22,8 +22,6 @@ from __future__ import annotations
 
 import base64
 import hashlib
-import json
-import logging
 import os
 import re
 import shutil
@@ -31,18 +29,16 @@ import subprocess
 import threading
 import time
 from collections import defaultdict
-from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
 import yaml
-from mcp.server.fastmcp import FastMCP
-from mcp.server.transport_security import TransportSecuritySettings
-from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import JSONResponse, PlainTextResponse, Response
-from starlette.routing import Mount, Route
+from starlette.responses import JSONResponse, Response
+from starlette.routing import Route
+
+from core import CACHE_DIR, log, mcp, now_iso as _now_iso, record_query as _record_query
 
 # --- Config ---
 
@@ -53,7 +49,7 @@ WIKI_ROOT = Path(os.environ.get("WIKI_ROOT", "wiki"))
 # dev), the static WIKI_ROOT is used as-is and the write tool is disabled.
 WIKI_REPO_URL = os.environ.get("WIKI_REPO_URL", "")
 WIKI_BRANCH = os.environ.get("WIKI_BRANCH", "main")
-WIKI_CLONE_PATH = Path(os.environ.get("WIKI_CLONE_PATH", "/var/lib/wiki-mcp/wiki"))
+WIKI_CLONE_PATH = Path(os.environ.get("WIKI_CLONE_PATH", "/var/lib/memory/wiki"))
 # Token-based HTTPS auth for the wiki repo host (GitHub PAT, Gitea/GitLab API
 # token, ...). Sent as HTTP Basic auth (username WIKI_REPO_USER, password
 # WIKI_REPO_TOKEN) via git's http.<origin>.extraheader, so the token never
@@ -78,31 +74,6 @@ REINDEX_RETRY_MAX_SEC = int(os.environ.get("WIKI_MCP_RETRY_MAX_SEC", "300"))
 BACKGROUND_REINDEX_ENABLED = os.environ.get("WIKI_MCP_BACKGROUND_REINDEX", "1").lower() not in {
     "0", "false", "no", "disabled",
 }
-# Persistence: a Longhorn PVC mounted at this path lets the pod survive restarts
-# without paying the OpenAI re-embed cost ($0.004/cold-start) and 2.3s cold-boot
-# latency. Cache stores {name: (body_hash, embedding)} keyed by the active model;
-# if the model changes (provider swap), the cache is ignored and rebuilt.
-CACHE_DIR = Path(os.environ.get("WIKI_MCP_CACHE_DIR", "")) if os.environ.get("WIKI_MCP_CACHE_DIR") else None
-PORT = int(os.environ.get("PORT", "8080"))
-HOST = os.environ.get("HOST", "0.0.0.0")
-
-# Query instrumentation. We have never been able to answer "do agents actually
-# query the wiki?" — the repo's manual `query` log entries are zero and tool
-# calls were unlogged. Record every search/get/backlinks call to stdout, and
-# when a metrics path is available append a JSONL event for durable analysis.
-# Defaults to <CACHE_DIR>/queries.jsonl when the PVC cache is configured (so the
-# data survives pod restarts); set WIKI_MCP_METRICS_PATH to a path to override,
-# or to off/none/0 to disable.
-_metrics_env = os.environ.get("WIKI_MCP_METRICS_PATH", "").strip()
-if _metrics_env.lower() in {"", "auto"}:
-    METRICS_PATH = (CACHE_DIR / "queries.jsonl") if CACHE_DIR else None
-elif _metrics_env.lower() in {"off", "none", "0", "disabled"}:
-    METRICS_PATH = None
-else:
-    METRICS_PATH = Path(_metrics_env)
-
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-log = logging.getLogger("wiki-mcp")
 
 
 # --- Note-drop validation limits ---
@@ -968,54 +939,12 @@ def _background_reindex(index: Index, stop_event: threading.Event) -> None:
             )
 
 
-# --- Query instrumentation ---
-
-
-_metrics_lock = threading.Lock()
-
-
-def _now_iso() -> str:
-    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-
-
-def _record_query(event: dict) -> None:
-    """Record a tool-call event: always to stdout (visible in `kubectl logs`),
-    and to METRICS_PATH as JSONL when configured. Best-effort — instrumentation
-    must never break a query."""
-    try:
-        payload = json.dumps(event, ensure_ascii=False, default=str)
-    except Exception:
-        return
-    log.info("query %s", payload)
-    if METRICS_PATH is None:
-        return
-    try:
-        with _metrics_lock:
-            METRICS_PATH.parent.mkdir(parents=True, exist_ok=True)
-            with METRICS_PATH.open("a", encoding="utf-8") as fh:
-                fh.write(payload + "\n")
-    except Exception as e:
-        log.warning("failed to record query metric to %s: %s", METRICS_PATH, e)
-
-
-# --- MCP setup ---
+# --- MCP tools (registered on the shared core.mcp instance) ---
 
 
 embedder = Embedder(EMBED_PROVIDER)
 idx = Index(WIKI_ROOT, embedder, cache_dir=CACHE_DIR)
 log.info("index bootstrap deferred to supervised background thread")
-
-# DNS-rebinding protection: FastMCP auto-locks to 127.0.0.1/localhost when host
-# is unset. If you expose this server behind an ingress / reverse proxy, add
-# its hostname via WIKI_MCP_ALLOWED_HOSTS (comma-separated).
-_default_hosts = "localhost,127.0.0.1,wiki-mcp"
-_allowed = [h.strip() for h in os.environ.get("WIKI_MCP_ALLOWED_HOSTS", _default_hosts).split(",") if h.strip()]
-_security = TransportSecuritySettings(
-    enable_dns_rebinding_protection=True,
-    allowed_hosts=_allowed + [f"{h}:*" for h in _allowed],
-    allowed_origins=[f"https://{h}" for h in _allowed] + [f"http://{h}" for h in _allowed],
-)
-mcp = FastMCP("wiki-mcp", stateless_http=True, host="0.0.0.0", port=PORT, transport_security=_security)
 
 
 @mcp.tool()
@@ -1297,28 +1226,7 @@ def http_reindex(req: Request) -> Response:
     return JSONResponse(stats, status_code=200 if stats.get("ready") else 503)
 
 
-def http_metrics(req: Request) -> Response:
-    """Tail of the query-instrumentation log (for the weekly memory-gaps miner).
-    ?days=7 filters by event ts. Read-only; returns at most the last 5000 events."""
-    days = float(req.query_params.get("days", "7"))
-    cutoff = time.time() - days * 86400
-    events: list[dict] = []
-    if METRICS_PATH is not None and METRICS_PATH.exists():
-        try:
-            with METRICS_PATH.open(encoding="utf-8") as fh:
-                for line in fh:
-                    try:
-                        e = json.loads(line)
-                        if e.get("ts", 0) >= cutoff:
-                            events.append(e)
-                    except Exception:
-                        continue
-        except Exception as exc:
-            return JSONResponse({"error": str(exc)}, status_code=500)
-    return JSONResponse({"events": events[-5000:], "days": days})
-
-
-# --- Compose Starlette app: plain routes + mounted MCP ---
+# --- HTTP routes + background loop (assembled by server.py) ---
 
 
 # Plain HTTP under /api/ to leave MCP its own /mcp path.
@@ -1326,21 +1234,17 @@ http_routes = [
     Route("/live", live),
     Route("/health", health),
     Route("/api/search", http_search),
-    Route("/api/metrics", http_metrics),
     Route("/api/page/{name:path}", http_get_page),
     Route("/api/backlinks/{name:path}", http_backlinks),
     Route("/api/reindex", http_reindex, methods=["POST"]),
 ]
 
-# FastMCP exposes a Starlette app via `streamable_http_app()` with /mcp routed internally.
-mcp_app = mcp.streamable_http_app()
 _reindex_stop = threading.Event()
 _reindex_thread: threading.Thread | None = None
 
 
-@asynccontextmanager
-async def lifespan(_app):
-    """Start FastMCP immediately, then supervise indexing in the background."""
+def start_background_reindex() -> None:
+    """Start the supervised reindex thread (called from server.py's lifespan)."""
     global _reindex_thread
     if BACKGROUND_REINDEX_ENABLED and (_reindex_thread is None or not _reindex_thread.is_alive()):
         _reindex_stop.clear()
@@ -1351,26 +1255,7 @@ async def lifespan(_app):
             name="wiki-reindex",
         )
         _reindex_thread.start()
-    async with mcp_app.router.lifespan_context(mcp_app):
-        try:
-            yield
-        finally:
-            _reindex_stop.set()
 
 
-# Mount mcp_app at root so its internal /mcp route lands at /mcp.
-app = Starlette(
-    routes=http_routes + [Mount("/", app=mcp_app)],
-    lifespan=lifespan,
-)
-
-
-def main():
-    import uvicorn
-
-    log.info("starting wiki-mcp on %s:%d (index bootstrap is asynchronous)", HOST, PORT)
-    uvicorn.run(app, host=HOST, port=PORT, log_level="info")
-
-
-if __name__ == "__main__":
-    main()
+def stop_background_reindex() -> None:
+    _reindex_stop.set()

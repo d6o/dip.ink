@@ -1,16 +1,16 @@
----
-name: dip.ink memory
-description: The operator's externalized memory. Search before answering ANY question about their stack, deploys, services, decisions, or conventions. Capture every non-obvious learning. Read tools that know everything, plus a write tool that drops a note into the curation pipeline. Do NOT skip the search — the operator maintains this precisely so you don't have to re-derive context every session.
----
+# The operator's memory — usage contract for agents
 
-# dip.ink — the operator's memory, exposed over MCP
+> Install this file globally so EVERY agent session follows it: append it to
+> `~/.claude/CLAUDE.md` (Claude Code), `~/.config/AGENTS.md` (agents honoring
+> the AGENTS.md convention), or your agent's system prompt. It is the contract
+> that makes the memory compound instead of decay.
 
-The operator maintains a personal, LLM-curated memory system — the canonical record of their tools, deploys, infra conventions, project context, decisions, and learnings. As an agent, you reach it through two MCP servers:
+The operator maintains a personal, LLM-curated memory system — the canonical record of their tools, deploys, infra conventions, project context, decisions, and learnings. As an agent, you reach it through **one MCP server** exposing two families of tools:
 
-| Server | Tools | What it's for |
+| Family | Tools | What it's for |
 |---|---|---|
-| **wiki-mcp** | `wiki_search`, `wiki_get`, `wiki_backlinks`, `wiki_note_drop` | Semantic search over curated wiki pages + THE write path (note capture) |
-| **graphiti-mcp** | `graph_answer`, `graph_search`, `graph_get_note`, `graph_entity`, `graph_current_facts`, `graph_changes` | Temporal knowledge graph: direct answers, current-vs-superseded facts, what-changed diffs |
+| **wiki** | `wiki_search`, `wiki_get`, `wiki_backlinks`, `wiki_note_drop` | Semantic search over curated wiki pages + THE write path (note capture) |
+| **graph** | `graph_answer`, `graph_search`, `graph_get_note`, `graph_entity`, `graph_current_facts`, `graph_changes` | Temporal knowledge graph: direct answers, current-vs-superseded facts, what-changed diffs |
 
 Storage is a private git repo of markdown notes and wiki pages. You generally don't clone it — you go through MCP — but knowing the data lives in git matters when something seems out of date.
 
@@ -19,9 +19,10 @@ Storage is a private git repo of markdown notes and wiki pages. You generally do
 ## Setup (one-time per machine)
 
 ```sh
-claude mcp add wiki-mcp --transport http https://<your-wiki-mcp-host>/mcp
-claude mcp add graphiti-mcp --transport http https://<your-graphiti-mcp-host>/mcp
+claude mcp add memory --transport http http://<your-memory-host>:8080/mcp
 ```
+
+If the tools aren't in your tool list and registration fails, you are not on the operator's network and this contract does not apply.
 
 ## Which tool when
 

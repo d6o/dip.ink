@@ -6,7 +6,7 @@ Three checks (the ones whose absence caused real silent failures in this saga):
      git clone failing, LLM down...).
   2. Community age: newest Community.created_at older than MAX_COMMUNITY_AGE_DAYS
      means the weekly rebuild failed/stopped.
-  3. Both MCPs' /health.
+  3. The memory server's /health.
 
 Runs every 30 min with backoffLimit=0 — a FAILED job is the alert (visible in
 `kubectl get jobs -n graphiti`, k9s, events). Cheap and dependency-free.
@@ -22,8 +22,7 @@ from datetime import datetime, timezone
 
 sys.path.insert(0, "/app")
 
-WIKI_BASE = os.environ.get("WIKI_MCP_BASE", "http://wiki-mcp:8080").rstrip("/")
-GRAPHITI_BASE = os.environ.get("GRAPHITI_MCP_BASE", "http://graphiti-mcp:8080").rstrip("/")
+MCP_BASE = os.environ.get("MCP_BASE", os.environ.get("WIKI_MCP_BASE", "http://memory:8080")).rstrip("/")
 MAX_PENDING_AGE_H = float(os.environ.get("MAX_PENDING_AGE_HOURS", "2"))
 MAX_COMMUNITY_AGE_D = float(os.environ.get("MAX_COMMUNITY_AGE_DAYS", "8"))
 
@@ -75,8 +74,7 @@ async def check_graph() -> None:
 
 
 def main() -> None:
-    check_health("wiki-mcp", WIKI_BASE)
-    check_health("graphiti-mcp", GRAPHITI_BASE)
+    check_health("memory-server", MCP_BASE)
     try:
         asyncio.run(check_graph())
     except Exception as e:

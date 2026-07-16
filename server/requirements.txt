@@ -1,0 +1,11 @@
+# The dip.ink memory server: wiki index + note drop + Graphiti graph in one
+# process, plus the ingest job and the memory loops (same image).
+graphiti-core==0.29.2
+# graphiti-core pulls neo4j>=5.26, openai, tenacity, pydantic, python-dotenv, posthog.
+mcp[cli]>=1.2.0
+numpy>=2.0
+pyyaml>=6.0
+starlette>=0.41
+uvicorn[standard]>=0.32
+# Optional no-API-key embedding fallback (WIKI_MCP_EMBED_PROVIDER=fastembed):
+# fastembed==0.5.1

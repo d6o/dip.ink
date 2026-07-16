@@ -39,7 +39,7 @@ spec:
                 - {name: notes, mountPath: /notes}
           containers:
             - name: ingest
-              image: ghcr.io/d6o/dip.ink/graphiti:latest
+              image: ghcr.io/d6o/dip.ink/memory:latest
               env:
                 - {name: INGEST_MODE, value: cron}
                 - {name: BATCH_SIZE, value: "15"}

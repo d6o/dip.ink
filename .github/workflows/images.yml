@@ -1,9 +1,8 @@
 name: images
 
-# Builds and publishes the three container images to GHCR:
-#   ghcr.io/<owner>/dip.ink/wiki-mcp
-#   ghcr.io/<owner>/dip.ink/graphiti
-#   ghcr.io/<owner>/dip.ink/pi-runner
+# Builds and publishes the two container images to GHCR:
+#   ghcr.io/<owner>/dip.ink/memory     (the MCP server + ingest + loops)
+#   ghcr.io/<owner>/dip.ink/pi-runner  (the curator agent runner)
 # Users of the docker-compose path build locally instead; these images are for
 # the k8s path and the curator CI workflows in template/.github/workflows/.
 
@@ -11,8 +10,7 @@ on:
   push:
     branches: [main]
     paths:
-      - 'wiki-mcp/**'
-      - 'graphiti/**'
+      - 'server/**'
       - 'curator/pi-runner/**'
       - '.github/workflows/images.yml'
   workflow_dispatch:
@@ -27,10 +25,8 @@ jobs:
     strategy:
       matrix:
         include:
-          - name: wiki-mcp
-            context: ./wiki-mcp
-          - name: graphiti
-            context: ./graphiti
+          - name: memory
+            context: ./server
           - name: pi-runner
             context: ./curator/pi-runner
     steps:

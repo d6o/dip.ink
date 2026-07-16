@@ -5,28 +5,30 @@
 This is not a note-taking app. There is no UI. The write path and the read path are both **agents**: it's memory infrastructure that your Claude Code / Pi / Codex sessions plug into over MCP.
 
 ```
-                        you, working with agents
-                                  │
-              ┌───────────────────┼───────────────────┐
-              │ agents capture    │ agents query      │
-              ▼                   ▼                   ▼
-     wiki_note_drop        graph_answer         wiki_search
-              │            graph_search          wiki_get
-              │            graph_changes             │
-              ▼                   │                  │
-   ┌─────────────────┐            │                  │
-   │ private git repo │◄──────────┼──────────────────┘
-   │  notes/  (inbox) │           │        reads
-   │  wiki/   (pages) │           │
-   └───────┬──────────┘           │
-           │                      │
-   ┌───────┴───────┐      ┌───────┴────────┐
-   │ CURATOR (CI)  │      │ GRAPH (docker) │
-   │ hourly agent  │      │ Graphiti+Neo4j │
-   │ notes → pages │      │ 15-min ingest  │
-   └───────────────┘      │ every note →   │
-                          │ temporal facts │
-                          └────────────────┘
+                you, working with agents
+                          │
+         agents capture   │   agents query
+                          ▼
+            ONE MCP SERVER ("memory", :8080/mcp)
+            ┌────────────────────────────────┐
+            │ wiki_note_drop   graph_answer    │
+            │ wiki_search      graph_search    │
+            │ wiki_get         graph_changes   │
+            │ wiki_backlinks   graph_get_note  │
+            └───┬───────────────────┬────────┘
+     writes+reads │                   │ reads
+                  ▼                   ▼
+   ┌─────────────────┐      ┌────────────────┐
+   │ private git repo │      │ Graphiti+Neo4j │
+   │  notes/  (inbox) │────►│ 15-min ingest  │
+   │  wiki/   (pages) │      │ every note →   │
+   └───────┬─────────┘      │ temporal facts │
+           │                └────────────────┘
+   ┌───────┴───────┐
+   │ CURATOR (CI)  │
+   │ hourly agent  │
+   │ notes → pages │
+   └───────────────┘
 ```
 
 ## Why this shape
@@ -82,8 +84,7 @@ That starts:
 
 | Service | Port | What |
 |---|---|---|
-| `wiki-mcp` | 8081 | semantic search over wiki pages + `wiki_note_drop` (the write path) |
-| `graphiti-mcp` | 8082 | the knowledge graph: `graph_answer`, `graph_search`, `graph_changes`, ... |
+| `memory` | 8080 | **the one MCP server** — all `wiki_*` + `graph_*` tools at `/mcp` |
 | `neo4j` | 7474/7687 (localhost) | graph storage |
 | `ingest` | — | every 15 min: pull the repo, ingest new notes into the graph |
 | `communities`, `healthcheck`, `gaps`, `alerts` | — | the self-maintenance loops |
@@ -91,28 +92,38 @@ That starts:
 Verify:
 
 ```sh
-curl -s localhost:8081/health | jq .ready          # true once the wiki is indexed
-curl -s localhost:8082/health | jq .ok             # true once the graph client is warm
-curl -s 'localhost:8081/api/search?q=hello&k=3' | jq .
+curl -s localhost:8080/health | jq '.ready, .graph_ready'
+curl -s 'localhost:8080/api/search?q=hello&k=3' | jq .
 ```
 
-> **Exposing beyond localhost:** the MCP servers have **no authentication** — the network is the perimeter. Put them behind a VPN/tailnet or an authenticating reverse proxy; do not expose them to the public internet. If you serve them via a hostname, add it to `WIKI_MCP_ALLOWED_HOSTS`.
+> **Exposing beyond localhost:** the MCP server has **no authentication** — the network is the perimeter. Put it behind a VPN/tailnet or an authenticating reverse proxy; do not expose it to the public internet. If you serve it via a hostname, add it to `MCP_ALLOWED_HOSTS`.
 
 ### 3. Register the memory on your agents
 
 ```sh
-claude mcp add wiki-mcp     --transport http http://localhost:8081/mcp
-claude mcp add graphiti-mcp --transport http http://localhost:8082/mcp
+claude mcp add memory --transport http http://localhost:8080/mcp
 ```
 
 (Substitute your host/ingress URL for remote machines. Any MCP-capable agent works the same way.)
 
-Then give your agents the usage contract — copy [`SKILL.md`](./SKILL.md) into your global agent instructions (e.g. `~/.claude/CLAUDE.md`, a skill, or your agent's system prompt). It tells agents two things, both non-negotiable:
+### 4. Install AGENTS.md globally — the step that makes it all work
+
+Registering the server gives agents the *tools*; [`AGENTS.md`](./AGENTS.md) gives them the *discipline*. Append it to your global agent instructions so **every** session follows it:
+
+```sh
+# Claude Code
+cat AGENTS.md >> ~/.claude/CLAUDE.md
+# or for agents honoring the AGENTS.md convention, place it where yours reads it
+```
+
+It tells agents two things, both non-negotiable:
 
 1. **Search before answering** anything about your stack, decisions, or conventions (`graph_answer` first — it's the cheap, distilled path).
 2. **Capture every non-obvious learning** with `wiki_note_drop` — err toward capture; duplicates are cheap, missed captures are expensive.
 
-### 4. Watch the loop run
+Without this step the memory silently decays: agents answer from stale training data and never write anything back.
+
+### 5. Watch the loop run
 
 1. An agent finishes debugging something and drops a note: `wiki_note_drop("traefik-timeout-fix", "...")` → committed and pushed to your repo's `notes/` inbox.
 2. Within 15 min, the `ingest` service turns it into graph facts (episode name = note slug, timeline position = capture time).
@@ -122,7 +133,9 @@ Then give your agents the usage contract — copy [`SKILL.md`](./SKILL.md) into 
 
 ## The MCP tools
 
-**wiki-mcp** (curated pages — the "compiled" layer):
+One server, two tool families.
+
+**wiki** (curated pages — the "compiled" layer):
 
 | Tool | Use |
 |---|---|
@@ -131,7 +144,7 @@ Then give your agents the usage contract — copy [`SKILL.md`](./SKILL.md) into 
 | `wiki_backlinks(name)` | what references X? |
 | `wiki_note_drop(slug, note_md, attachments?)` | **the write path** — file a note into the inbox |
 
-**graphiti-mcp** (the temporal graph — the "facts" layer):
+**graph** (the temporal graph — the "facts" layer):
 
 | Tool | Use |
 |---|---|
@@ -142,7 +155,9 @@ Then give your agents the usage contract — copy [`SKILL.md`](./SKILL.md) into 
 | `graph_entity(name)` | a known entity's summary + current facts |
 | `graph_get_note(slug)` | provenance fetch: the original source note behind any fact |
 
-Both servers also expose plain HTTP (`/api/search`, `/api/answer`, `/api/metrics`, `/health`) for non-MCP clients and the self-maintenance loops.
+The server also exposes plain HTTP (`/api/search`, `/api/answer`, `/api/metrics`, `/health`, ...) for non-MCP clients and the self-maintenance loops. Both tool families write to one query-instrumentation log, which the weekly gaps miner reads back.
+
+Why one server? `graph_search` fuses the wiki's semantic hits into its packet — in-process, no HTTP hop — and agents register one URL, operators run one container, the healthcheck probes one endpoint.
 
 ## The curator
 
@@ -159,7 +174,7 @@ The inbox → wiki promotion is done by a real agent session, headless, on a sch
 ```
 dip.ink/
 ├── README.md               ← you are here
-├── SKILL.md                ← agent-facing usage contract (copy into your agent's instructions)
+├── AGENTS.md               ← agent-facing usage contract (install into your global agent instructions)
 ├── docker-compose.yml      ← the whole stack on one host
 ├── .env.example
 ├── template/               ← YOUR memory repo starts as a copy of this
@@ -169,19 +184,21 @@ dip.ink/
 │   ├── .claude/commands/   ← interactive commands (/processnotes, /wikilint, ...)
 │   ├── .pi/prompts/        ← the headless curator prompt
 │   └── .github/workflows/  ← curator (hourly), synthesis (weekly), reviewqueue (daily)
-├── wiki-mcp/               ← semantic search + note-drop MCP server
-├── graphiti/
+├── server/                 ← THE memory server (one image, three roles)
+│   ├── server.py           ← assembles the single MCP + HTTP app
+│   ├── core.py             ← shared FastMCP instance + query-metrics log
+│   ├── wiki.py             ← wiki_search / wiki_get / wiki_backlinks / wiki_note_drop
+│   ├── graph.py            ← graph_answer / graph_search / graph_changes / ...
 │   ├── ingest.py           ← notes → Graphiti episodes (resumable, crash-safe, circuit-breaker)
-│   ├── mcp/server.py       ← graph_answer / graph_search / graph_changes / ...
 │   └── loops/              ← healthcheck, gaps miner, alerts, contradiction janitor,
 │                             entity resolution, community builder
 ├── curator/pi-runner/      ← containerized headless agent runner (validate/commit/rebase/push)
-└── deploy/k8s/             ← production manifests (Neo4j, MCPs, ingest cron, memory loops)
+└── deploy/k8s/             ← production manifests (Neo4j, memory server, ingest cron, memory loops)
 ```
 
 ## Production (k8s)
 
-`deploy/k8s/` mirrors the compose stack for a cluster: Neo4j Deployment + PVC, both MCP Deployments, the 15-min ingest CronJob, and the five memory-loop CronJobs. Images are published to GHCR by this repo's CI.
+`deploy/k8s/` mirrors the compose stack for a cluster: Neo4j Deployment + PVC, the memory-server Deployment, the 15-min ingest CronJob, and the five memory-loop CronJobs. Images are published to GHCR by this repo's CI.
 
 ```sh
 kubectl apply -f deploy/k8s/namespace.yaml
@@ -190,7 +207,7 @@ kubectl apply -f /tmp/secrets.yaml
 kubectl apply -f deploy/k8s/
 ```
 
-Add your own Ingress in front of the two MCP Services (keep it VPN/tailnet-only or authenticated), and set `WIKI_MCP_ALLOWED_HOSTS` accordingly.
+Add your own Ingress in front of the `memory` Service (keep it VPN/tailnet-only or authenticated), and set `MCP_ALLOWED_HOSTS` accordingly.
 
 ## Operational notes (learned the hard way)
 
