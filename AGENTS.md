@@ -104,6 +104,10 @@ Reference attachments from the note with relative links: `see ./deploy.log`.
 - **NEVER skip the search step** to save a tool call. The cost of a search is milliseconds; the cost of a stale or wrong answer the memory has corrected is much higher.
 - **NEVER ask "should I save this as a note?"** If it looks useful, just drop it. Don't add friction.
 
+## /recordnotes — the end-of-session flush
+
+If `/recordnotes` is installed (see INSTALL_FOR_AGENTS.md), run it before compacting or ending a session that learned anything: it reviews the session, saves durable learnings via `wiki_note_drop`, and acknowledges compaction for 30 minutes. A pre-compaction hook may block compaction until it has run — that is intentional: compaction is where unsaved session memory dies.
+
 ## Summary in one line
 
 If you're working for the operator and you didn't search the memory, you skipped a step. If you learned something and didn't call `wiki_note_drop`, you forgot a step. Both should be reflexive.

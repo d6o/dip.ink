@@ -98,32 +98,25 @@ curl -s 'localhost:8080/api/search?q=hello&k=3' | jq .
 
 > **Exposing beyond localhost:** the MCP server has **no authentication** — the network is the perimeter. Put it behind a VPN/tailnet or an authenticating reverse proxy; do not expose it to the public internet. If you serve it via a hostname, add it to `MCP_ALLOWED_HOSTS`.
 
-### 3. Register the memory on your agents
+### 3. Set up your agents — paste one message
 
-```sh
-claude mcp add memory --transport http http://localhost:8080/mcp
-```
+Then paste this into your agent (Claude Code, Pi, ...):
 
-(Substitute your host/ingress URL for remote machines. Any MCP-capable agent works the same way.)
+> Retrieve and follow the instructions at:
+> https://raw.githubusercontent.com/d6o/dip.ink/main/INSTALL_FOR_AGENTS.md
+>
+> My memory server is at http://localhost:8080
 
-### 4. Install AGENTS.md globally — the step that makes it all work
+The agent installs four things into its own environment ([`INSTALL_FOR_AGENTS.md`](./INSTALL_FOR_AGENTS.md) has the per-runtime steps if you'd rather do it by hand):
 
-Registering the server gives agents the *tools*; [`AGENTS.md`](./AGENTS.md) gives them the *discipline*. Append it to your global agent instructions so **every** session follows it:
+1. **The tools** — the memory MCP server registration (or the native Pi extension).
+2. **The usage contract** ([`AGENTS.md`](./AGENTS.md)) into its global instructions: *search the memory before answering anything operator-specific; capture every non-obvious learning as you go*. Without this the memory silently decays — agents answer from stale training data and never write anything back.
+3. **`/recordnotes`** — a command that reviews the session and saves durable learnings via `wiki_note_drop`.
+4. **The compaction gate** — a hook that blocks context compaction until `/recordnotes` has run recently for that working directory (on Pi it also wraps `/exit` so graceful exits flush notes first). Compaction is where session memory dies; the hook makes capture happen *before* the loss.
 
-```sh
-# Claude Code
-cat AGENTS.md >> ~/.claude/CLAUDE.md
-# or for agents honoring the AGENTS.md convention, place it where yours reads it
-```
+After that your agents will start reading/recording information on their own. If you want to make sure all learnings in a session were stored, just call `/recordnotes`.
 
-It tells agents two things, both non-negotiable:
-
-1. **Search before answering** anything about your stack, decisions, or conventions (`graph_answer` first — it's the cheap, distilled path).
-2. **Capture every non-obvious learning** with `wiki_note_drop` — err toward capture; duplicates are cheap, missed captures are expensive.
-
-Without this step the memory silently decays: agents answer from stale training data and never write anything back.
-
-### 5. Watch the loop run
+### 4. Watch the loop run
 
 1. An agent finishes debugging something and drops a note: `wiki_note_drop("traefik-timeout-fix", "...")` → committed and pushed to your repo's `notes/` inbox.
 2. Within 15 min, the `ingest` service turns it into graph facts (episode name = note slug, timeline position = capture time).
@@ -174,7 +167,12 @@ The inbox → wiki promotion is done by a real agent session, headless, on a sch
 ```
 dip.ink/
 ├── README.md               ← you are here
-├── AGENTS.md               ← agent-facing usage contract (install into your global agent instructions)
+├── AGENTS.md               ← agent-facing usage contract (installed into global agent instructions)
+├── INSTALL_FOR_AGENTS.md   ← self-install instructions an agent retrieves and follows
+├── agent-setup/            ← /recordnotes + compaction gates, per runtime
+│   ├── claude-code/        ← skill + PreCompact hook
+│   └── pi/                 ← memory extension (native tools), /recordnotes prompt,
+│                             compact/exit gate extension
 ├── docker-compose.yml      ← the whole stack on one host
 ├── .env.example
 ├── template/               ← YOUR memory repo starts as a copy of this

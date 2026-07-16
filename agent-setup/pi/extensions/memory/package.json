@@ -1,0 +1,15 @@
+{
+  "name": "pi-extension-memory",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "pi extension bridging the operator's dip.ink memory server (wiki search + note capture + temporal knowledge graph).",
+  "scripts": {
+    "clean": "echo 'nothing to clean'",
+    "build": "echo 'nothing to build'",
+    "check": "echo 'nothing to check'"
+  },
+  "pi": {
+    "extensions": ["./index.ts"]
+  }
+}
