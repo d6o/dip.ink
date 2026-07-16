@@ -1,0 +1,91 @@
+name: curator
+
+# Hourly auto-curator: drains the notes/ inbox into wiki pages using fresh,
+# independent Pi agent sessions (via pi-runner). Each successful sub-batch
+# validates, commits, rebases, and pushes before the next one starts, so a
+# later failure cannot discard earlier progress.
+#
+# Required repo secrets:
+#   PI_API_KEY      key for the model provider Pi uses (e.g. your OpenAI key)
+# Optional repo variables:
+#   PI_PROVIDER     default openai      (any provider Pi supports, or a custom
+#   PI_MODEL        default gpt-4.1-mini      one via PI_MODELS_JSON)
+#
+# The GITHUB_TOKEN push needs `contents: write` (declared below).
+
+on:
+  schedule:
+    - cron: '7 * * * *'   # hourly at :07
+  workflow_dispatch:
+
+concurrency:
+  group: curator
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  curate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 59
+    container:
+      # pi-runner image published from the dip.ink repo. Pin a digest/tag once
+      # you're settled — `latest` is fine to start.
+      image: ghcr.io/d6o/dip.ink/pi-runner:latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Record supervisor start + HEAD
+        shell: bash
+        run: |
+          echo "SUPERVISOR_START_EPOCH=$(date +%s)" >> "$GITHUB_ENV"
+          git config --global --add safe.directory "$(pwd)"
+          echo "BEFORE_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      - name: Run curator supervisor
+        shell: bash
+        env:
+          PROMPT_PATH: .pi/prompts/processnotes-auto.md
+          PI_PROVIDER: ${{ vars.PI_PROVIDER || 'openai' }}
+          PI_MODEL: ${{ vars.PI_MODEL || 'gpt-4.1-mini' }}
+          PI_THINKING: medium
+          PI_API_KEY: ${{ secrets.PI_API_KEY }}
+          # The supervisor probes this OpenAI-compatible endpoint before every
+          # batch after the first, so a dead provider fails fast.
+          CURATOR_LLM_BASE_URL: ${{ vars.CURATOR_LLM_BASE_URL || 'https://api.openai.com/v1' }}
+          CURATOR_LLM_MODEL: ${{ vars.CURATOR_LLM_MODEL || vars.PI_MODEL || 'gpt-4.1-mini' }}
+          CURATOR_LLM_API_KEY: ${{ secrets.PI_API_KEY }}
+          WIKI_REPO_TOKEN: x-access-token:${{ secrets.GITHUB_TOKEN }}
+          COMMIT_MESSAGE: "ingest(auto): notes batch"
+          GIT_USER_NAME: "wiki-auto-curator"
+          GIT_USER_EMAIL: "curator@users.noreply.github.com"
+          VALIDATOR: "python3 scripts/wikilint.py && python3 scripts/wikiindex.py && python3 scripts/logrotate.py && python3 scripts/wikidistill.py --if-stale"
+          INBOX_BATCH_SIZE: "4"
+          SUPERVISOR_BUDGET_SECONDS: "3480"
+          SUPERVISOR_MIN_REMAINING_SECONDS: "1200"
+        run: bash scripts/processnotes-supervisor.sh
+
+      - name: Verify supervisor activity
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$(pwd)"
+          after_sha=$(git rev-parse HEAD)
+          completed=${BATCHES_COMPLETED:-0}
+          reason=${SUPERVISOR_STOP_REASON:-missing}
+          echo "supervisor completed=$completed stop_reason=$reason HEAD=$after_sha"
+          if [ "$completed" -gt 0 ] && [ "$BEFORE_SHA" = "$after_sha" ]; then
+            echo "::error::Supervisor reported $completed batches but HEAD did not advance."
+            exit 1
+          fi
+          curator_commits=$(git log "$BEFORE_SHA..$after_sha" --pretty=%s 2>/dev/null \
+            | grep -c '^ingest(auto): notes batch' || true)
+          if [ "$curator_commits" -lt "$completed" ]; then
+            echo "::error::Expected at least $completed curator commits; found $curator_commits."
+            exit 1
+          fi
+          echo "verified $completed independently committed curator batch(es)"

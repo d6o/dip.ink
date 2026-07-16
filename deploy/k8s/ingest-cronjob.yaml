@@ -1,0 +1,70 @@
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: graphiti-ingest
+  namespace: dipink
+spec:
+  schedule: "*/15 * * * *"
+  concurrencyPolicy: Forbid          # skip a tick if the previous is still running
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 5
+  jobTemplate:
+    spec:
+      backoffLimit: 1                # don't retry a whole tick; next cron will
+      activeDeadlineSeconds: 3300
+      template:
+        spec:
+          restartPolicy: Never
+          initContainers:
+            - name: clone-notes
+              image: alpine/git:2.43.0
+              command: ["sh", "-c"]
+              args:
+                - |
+                  set -e
+                  git clone --depth 1 \
+                    "$(echo "$WIKI_REPO_URL" | sed "s#https://#https://${WIKI_REPO_USER}:${WIKI_REPO_TOKEN}@#")" \
+                    /notes
+                  echo "[init] cloned $(find /notes -name '*.md' | wc -l) md files"
+              env:
+                - {name: GIT_TERMINAL_PROMPT, value: "0"}
+                - name: WIKI_REPO_URL
+                  valueFrom: {secretKeyRef: {name: dipink-secrets, key: WIKI_REPO_URL}}
+                - name: WIKI_REPO_USER
+                  valueFrom: {secretKeyRef: {name: dipink-secrets, key: WIKI_REPO_USER}}
+                - name: WIKI_REPO_TOKEN
+                  valueFrom: {secretKeyRef: {name: dipink-secrets, key: WIKI_REPO_TOKEN}}
+              volumeMounts:
+                - {name: notes, mountPath: /notes}
+          containers:
+            - name: ingest
+              image: ghcr.io/d6o/dip.ink/graphiti:latest
+              env:
+                - {name: INGEST_MODE, value: cron}
+                - {name: BATCH_SIZE, value: "15"}
+                # MUST stay 1 — concurrent same-entity add_episode loses edge
+                # invalidations (graphiti's read-modify-write is non-atomic).
+                - {name: CONCURRENCY, value: "1"}
+                - {name: CIRCUIT_BREAKER_THRESHOLD, value: "3"}
+                - {name: GROUP_ID, value: main}
+                - {name: NOTES_ROOT, value: /notes/wiki/sources/notes}
+                - {name: INBOX_ROOTS, value: /notes/notes}
+                - {name: NEO4J_URI, value: bolt://neo4j:7687}
+                - {name: NEO4J_USER, value: neo4j}
+                - name: NEO4J_PASSWORD
+                  valueFrom: {secretKeyRef: {name: dipink-secrets, key: NEO4J_PASSWORD}}
+                - name: OPENAI_API_KEY
+                  valueFrom: {secretKeyRef: {name: dipink-secrets, key: OPENAI_API_KEY}}
+                - name: LLM_BASE_URL
+                  valueFrom: {secretKeyRef: {name: dipink-secrets, key: LLM_BASE_URL}}
+                - name: LLM_API_KEY
+                  valueFrom: {secretKeyRef: {name: dipink-secrets, key: LLM_API_KEY}}
+                - {name: LLM_MODEL, value: gpt-4.1-mini}
+              volumeMounts:
+                - {name: notes, mountPath: /notes, readOnly: true}
+              resources:
+                requests: {cpu: "500m", memory: 512Mi}
+                limits: {cpu: "1", memory: 1Gi}
+          volumes:
+            - {name: notes, emptyDir: {}}

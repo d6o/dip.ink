@@ -1,0 +1,10 @@
+mcp[cli]>=1.2.0
+numpy>=2.0
+openai>=1.50
+pyyaml>=6.0
+starlette>=0.41
+uvicorn[standard]>=0.32
+# Optional no-API-key embedding fallback (WIKI_MCP_EMBED_PROVIDER=fastembed).
+# The default deployment uses OpenAI text-embedding-3-small; install fastembed
+# only if you want fully-local embeddings:
+# fastembed==0.5.1

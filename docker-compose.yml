@@ -1,0 +1,194 @@
+# dip.ink — the whole memory stack on one docker host.
+#
+#   cp .env.example .env   # fill in keys + your private wiki repo
+#   docker compose up -d --build
+#
+# Services:
+#   neo4j         graph database (Graphiti's backend)
+#   wiki-mcp      semantic search + note-drop MCP  → http://localhost:8081/mcp
+#   graphiti-mcp  knowledge-graph MCP              → http://localhost:8082/mcp
+#   ingest        every 15 min: clone the wiki repo, ingest new notes into the graph
+#   communities   weekly: entity resolution + community rebuild
+#   healthcheck   daily: deep end-to-end pipeline verification
+#   gaps          weekly: mine query logs for memory gaps, file a report note
+#   alerts        every 30 min: dead-man checks (ingest freshness, MCP health)
+#
+# The CURATOR (the agent that promotes inbox notes into wiki pages) runs in CI
+# on the wiki repo itself — see curator/README.md. Everything else is here.
+
+x-graphiti-env: &graphiti-env
+  NEO4J_URI: bolt://neo4j:7687
+  NEO4J_USER: neo4j
+  NEO4J_PASSWORD: ${NEO4J_PASSWORD:?set in .env}
+  OPENAI_API_KEY: ${OPENAI_API_KEY:?set in .env}
+  LLM_BASE_URL: ${LLM_BASE_URL:-}
+  LLM_API_KEY: ${LLM_API_KEY:-}
+  LLM_MODEL: ${LLM_MODEL:-gpt-4.1-mini}
+  GROUP_ID: ${GROUP_ID:-main}
+
+services:
+  neo4j:
+    image: neo4j:5.26.2
+    restart: unless-stopped
+    environment:
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:?set in .env}
+      NEO4J_server_memory_heap_initial__size: ${NEO4J_HEAP:-1G}
+      NEO4J_server_memory_heap_max__size: ${NEO4J_HEAP:-1G}
+      NEO4J_server_memory_pagecache_size: ${NEO4J_PAGECACHE:-512M}
+    volumes:
+      - neo4j-data:/data
+    ports:
+      - "127.0.0.1:7474:7474"   # browser (localhost only)
+      - "127.0.0.1:7687:7687"   # bolt (localhost only)
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:7474"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+
+  wiki-mcp:
+    build: ./wiki-mcp
+    restart: unless-stopped
+    environment:
+      WIKI_REPO_URL: ${WIKI_REPO_URL:?set in .env}
+      WIKI_REPO_TOKEN: ${WIKI_REPO_TOKEN:-}
+      WIKI_REPO_USER: ${WIKI_REPO_USER:-token}
+      WIKI_BRANCH: ${WIKI_BRANCH:-main}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      WIKI_MCP_CACHE_DIR: /var/lib/wiki-mcp/cache
+      WIKI_MCP_ALLOWED_HOSTS: ${WIKI_MCP_ALLOWED_HOSTS:-localhost,127.0.0.1,wiki-mcp}
+      WIKI_GIT_USER_NAME: ${WIKI_GIT_USER_NAME:-wiki-mcp}
+      WIKI_GIT_USER_EMAIL: ${WIKI_GIT_USER_EMAIL:-wiki-mcp@localhost}
+    volumes:
+      - wiki-mcp-data:/var/lib/wiki-mcp
+    ports:
+      - "8081:8080"
+
+  graphiti-mcp:
+    build: ./graphiti
+    restart: unless-stopped
+    command: ["python", "mcp/server.py"]
+    depends_on:
+      neo4j:
+        condition: service_healthy
+    environment:
+      <<: *graphiti-env
+      WIKI_MCP_BASE: http://wiki-mcp:8080
+      GRAPHITI_MCP_CACHE_DIR: /var/lib/graphiti-mcp/cache
+      DISTILL_MODEL: ${DISTILL_MODEL:-${LLM_MODEL:-gpt-4.1-mini}}
+    volumes:
+      - graphiti-mcp-data:/var/lib/graphiti-mcp
+    ports:
+      - "8082:8080"
+
+  ingest:
+    build: ./graphiti
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "-c"]
+    # Clone-fresh + resumable batch every INGEST_INTERVAL seconds. The graph
+    # tracks its own done/pending state, so this loop is idempotent and
+    # crash-safe; a failed tick is retried on the next one.
+    command:
+      - |
+        while true; do
+          rm -rf /notes && \
+          git clone --depth 1 "$(echo "$$WIKI_REPO_URL" | sed "s#https://#https://$$WIKI_REPO_USER:$$WIKI_REPO_TOKEN@#")" /notes \
+            && INGEST_MODE=cron python /app/ingest.py \
+            || echo "[ingest-loop] tick failed; retrying next interval"
+          sleep "$${INGEST_INTERVAL:-900}"
+        done
+    depends_on:
+      neo4j:
+        condition: service_healthy
+    environment:
+      <<: *graphiti-env
+      WIKI_REPO_URL: ${WIKI_REPO_URL}
+      WIKI_REPO_TOKEN: ${WIKI_REPO_TOKEN:-}
+      WIKI_REPO_USER: ${WIKI_REPO_USER:-token}
+      NOTES_ROOT: /notes/wiki/sources/notes
+      INBOX_ROOTS: /notes/notes
+      BATCH_SIZE: ${INGEST_BATCH_SIZE:-15}
+      INGEST_INTERVAL: ${INGEST_INTERVAL:-900}
+
+  communities:
+    build: ./graphiti
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "-c"]
+    # Weekly community rebuild (entity resolution runs first, inside the job).
+    command:
+      - |
+        while true; do
+          sleep "$${COMMUNITIES_INTERVAL:-604800}"
+          PAUSE_INGEST=0 python /app/loops/build_communities.py \
+            || echo "[communities-loop] rebuild failed; retrying next interval"
+        done
+    depends_on:
+      neo4j:
+        condition: service_healthy
+    environment:
+      <<: *graphiti-env
+      MAX_CLUSTER: "200"
+      COMMUNITY_CONC: "4"
+
+  alerts:
+    build: ./graphiti
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        while true; do
+          python /app/loops/memory_alerts.py || echo "[alerts] MEMORY ALERTS FIRING (see above)"
+          sleep "$${ALERTS_INTERVAL:-1800}"
+        done
+    depends_on:
+      neo4j:
+        condition: service_healthy
+    environment:
+      <<: *graphiti-env
+      WIKI_MCP_BASE: http://wiki-mcp:8080
+      GRAPHITI_MCP_BASE: http://graphiti-mcp:8080
+
+  healthcheck:
+    build: ./graphiti
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        while true; do
+          sleep "$${HEALTHCHECK_INTERVAL:-86400}"
+          rm -rf /notes && \
+          git clone --shallow-since="5 days ago" "$(echo "$$WIKI_REPO_URL" | sed "s#https://#https://$$WIKI_REPO_USER:$$WIKI_REPO_TOKEN@#")" /notes \
+            && python /app/loops/memory_healthcheck.py \
+            || echo "[healthcheck] FAILED (see above)"
+        done
+    depends_on:
+      neo4j:
+        condition: service_healthy
+    environment:
+      <<: *graphiti-env
+      WIKI_REPO_URL: ${WIKI_REPO_URL}
+      WIKI_REPO_TOKEN: ${WIKI_REPO_TOKEN:-}
+      WIKI_REPO_USER: ${WIKI_REPO_USER:-token}
+      NOTES_DIR: /notes
+      WIKI_MCP_BASE: http://wiki-mcp:8080
+      GRAPHITI_MCP_BASE: http://graphiti-mcp:8080
+      ANSWER_PROBE: ${ANSWER_PROBE:-what is this memory system's note inbox called}
+
+  gaps:
+    build: ./graphiti
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        while true; do
+          sleep "$${GAPS_INTERVAL:-604800}"
+          python /app/loops/memory_gaps.py || echo "[gaps] weekly report failed"
+        done
+    environment:
+      WIKI_MCP_BASE: http://wiki-mcp:8080
+      GRAPHITI_MCP_BASE: http://graphiti-mcp:8080
+
+volumes:
+  neo4j-data:
+  wiki-mcp-data:
+  graphiti-mcp-data:

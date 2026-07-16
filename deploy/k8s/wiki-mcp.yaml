@@ -1,0 +1,83 @@
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: wiki-mcp-cache
+  namespace: dipink
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: wiki-mcp
+  namespace: dipink
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate   # RWO PVC (embedding cache + clone) -> Recreate
+  selector:
+    matchLabels:
+      app: wiki-mcp
+  template:
+    metadata:
+      labels:
+        app: wiki-mcp
+    spec:
+      containers:
+        - name: wiki-mcp
+          image: ghcr.io/d6o/dip.ink/wiki-mcp:latest
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: WIKI_REPO_URL
+              valueFrom: {secretKeyRef: {name: dipink-secrets, key: WIKI_REPO_URL}}
+            - name: WIKI_REPO_USER
+              valueFrom: {secretKeyRef: {name: dipink-secrets, key: WIKI_REPO_USER}}
+            - name: WIKI_REPO_TOKEN
+              valueFrom: {secretKeyRef: {name: dipink-secrets, key: WIKI_REPO_TOKEN}}
+            - name: OPENAI_API_KEY
+              valueFrom: {secretKeyRef: {name: dipink-secrets, key: OPENAI_API_KEY}}
+            - name: WIKI_MCP_CACHE_DIR
+              value: /var/lib/wiki-mcp/cache
+            - name: WIKI_CLONE_PATH
+              value: /var/lib/wiki-mcp/wiki
+            # Add your ingress hostname here (DNS-rebinding protection).
+            - name: WIKI_MCP_ALLOWED_HOSTS
+              value: "localhost,127.0.0.1,wiki-mcp,wiki-mcp.dipink.svc.cluster.local"
+          volumeMounts:
+            - name: cache
+              mountPath: /var/lib/wiki-mcp
+          resources:
+            requests: {cpu: "100m", memory: 256Mi}
+            limits: {cpu: "1", memory: 1Gi}
+          livenessProbe:
+            httpGet: {path: /live, port: 8080}
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          readinessProbe:
+            httpGet: {path: /health, port: 8080}
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            failureThreshold: 30
+      volumes:
+        - name: cache
+          persistentVolumeClaim:
+            claimName: wiki-mcp-cache
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: wiki-mcp
+  namespace: dipink
+spec:
+  selector:
+    app: wiki-mcp
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080

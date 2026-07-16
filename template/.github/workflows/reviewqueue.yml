@@ -1,0 +1,42 @@
+name: reviewqueue
+
+# Daily pass over wiki/Curator review queue.md: resolves entries that can be
+# settled from already-available evidence; leaves secrets-to-rotate and
+# subjective calls for the operator.
+
+on:
+  schedule:
+    - cron: '23 6 * * *'   # daily 06:23 UTC
+  workflow_dispatch:
+
+concurrency:
+  group: reviewqueue
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    container:
+      image: ghcr.io/d6o/dip.ink/pi-runner:latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run review-queue pass
+        shell: bash
+        env:
+          PROMPT_PATH: .claude/commands/reviewqueue-auto.md
+          PI_PROVIDER: ${{ vars.PI_PROVIDER || 'openai' }}
+          PI_MODEL: ${{ vars.PI_MODEL || 'gpt-4.1-mini' }}
+          PI_THINKING: medium
+          PI_API_KEY: ${{ secrets.PI_API_KEY }}
+          WIKI_REPO_TOKEN: x-access-token:${{ secrets.GITHUB_TOKEN }}
+          COMMIT_MESSAGE: "update(auto): review queue pass"
+          GIT_USER_NAME: "wiki-reviewqueue-bot"
+          GIT_USER_EMAIL: "curator@users.noreply.github.com"
+          VALIDATOR: "python3 scripts/wikilint.py && python3 scripts/wikiindex.py && python3 scripts/logrotate.py && python3 scripts/wikidistill.py --if-stale"
+        run: /opt/pi-runner/entrypoint.sh

@@ -1,0 +1,232 @@
+# Memory feedback loop + hygiene crons.
+#
+#  - build-communities (weekly, Sun 04:00): entity resolution (merge alias
+#    entities) then community rebuild — the "communities" retrieval layer.
+#  - memory-gaps (weekly, Mon 06:00): mines both MCPs' query logs for zero-hit /
+#    low-relevance queries, drops a "memory gaps" note (which graphiti ingests —
+#    the loop closes: the memory knows what it's missing).
+#  - contradiction-janitor (monthly, 1st 05:00, DRY_RUN first): LLM pass over the
+#    densest entities' current facts, invalidating mutually-exclusive older facts.
+#  - memory-alerts (every 30min): dead-man checks — ingest freshness, community
+#    age, MCP health. A Failed job IS the alert.
+#  - memory-healthcheck (daily, 05:30): DEEP end-to-end pipeline test; failures
+#    also drop a note into the wiki inbox so the failure is visible in memory.
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: build-communities
+  namespace: dipink
+spec:
+  schedule: "0 4 * * 0"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 21600
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: build
+              image: ghcr.io/d6o/dip.ink/graphiti:latest
+              command: ["python", "/app/loops/build_communities.py"]
+              env:
+                - {name: MAX_CLUSTER, value: "200"}
+                - {name: COMMUNITY_CONC, value: "4"}
+                - {name: PAUSE_INGEST, value: "0"}
+                - {name: GROUP_ID, value: main}
+                - {name: NEO4J_URI, value: bolt://neo4j:7687}
+                - {name: NEO4J_USER, value: neo4j}
+                - name: NEO4J_PASSWORD
+                  valueFrom: {secretKeyRef: {name: dipink-secrets, key: NEO4J_PASSWORD}}
+                - name: OPENAI_API_KEY
+                  valueFrom: {secretKeyRef: {name: dipink-secrets, key: OPENAI_API_KEY}}
+                - name: LLM_BASE_URL
+                  valueFrom: {secretKeyRef: {name: dipink-secrets, key: LLM_BASE_URL}}
+                - name: LLM_API_KEY
+                  valueFrom: {secretKeyRef: {name: dipink-secrets, key: LLM_API_KEY}}
+                - {name: LLM_MODEL, value: gpt-4.1-mini}
+              resources:
+                requests: {cpu: "500m", memory: 512Mi}
+                limits: {cpu: "1", memory: 1Gi}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: memory-gaps
+  namespace: dipink
+spec:
+  schedule: "0 6 * * 1"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 600
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: gaps
+              image: ghcr.io/d6o/dip.ink/graphiti:latest
+              command: ["python", "/app/loops/memory_gaps.py"]
+              env:
+                - {name: WIKI_MCP_BASE, value: "http://wiki-mcp.dipink.svc.cluster.local"}
+                - {name: GRAPHITI_MCP_BASE, value: "http://graphiti-mcp.dipink.svc.cluster.local"}
+                - {name: DAYS, value: "7"}
+              resources:
+                requests: {cpu: "100m", memory: 128Mi}
+                limits: {cpu: "500m", memory: 256Mi}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: contradiction-janitor
+  namespace: dipink
+spec:
+  schedule: "0 5 1 * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 3600
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: janitor
+              image: ghcr.io/d6o/dip.ink/graphiti:latest
+              command: ["python", "/app/loops/contradiction_janitor.py"]
+              env:
+                - {name: TOP_N, value: "50"}
+                - {name: DRY_RUN, value: "1"}    # report-only first; flip to 0 after reviewing output
+                - {name: NEO4J_URI, value: bolt://neo4j:7687}
+                - {name: NEO4J_USER, value: neo4j}
+                - name: NEO4J_PASSWORD
+                  valueFrom: {secretKeyRef: {name: dipink-secrets, key: NEO4J_PASSWORD}}
+                - name: OPENAI_API_KEY
+                  valueFrom: {secretKeyRef: {name: dipink-secrets, key: OPENAI_API_KEY}}
+                - name: LLM_BASE_URL
+                  valueFrom: {secretKeyRef: {name: dipink-secrets, key: LLM_BASE_URL}}
+                - name: LLM_API_KEY
+                  valueFrom: {secretKeyRef: {name: dipink-secrets, key: LLM_API_KEY}}
+                - {name: LLM_MODEL, value: gpt-4.1-mini}
+              resources:
+                requests: {cpu: "200m", memory: 256Mi}
+                limits: {cpu: "1", memory: 512Mi}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: memory-alerts
+  namespace: dipink
+spec:
+  schedule: "*/30 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0              # a failed check IS the alert
+      activeDeadlineSeconds: 300
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: alerts
+              image: ghcr.io/d6o/dip.ink/graphiti:latest
+              command: ["python", "/app/loops/memory_alerts.py"]
+              env:
+                - {name: WIKI_MCP_BASE, value: "http://wiki-mcp.dipink.svc.cluster.local"}
+                - {name: GRAPHITI_MCP_BASE, value: "http://graphiti-mcp.dipink.svc.cluster.local"}
+                - {name: MAX_PENDING_AGE_HOURS, value: "2"}
+                - {name: MAX_COMMUNITY_AGE_DAYS, value: "8"}
+                - {name: NEO4J_URI, value: bolt://neo4j:7687}
+                - {name: NEO4J_USER, value: neo4j}
+                - name: NEO4J_PASSWORD
+                  valueFrom: {secretKeyRef: {name: dipink-secrets, key: NEO4J_PASSWORD}}
+                - name: OPENAI_API_KEY
+                  valueFrom: {secretKeyRef: {name: dipink-secrets, key: OPENAI_API_KEY}}
+                - name: LLM_BASE_URL
+                  valueFrom: {secretKeyRef: {name: dipink-secrets, key: LLM_BASE_URL}}
+                - name: LLM_API_KEY
+                  valueFrom: {secretKeyRef: {name: dipink-secrets, key: LLM_API_KEY}}
+              resources:
+                requests: {cpu: "100m", memory: 256Mi}
+                limits: {cpu: "500m", memory: 512Mi}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: memory-healthcheck
+  namespace: dipink
+spec:
+  schedule: "30 5 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 5
+  jobTemplate:
+    spec:
+      backoffLimit: 0              # a failed run IS the alert
+      activeDeadlineSeconds: 900
+      template:
+        spec:
+          restartPolicy: Never
+          initContainers:
+            - name: clone-notes
+              image: alpine/git:2.43.0
+              command: ["sh", "-c"]
+              args:
+                - |
+                  set -e
+                  # --shallow-since (not --depth 1): the curation-liveness check
+                  # needs a few days of git history on wiki/sources/notes.
+                  git clone --shallow-since="5 days ago" \
+                    "$(echo "$WIKI_REPO_URL" | sed "s#https://#https://${WIKI_REPO_USER}:${WIKI_REPO_TOKEN}@#")" \
+                    /notes
+              env:
+                - {name: GIT_TERMINAL_PROMPT, value: "0"}
+                - name: WIKI_REPO_URL
+                  valueFrom: {secretKeyRef: {name: dipink-secrets, key: WIKI_REPO_URL}}
+                - name: WIKI_REPO_USER
+                  valueFrom: {secretKeyRef: {name: dipink-secrets, key: WIKI_REPO_USER}}
+                - name: WIKI_REPO_TOKEN
+                  valueFrom: {secretKeyRef: {name: dipink-secrets, key: WIKI_REPO_TOKEN}}
+              volumeMounts:
+                - {name: notes, mountPath: /notes}
+          containers:
+            - name: healthcheck
+              image: ghcr.io/d6o/dip.ink/graphiti:latest
+              command: ["python", "/app/loops/memory_healthcheck.py"]
+              env:
+                - {name: NOTES_DIR, value: /notes}
+                # Agent-facing URLs first (set to your ingress hostnames);
+                # internal fallbacks let the check say WHICH layer broke.
+                - {name: WIKI_MCP_BASE, value: "http://wiki-mcp.dipink.svc.cluster.local"}
+                - {name: GRAPHITI_MCP_BASE, value: "http://graphiti-mcp.dipink.svc.cluster.local"}
+                - {name: WIKI_MCP_INTERNAL, value: "http://wiki-mcp.dipink.svc.cluster.local"}
+                - {name: GRAPHITI_MCP_INTERNAL, value: "http://graphiti-mcp.dipink.svc.cluster.local"}
+                - {name: NEO4J_URI, value: bolt://neo4j:7687}
+                - {name: NEO4J_USER, value: neo4j}
+                - name: NEO4J_PASSWORD
+                  valueFrom: {secretKeyRef: {name: dipink-secrets, key: NEO4J_PASSWORD}}
+                - name: OPENAI_API_KEY
+                  valueFrom: {secretKeyRef: {name: dipink-secrets, key: OPENAI_API_KEY}}
+                - name: LLM_BASE_URL
+                  valueFrom: {secretKeyRef: {name: dipink-secrets, key: LLM_BASE_URL}}
+                - name: LLM_API_KEY
+                  valueFrom: {secretKeyRef: {name: dipink-secrets, key: LLM_API_KEY}}
+                - {name: LLM_MODEL, value: gpt-4.1-mini}
+              volumeMounts:
+                - {name: notes, mountPath: /notes, readOnly: true}
+              resources:
+                requests: {cpu: "200m", memory: 384Mi}
+                limits: {cpu: "1", memory: 768Mi}
+          volumes:
+            - {name: notes, emptyDir: {}}

@@ -1,0 +1,78 @@
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: graphiti-mcp-cache
+  namespace: dipink
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: graphiti-mcp
+  namespace: dipink
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate   # RWO PVC (metrics log) -> Recreate
+  selector:
+    matchLabels:
+      app: graphiti-mcp
+  template:
+    metadata:
+      labels:
+        app: graphiti-mcp
+    spec:
+      containers:
+        - name: graphiti-mcp
+          image: ghcr.io/d6o/dip.ink/graphiti:latest
+          command: ["python", "/app/mcp/server.py"]
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - {name: GRAPHITI_MCP_CACHE_DIR, value: /var/lib/graphiti-mcp/cache}
+            - {name: WIKI_MCP_BASE, value: "http://wiki-mcp.dipink.svc.cluster.local"}
+            - {name: NEO4J_URI, value: bolt://neo4j:7687}
+            - {name: NEO4J_USER, value: neo4j}
+            - name: NEO4J_PASSWORD
+              valueFrom: {secretKeyRef: {name: dipink-secrets, key: NEO4J_PASSWORD}}
+            - name: OPENAI_API_KEY
+              valueFrom: {secretKeyRef: {name: dipink-secrets, key: OPENAI_API_KEY}}
+            - name: LLM_BASE_URL
+              valueFrom: {secretKeyRef: {name: dipink-secrets, key: LLM_BASE_URL}}
+            - name: LLM_API_KEY
+              valueFrom: {secretKeyRef: {name: dipink-secrets, key: LLM_API_KEY}}
+            - {name: LLM_MODEL, value: gpt-4.1-mini}
+            - {name: GROUP_ID, value: main}
+          volumeMounts:
+            - name: cache
+              mountPath: /var/lib/graphiti-mcp
+          resources:
+            requests: {cpu: "100m", memory: 384Mi}
+            limits: {cpu: "1", memory: 1Gi}
+          readinessProbe:
+            httpGet: {path: /health, port: 8080}
+            initialDelaySeconds: 10
+            periodSeconds: 10
+      volumes:
+        - name: cache
+          persistentVolumeClaim:
+            claimName: graphiti-mcp-cache
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: graphiti-mcp
+  namespace: dipink
+spec:
+  selector:
+    app: graphiti-mcp
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
