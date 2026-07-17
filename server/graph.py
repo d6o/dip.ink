@@ -38,6 +38,7 @@ from starlette.routing import Route
 
 # Reuse the ingest client wiring (Graphiti extraction LLM, OpenAI embedder,
 # the roomy Neo4j pool, patch_community_clustering).
+from chat_fallback import OrderedModelFallback, is_recoverable_provider_error, parse_model_ladder
 from ingest import build_graphiti
 from graphiti_core.search.search_config_recipes import COMBINED_HYBRID_SEARCH_RRF
 
@@ -51,16 +52,20 @@ FUSION = os.environ.get("GRAPH_FUSION", "1").lower() in ("1", "true", "yes")
 
 # Distiller (graph_answer): plain chat completion against any OpenAI-compatible
 # endpoint — NOT the graphiti llm_client (its retry/schema wrappers hide
-# latency). Defaults to the same endpoint/model as extraction (LLM_* envs);
+# latency). Defaults to the same endpoint/models as extraction (LLM_* envs);
 # leave DISTILL_BASE_URL unset with no LLM_BASE_URL to use OpenAI directly.
+# DISTILL_MODEL_LADDER overrides the extraction ladder for distillation.
 DISTILL_BASE_URL = (os.environ.get("DISTILL_BASE_URL") or os.environ.get("LLM_BASE_URL")
                     or "https://api.openai.com/v1")
 DISTILL_API_KEY = (os.environ.get("DISTILL_API_KEY") or os.environ.get("LLM_API_KEY")
                    or os.environ.get("OPENAI_API_KEY", ""))
-DISTILL_MODEL = os.environ.get("DISTILL_MODEL") or os.environ.get("LLM_MODEL") or "gpt-4.1-mini"
-# Optional fallback model when the primary rate-limits (429-storm = quota
-# window blew): degrading beats erroring for a window. Empty = no fallback.
-DISTILL_FALLBACK_MODEL = os.environ.get("DISTILL_FALLBACK_MODEL", "")
+DISTILL_MODEL_LADDER = parse_model_ladder(
+    os.environ.get("DISTILL_MODEL_LADDER")
+    or os.environ.get("DISTILL_MODEL")
+    or os.environ.get("LLM_MODEL_LADDER")
+    or os.environ.get("LLM_MODEL")
+    or "gpt-4.1-mini"
+)
 
 # Answer cache: factual questions repeat (same question 3× in 90 min on day
 # one) and the graph only changes on ingest ticks, so a short TTL is safe.
@@ -267,44 +272,48 @@ You will get a QUESTION and a RETRIEVAL PACKET (JSON with facts, communities, en
 Reply with ONLY a JSON object:
 {"answer": "..." | null, "confidence": "high|medium|low|not_found", "sources": ["slug", ...], "superseded_note": "..." (omit if none), "escalate": true|false}"""
 
-_TRANSIENT_MARKERS = ("connection", "timeout", "timed out", "429", "rate limit", "ratelimit", "overloaded", "502", "503")
-
-
 async def _distill(question: str, packet_json: str) -> dict | None:
-    """One LLM call to distill the packet. Returns parsed dict or None on
-    failure (caller degrades gracefully — never a 500)."""
+    """Distill through the ordered model ladder; never raise to the caller
+    (it degrades gracefully — never a 500)."""
     client = _get_distill_client()
+    ladder = OrderedModelFallback(
+        DISTILL_MODEL_LADDER,
+        context="graph-answer-distill",
+        logger=log,
+        sticky=False,
+    )
+    messages = [
+        {"role": "system", "content": _DISTILL_SYSTEM},
+        {"role": "user", "content": f"QUESTION: {question}\n\nRETRIEVAL PACKET (JSON):\n{packet_json}\n\nReply with ONLY the JSON object."},
+    ]
     last: Exception | None = None
-    model = DISTILL_MODEL
+
+    async def call(model: str):
+        return await client.chat.completions.create(
+            model=model,
+            temperature=0,
+            max_tokens=400,
+            messages=messages,
+        )
+
     for attempt in range(3):
         try:
-            resp = await client.chat.completions.create(
-                model=model,
-                temperature=0,
-                max_tokens=400,
-                messages=[
-                    {"role": "system", "content": _DISTILL_SYSTEM},
-                    {"role": "user", "content": f"QUESTION: {question}\n\nRETRIEVAL PACKET (JSON):\n{packet_json}\n\nReply with ONLY the JSON object."},
-                ],
-            )
-            content = (resp.choices[0].message.content or "") if resp.choices else ""
+            response = await ladder.run(call)
+            content = (response.choices[0].message.content or "") if response.choices else ""
             parsed = _extract_json(content)
             if isinstance(parsed, dict) and "confidence" in parsed:
                 return parsed
-            last = ValueError(f"unparseable distiller output: {content[:200]!r}")
-        except Exception as e:  # noqa: BLE001
-            last = e
-            msg = f"{type(e).__name__} {e}".lower()
-            rate_limited = any(t in msg for t in ("429", "rate limit", "ratelimit", "quota"))
-            if rate_limited and DISTILL_FALLBACK_MODEL and model != DISTILL_FALLBACK_MODEL:
-                # Primary model's quota window blew — switch to the fallback
-                # model instead of hammering or erroring out.
-                log.warning("distiller: %s rate-limited, falling back to %s", model, DISTILL_FALLBACK_MODEL)
-                model = DISTILL_FALLBACK_MODEL
-            elif not any(t in msg for t in _TRANSIENT_MARKERS):
-                break  # non-transient — don't hammer
-        await asyncio.sleep(min(2 ** attempt, 8))
-    log.warning("distiller failed: %r", last)
+            # Malformed model output retries the ladder, but is not itself a
+            # provider failure that skips to another model.
+            last = ValueError("unparseable distiller output")
+        except Exception as error:  # noqa: BLE001
+            last = error
+            if not is_recoverable_provider_error(error):
+                break
+        if attempt < 2:
+            await asyncio.sleep(min(2 ** attempt, 8))
+
+    log.warning("distiller failed error=%s", type(last).__name__ if last else "unknown")
     return None
 
 

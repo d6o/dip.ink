@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import re
 import sys
@@ -27,6 +28,8 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
+from chat_fallback import OrderedModelFallback, parse_model_ladder
+
 from graphiti_core import Graphiti
 from graphiti_core.llm_client import LLMConfig
 from graphiti_core.llm_client.client import get_extraction_language_instruction
@@ -34,7 +37,10 @@ from graphiti_core.llm_client.client import get_extraction_language_instruction
 # (only OpenAIClient is), so import it from its module directly.
 from graphiti_core.llm_client.openai_generic_client import OpenAIGenericClient
 from graphiti_core.llm_client.config import DEFAULT_MAX_TOKENS, ModelSize
+from graphiti_core.llm_client.errors import EmptyResponseError, RateLimitError
 from graphiti_core.nodes import EpisodeType
+
+log = logging.getLogger("dipink-ingest")
 
 
 def patch_community_clustering() -> None:
@@ -204,8 +210,8 @@ def _example_shape(node, defs):
 
 
 class CompactSchemaClient(OpenAIGenericClient):
-    """OpenAIGenericClient with two robustness fixes for non-OpenAI models
-    (developed against GLM via LiteLLM; harmless for models that don't need them):
+    """OpenAIGenericClient with robustness fixes for non-OpenAI models, plus an
+    ordered model-fallback ladder:
 
     1. **Compact example shape instead of the verbose JSON Schema.** graphiti's
        ``json_object`` mode injects ``model_json_schema()`` (with
@@ -217,10 +223,24 @@ class CompactSchemaClient(OpenAIGenericClient):
     2. A defensive ``{"answer": ...}`` envelope unwrap — the residual wrapper
        some models occasionally add around the requested object.
 
+    3. **Ordered model fallback** (LLM_MODEL_LADDER): when the active model
+       rate-limits or the provider errors, the next model in the ladder is
+       tried; with sticky=True this process keeps starting from the model that
+       last worked, so a blown quota window doesn't re-fail every prompt.
+
     Note: if your model does extended thinking by default, disable it at the
     proxy/model level (thinking eats max_tokens as reasoning text so the JSON
     never lands).
     """
+
+    def __init__(self, *args, model_ladder=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.model_ladder = OrderedModelFallback(
+            model_ladder or LLM_MODEL_LADDER,
+            context="graph-extraction",
+            logger=log,
+            sticky=True,
+        )
 
     async def generate_response(
         self,
@@ -274,7 +294,33 @@ class CompactSchemaClient(OpenAIGenericClient):
         max_tokens: int = DEFAULT_MAX_TOKENS,
         model_size: ModelSize = ModelSize.medium,
     ):
-        result = await super()._generate_response(messages, response_model, max_tokens, model_size)
+        openai_messages = []
+        for message in messages:
+            message.content = self._clean_input(message.content)
+            if message.role in ("user", "system"):
+                openai_messages.append({"role": message.role, "content": message.content})
+
+        async def call(model: str):
+            response = await self.client.chat.completions.create(
+                model=model,
+                messages=openai_messages,
+                temperature=self.temperature,
+                max_tokens=max_tokens,
+                response_format=self._build_response_format(response_model),
+            )
+            text = response.choices[0].message.content or ""
+            if not text:
+                raise EmptyResponseError("LLM returned an empty response")
+            return json.loads(self._strip_code_fences(text))
+
+        try:
+            result = await self.model_ladder.run(call)
+        except Exception as error:
+            # Preserve graphiti-core's retry behavior after the ladder exhausts.
+            if "429" in str(error) or type(error).__name__ == "RateLimitError":
+                raise RateLimitError from error
+            raise
+
         # Defensive: peel a residual {"answer": {...}} envelope (bounded).
         for _ in range(3):
             if isinstance(result, dict) and len(result) == 1 and "answer" in result:
@@ -296,10 +342,15 @@ NEO4J_PASSWORD = os.environ["NEO4J_PASSWORD"]
 
 # Extraction LLM: any OpenAI-compatible chat endpoint. Leave LLM_BASE_URL
 # unset to use OpenAI directly (OPENAI_API_KEY + LLM_MODEL, e.g. gpt-4.1-mini);
-# point it at a LiteLLM/other proxy to use a different model for extraction.
+# point it at a LiteLLM/CLIProxy/other proxy to use different models.
+# LLM_MODEL_LADDER (comma-separated) enables ordered fallback across models on
+# the same endpoint; it defaults to just LLM_MODEL.
 LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "").strip()
 LLM_API_KEY = os.environ.get("LLM_API_KEY") or os.environ.get("OPENAI_API_KEY", "")
-LLM_MODEL = os.environ.get("LLM_MODEL") or "gpt-4.1-mini"
+LLM_MODEL_LADDER = parse_model_ladder(
+    os.environ.get("LLM_MODEL_LADDER") or os.environ.get("LLM_MODEL") or "gpt-4.1-mini"
+)
+LLM_MODEL = LLM_MODEL_LADDER[0]
 
 NOTES_ROOT = Path(os.environ.get("NOTES_ROOT", "/notes/wiki/sources/notes"))
 # Also ingest UN-curated inbox notes. Graphiti doesn't need the curation step —
