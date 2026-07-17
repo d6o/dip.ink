@@ -21,6 +21,7 @@ changed content. POST /reindex triggers an immediate refresh.
 from __future__ import annotations
 
 import base64
+import functools
 import hashlib
 import os
 import re
@@ -28,6 +29,8 @@ import shutil
 import subprocess
 import threading
 import time
+
+import anyio.to_thread
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -124,6 +127,21 @@ def _auth_header_value() -> str:
 _EXTRAHEADER_KEY = _extraheader_key()
 
 
+def _clear_stale_git_locks() -> None:
+    """Remove leftover git lock files (e.g. .git/index.lock after the container
+    was killed mid-commit). Only safe because every caller holds _repo_lock and
+    nothing else runs git against this clone."""
+    git_dir = WIKI_CLONE_PATH / ".git"
+    if not git_dir.is_dir():
+        return
+    for lock in git_dir.rglob("*.lock"):
+        try:
+            lock.unlink()
+            log.warning("removed stale git lock %s", lock)
+        except FileNotFoundError:
+            pass
+
+
 def _clone_or_pull_wiki() -> Path | None:
     """If WIKI_REPO_URL is set, ensure a writable clone exists at WIKI_CLONE_PATH
     (clone on first run, fetch+reset on subsequent runs) and return the path.
@@ -145,6 +163,7 @@ def _clone_or_pull_wiki() -> Path | None:
     git_dir = WIKI_CLONE_PATH / ".git"
     if git_dir.exists():
         log.info("refreshing existing clone at %s (branch=%s)", WIKI_CLONE_PATH, WIKI_BRANCH)
+        _clear_stale_git_locks()
         try:
             _run_git("fetch", "origin", cwd=WIKI_CLONE_PATH)
             _run_git("reset", "--hard", f"origin/{WIKI_BRANCH}", cwd=WIKI_CLONE_PATH)
@@ -174,19 +193,6 @@ def _clone_or_pull_wiki() -> Path | None:
         _run_git("config", "--unset-all", _EXTRAHEADER_KEY, cwd=WIKI_CLONE_PATH, check=False)
         log.warning("WIKI_REPO_TOKEN not set; wiki_note_drop will return write-disabled errors")
     return WIKI_CLONE_PATH
-
-
-def _git_pull() -> None:
-    """Fetch + hard-reset to origin. No-op when WIKI_REPO_URL is unset.
-    Tolerant of transient network failures — logs and continues.
-    Caller is responsible for holding _repo_lock if serialization matters."""
-    if not WIKI_REPO_URL:
-        return
-    try:
-        _run_git("fetch", "origin", cwd=WIKI_ROOT)
-        _run_git("reset", "--hard", f"origin/{WIKI_BRANCH}", cwd=WIKI_ROOT)
-    except Exception as e:
-        log.warning("git_pull skipped: %s", e)
 
 
 # Never clone or index during module import: HTTP must bind even when git or the
@@ -947,14 +953,10 @@ idx = Index(WIKI_ROOT, embedder, cache_dir=CACHE_DIR)
 log.info("index bootstrap deferred to supervised background thread")
 
 
-@mcp.tool()
-def wiki_search(query: str, k: int = 5) -> list[dict]:
-    """Search the operator's wiki for pages relevant to `query`. Returns up to k pages
-    with name, score (higher = more relevant), search_mode, type, status, tags,
-    and a one-line description. Normal mode is semantic cosine search; provider
-    outages use explicit lexical-degraded search over the cached baseline. Use this
-    before answering questions about the operator's deploys, services, decisions,
-    conventions, or past learnings."""
+def _wiki_search_impl(query: str, k: int) -> list[dict]:
+    """Blocking implementation of wiki_search. Runs in a worker thread because
+    embedding the query is a network round-trip that must not stall the event
+    loop (and with it the liveness probe)."""
     kk = max(1, min(int(k), 25))
     results = idx.search(query, kk)
     _record_query({
@@ -963,6 +965,17 @@ def wiki_search(query: str, k: int = 5) -> list[dict]:
         "top": [{"name": r["name"], "score": round(r["score"], 4)} for r in results[:3]],
     })
     return results
+
+
+@mcp.tool()
+async def wiki_search(query: str, k: int = 5) -> list[dict]:
+    """Search the operator's wiki for pages relevant to `query`. Returns up to k pages
+    with name, score (higher = more relevant), search_mode, type, status, tags,
+    and a one-line description. Normal mode is semantic cosine search; provider
+    outages use explicit lexical-degraded search over the cached baseline. Use this
+    before answering questions about the operator's deploys, services, decisions,
+    conventions, or past learnings."""
+    return await anyio.to_thread.run_sync(functools.partial(_wiki_search_impl, query, k))
 
 
 @mcp.tool()
@@ -991,43 +1004,15 @@ def wiki_backlinks(name: str) -> list[str] | None:
     return bl
 
 
-@mcp.tool()
-def wiki_note_drop(
+def _wiki_note_drop_impl(
     slug: str,
     note_md: str,
     attachments: dict[str, str] | None = None,
     binary_attachments: dict[str, str] | None = None,
 ) -> dict:
-    """Drop a note into the wiki's inbox so the next curation pass can promote it
-    into wiki pages. Use this whenever you learn something non-obvious that a
-    future session would want to look up — the server creates the folder,
-    commits, and pushes to the wiki repo on your behalf.
-
-    The folder is created at `notes/<YYYY-MM-DD-HHMMSS-slug>/` (UTC timestamp from
-    the server) and contains `<YYYY-MM-DD-HHMMSS-slug>.md` plus any attachments
-    you pass. The curator later moves that folder to
-    `wiki/sources/notes/YYYY/MM/DD/<YYYY-MM-DD-HHMMSS-slug>/` so the source note
-    is directly wikilinkable.
-
-    Args:
-        slug: short kebab-case slug, e.g. "claude-mac-cleanup". Must match
-            `^[a-z0-9][a-z0-9-]{0,63}$`.
-        note_md: full source-note markdown body. Should include YAML frontmatter
-            with `captured: <ISO 8601 datetime>`, `session: <one-line context>`,
-            and `topic: <1-5 word topic>`. `wiki_note_drop` wraps that capture
-            metadata in wiki-compatible source-page frontmatter when needed.
-        attachments: optional text attachments as {filename: content}. Use for
-            `.log`, `.txt`, `.yaml`, `.json`, `.conf`, etc. Each ≤ 256 KB.
-        binary_attachments: optional binary attachments as {filename: base64-content}.
-            Use for screenshots, PDFs, etc. Each ≤ 2 MB decoded.
-
-    Returns a dict with `ok: true|false`. On success: `folder`, `commit`, `url`.
-    On failure: `error` with a brief reason.
-
-    NEVER include credentials, tokens, or passwords in note bodies — notes are
-    git-tracked. Reference your secret manager's path instead (e.g. "token in
-    the vault at /services/foo/API_TOKEN").
-    """
+    """Blocking implementation of wiki_note_drop. Runs in a worker thread —
+    never on the event loop — because git subprocess calls can stall long
+    enough to starve the liveness probe and get the pod killed."""
     if not WIKI_REPO_URL:
         return {"ok": False, "error": "wiki_note_drop disabled: WIKI_REPO_URL not set on the server"}
     if not WIKI_REPO_TOKEN:
@@ -1086,6 +1071,11 @@ def wiki_note_drop(
 
     # --- Single-flight: serialize git ops on the working tree ---
     with _repo_lock:
+        # A previous call (or a container kill mid-commit) may have left a
+        # stale .git/*.lock behind; nothing else runs git while we hold
+        # _repo_lock, so any lock file present now is guaranteed stale.
+        _clear_stale_git_locks()
+
         existing = find_existing_note_drop(slug, capture_hash)
         if existing:
             log.info(
@@ -1164,6 +1154,48 @@ def wiki_note_drop(
             slug, folder_name, sha[:12], time.monotonic() - started,
         )
         return note_drop_result(folder_name, sha)
+
+
+@mcp.tool()
+async def wiki_note_drop(
+    slug: str,
+    note_md: str,
+    attachments: dict[str, str] | None = None,
+    binary_attachments: dict[str, str] | None = None,
+) -> dict:
+    """Drop a note into the wiki's inbox so the next curation pass can promote it
+    into wiki pages. Use this whenever you learn something non-obvious that a
+    future session would want to look up — the server creates the folder,
+    commits, and pushes to the wiki repo on your behalf.
+
+    The folder is created at `notes/<YYYY-MM-DD-HHMMSS-slug>/` (UTC timestamp from
+    the server) and contains `<YYYY-MM-DD-HHMMSS-slug>.md` plus any attachments
+    you pass. The curator later moves that folder to
+    `wiki/sources/notes/YYYY/MM/DD/<YYYY-MM-DD-HHMMSS-slug>/` so the source note
+    is directly wikilinkable.
+
+    Args:
+        slug: short kebab-case slug, e.g. "claude-mac-cleanup". Must match
+            `^[a-z0-9][a-z0-9-]{0,63}$`.
+        note_md: full source-note markdown body. Should include YAML frontmatter
+            with `captured: <ISO 8601 datetime>`, `session: <one-line context>`,
+            and `topic: <1-5 word topic>`. `wiki_note_drop` wraps that capture
+            metadata in wiki-compatible source-page frontmatter when needed.
+        attachments: optional text attachments as {filename: content}. Use for
+            `.log`, `.txt`, `.yaml`, `.json`, `.conf`, etc. Each ≤ 256 KB.
+        binary_attachments: optional binary attachments as {filename: base64-content}.
+            Use for screenshots, PDFs, etc. Each ≤ 2 MB decoded.
+
+    Returns a dict with `ok: true|false`. On success: `folder`, `commit`, `url`.
+    On failure: `error` with a brief reason.
+
+    NEVER include credentials, tokens, or passwords in note bodies — notes are
+    git-tracked. Reference your secret manager's path instead (e.g. "token in
+    the vault at /services/foo/API_TOKEN").
+    """
+    return await anyio.to_thread.run_sync(
+        functools.partial(_wiki_note_drop_impl, slug, note_md, attachments, binary_attachments)
+    )
 
 
 # --- Plain HTTP routes (for non-MCP clients) ---

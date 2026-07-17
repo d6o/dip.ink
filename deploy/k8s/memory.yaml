@@ -69,10 +69,16 @@ spec:
             httpGet: {path: /live, port: 8080}
             initialDelaySeconds: 10
             periodSeconds: 15
+            # Tolerate transient event-loop stalls: with the default 1s timeout
+            # and 3 failures, a ~45s stall gets the pod killed (seen 2026-07-17
+            # when a git op ran on the event loop). Kill only after ~90s.
+            timeoutSeconds: 5
+            failureThreshold: 6
           readinessProbe:
             httpGet: {path: /health, port: 8080}
             initialDelaySeconds: 15
             periodSeconds: 10
+            timeoutSeconds: 5
             failureThreshold: 30
       volumes:
         - name: data

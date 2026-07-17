@@ -2,6 +2,7 @@
 # process, plus the ingest job and the memory loops (same image).
 graphiti-core==0.29.2
 # graphiti-core pulls neo4j>=5.26, openai, tenacity, pydantic, python-dotenv, posthog.
+anyio>=4.0
 mcp[cli]>=1.2.0
 numpy>=2.0
 pyyaml>=6.0
