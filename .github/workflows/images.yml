@@ -3,16 +3,20 @@ name: images
 # Builds and publishes the two container images to GHCR:
 #   ghcr.io/<owner>/dip.ink/memory     (the MCP server + ingest + loops)
 #   ghcr.io/<owner>/dip.ink/pi-runner  (the curator agent runner)
-# Users of the docker-compose path build locally instead; these images are for
-# the k8s path and the curator CI workflows in template/.github/workflows/.
+#
+# Main publishes a moving `main` development tag plus an immutable full-git-SHA
+# tag. A `v*` release tag publishes that exact tag, its normalized SemVer tag,
+# and the same immutable full-git-SHA tag. The workflow deliberately does not
+# publish `latest`; public manifests pin v0.1.0 (or an immutable SHA) and move
+# only through an explicit release.
+#
+# Path filters are intentionally omitted so a pure-docs release commit can still
+# publish the immutable semver tags the public manifests consume.
 
 on:
   push:
     branches: [main]
-    paths:
-      - 'server/**'
-      - 'curator/pi-runner/**'
-      - '.github/workflows/images.yml'
+    tags: ['v*']
   workflow_dispatch:
 
 permissions:
@@ -23,6 +27,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         include:
           - name: memory
@@ -37,12 +42,24 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/build-push-action@v6
+      - name: Derive immutable and release image tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}/${{ matrix.name }}
+          flavor: |
+            latest=false
+          tags: |
+            type=raw,value=main,enable=${{ github.ref == 'refs/heads/main' }}
+            type=ref,event=tag
+            type=semver,pattern={{version}}
+            type=sha,format=long,prefix=
+      - name: Build and publish ${{ matrix.name }}
+        uses: docker/build-push-action@v6
         with:
           context: ${{ matrix.context }}
           push: true
-          tags: |
-            ghcr.io/${{ github.repository }}/${{ matrix.name }}:latest
-            ghcr.io/${{ github.repository }}/${{ matrix.name }}:${{ github.sha }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=${{ matrix.name }}
           cache-to: type=gha,scope=${{ matrix.name }},mode=max
