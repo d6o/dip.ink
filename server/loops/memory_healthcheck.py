@@ -262,6 +262,9 @@ async def check_ingestion(inbox, deferred, curated) -> None:
         slugs = [s for s, _ in recent]
         rows, _, _ = await g.driver.execute_query(
             "MATCH (e:Episodic {group_id: $group_id}) WHERE e.name IN $slugs "
+            "OPTIONAL MATCH (e)-[m:MENTIONS]->(:Entity {group_id: $group_id}) "
+            "WITH e, count(m) AS mention_count "
+            "WHERE e.dipink_ingest_complete = true OR mention_count > 0 "
             "RETURN e.name AS name",
             slugs=slugs,
             group_id=DEFAULT_GROUP_ID,

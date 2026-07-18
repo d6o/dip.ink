@@ -112,6 +112,20 @@ class Neo4jLifecycleIntegrationTests(unittest.TestCase):
                     finally:
                         ingest.NOTES_ROOT, ingest.INBOX_ROOTS = old_root, old_inbox
 
+                verify = ingest.build_graphiti_on_group(group_id)
+                rows, _, _ = await verify.driver.execute_query(
+                    "MATCH (e:Episodic {name: $slug, group_id: $group_id}) "
+                    "RETURN e.dipink_ingest_complete AS complete, "
+                    "e.dipink_content_hash AS content_hash, "
+                    "e.dipink_completed_at AS completed_at",
+                    slug=slug,
+                    group_id=group_id,
+                )
+                self.assertTrue(rows[0]["complete"])
+                self.assertEqual(rows[0]["content_hash"], ingest.episode_content_hash("fixture"))
+                self.assertIsNotNone(rows[0]["completed_at"])
+                await verify.close()
+
                 cleanup = ingest.build_graphiti_on_group(group_id)
                 await cleanup.driver.execute_query(
                     "MATCH (n) WHERE n.group_id = $group_id DETACH DELETE n",

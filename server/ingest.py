@@ -18,11 +18,13 @@ Usage:
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
 import re
 import sys
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -535,6 +537,9 @@ def discover_notes() -> list[tuple[datetime, str, Path]]:
         if not root.exists():
             continue
         for md in root.rglob("*.md"):
+            # Quarantined notes are intentionally not ingest candidates.
+            if ".blocked" in md.relative_to(root).parts:
+                continue
             slug = md.stem
             # canonical source-note file: filename == parent folder name
             if md.parent.name != slug:
@@ -551,6 +556,387 @@ def discover_notes() -> list[tuple[datetime, str, Path]]:
     return out
 
 
+_NOTE_HASH_CACHE: dict[Path, tuple[int, int, str]] = {}
+
+
+def episode_content_hash(content: str) -> str:
+    """Hash the exact UTF-8 text passed to Graphiti as ``episode_body``."""
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+
+def read_note_body(path: Path) -> str:
+    return path.read_text(encoding="utf-8", errors="replace")
+
+
+def note_content_hash(path: Path) -> str:
+    """Content hash with a cheap stat-keyed cache for repeated status scrapes."""
+    stat = path.stat()
+    cached = _NOTE_HASH_CACHE.get(path)
+    key = (stat.st_mtime_ns, stat.st_size)
+    if cached is not None and cached[:2] == key:
+        return cached[2]
+    digest = episode_content_hash(read_note_body(path))
+    _NOTE_HASH_CACHE[path] = (key[0], key[1], digest)
+    return digest
+
+
+@dataclass(frozen=True)
+class EpisodeState:
+    slug: str
+    uuid: str
+    complete: bool | None
+    content_hash: str | None
+    completed_at: str | None
+    created_at: str | None
+    legacy_content: str | None
+    mention_count: int
+
+
+@dataclass
+class IngestAssessment:
+    notes_by_slug: dict[str, tuple[datetime, Path]]
+    note_hashes: dict[str, str]
+    episodes_by_slug: dict[str, list[EpisodeState]]
+    done: set[str]
+    partial: set[str]
+    changed: set[str]
+    missing: set[str]
+    legacy_compatible: set[str]
+    legacy_upgraded: int = 0
+
+    @property
+    def pending(self) -> set[str]:
+        return self.partial | self.changed | self.missing
+
+    def as_dict(self) -> dict:
+        pending_notes = [
+            (self.notes_by_slug[slug][0], slug)
+            for slug in self.pending
+            if slug in self.notes_by_slug
+        ]
+        pending_notes.sort()
+        now = datetime.now(timezone.utc)
+        oldest_pending = pending_notes[0] if pending_notes else None
+        newest_note = max(
+            ((ts, slug) for slug, (ts, _path) in self.notes_by_slug.items()),
+            default=None,
+        )
+        all_episodes = [ep for episodes in self.episodes_by_slug.values() for ep in episodes]
+        newest_episode = max(
+            all_episodes,
+            key=lambda ep: ep.completed_at or ep.created_at or "",
+            default=None,
+        )
+        completed_values = [ep.completed_at for ep in all_episodes if ep.completed_at]
+        return {
+            "total": len(self.notes_by_slug),
+            "done": len(self.done),
+            "pending": len(self.pending),
+            "partial": len(self.partial),
+            "changed": len(self.changed),
+            "missing": len(self.missing),
+            "legacy_compatible": len(self.legacy_compatible),
+            "legacy_upgraded": self.legacy_upgraded,
+            "pending_slugs": [slug for _ts, slug in pending_notes[:20]],
+            "partial_slugs": sorted(self.partial)[:20],
+            "changed_slugs": sorted(self.changed)[:20],
+            "oldest_pending_at": oldest_pending[0].isoformat() if oldest_pending else None,
+            "lag_seconds": max(0.0, (now - oldest_pending[0]).total_seconds())
+            if oldest_pending else 0.0,
+            "newest_note": {
+                "slug": newest_note[1],
+                "at": newest_note[0].isoformat(),
+            } if newest_note else None,
+            "newest_ingested_episode": {
+                "slug": newest_episode.slug,
+                "completed_at": newest_episode.completed_at,
+                "created_at": newest_episode.created_at,
+            } if newest_episode else None,
+            "ingest_watermark": max(completed_values) if completed_values else None,
+        }
+
+
+async def _get_episode_states(
+    driver, group_id: str = DEFAULT_GROUP_ID
+) -> dict[str, list[EpisodeState]]:
+    """Read explicit ingest metadata plus just enough legacy state to classify."""
+    rows, _, _ = await driver.execute_query(
+        "MATCH (e:Episodic {group_id: $group_id}) "
+        "OPTIONAL MATCH (e)-[m:MENTIONS]->(:Entity {group_id: $group_id}) "
+        "WITH e, count(m) AS mention_count "
+        "RETURN e.name AS slug, e.uuid AS uuid, "
+        "e.dipink_ingest_complete AS complete, "
+        "e.dipink_content_hash AS content_hash, "
+        "toString(e.dipink_completed_at) AS completed_at, "
+        "toString(e.created_at) AS created_at, "
+        "CASE WHEN e.dipink_content_hash IS NULL THEN e.content ELSE null END AS legacy_content, "
+        "mention_count ORDER BY e.created_at DESC",
+        group_id=group_id,
+        routing_="r",
+    )
+    out: dict[str, list[EpisodeState]] = {}
+    for row in rows:
+        slug = str(row.get("slug") or "")
+        uuid = str(row.get("uuid") or "")
+        if not slug or not uuid:
+            continue
+        out.setdefault(slug, []).append(EpisodeState(
+            slug=slug,
+            uuid=uuid,
+            complete=row.get("complete"),
+            content_hash=str(row["content_hash"]) if row.get("content_hash") else None,
+            completed_at=str(row["completed_at"]) if row.get("completed_at") else None,
+            created_at=str(row["created_at"]) if row.get("created_at") else None,
+            legacy_content=row.get("legacy_content"),
+            mention_count=int(row.get("mention_count") or 0),
+        ))
+    return out
+
+
+async def _mark_episode_complete(
+    driver,
+    episode_uuid: str,
+    content_hash: str,
+    group_id: str = DEFAULT_GROUP_ID,
+) -> None:
+    rows, _, _ = await driver.execute_query(
+        "MATCH (e:Episodic {uuid: $uuid, group_id: $group_id}) "
+        "SET e.dipink_ingest_complete = true, "
+        "e.dipink_content_hash = $content_hash, "
+        "e.dipink_completed_at = coalesce(e.dipink_completed_at, datetime()) "
+        "RETURN e.uuid AS uuid",
+        uuid=episode_uuid,
+        group_id=group_id,
+        content_hash=content_hash,
+    )
+    if not rows:
+        raise RuntimeError(f"episode disappeared before completion metadata: {episode_uuid}")
+
+
+def _classify_note(
+    expected_hash: str,
+    episodes: list[EpisodeState],
+) -> tuple[str, EpisodeState | None]:
+    """Return (done|partial|changed|missing, safe legacy upgrade candidate)."""
+    if not episodes:
+        return "missing", None
+
+    # Explicit completion is authoritative, including valid zero-fact episodes.
+    for episode in episodes:
+        if episode.complete is not True:
+            continue
+        if episode.content_hash == expected_hash:
+            return "done", None
+        if episode.content_hash is None and episode.legacy_content is not None:
+            if episode_content_hash(episode.legacy_content) == expected_hash:
+                return "done", episode
+            return "changed", None
+        if episode.content_hash is None:
+            # Completed by a pre-hash writer, but content is unavailable. Keep
+            # compatibility without inventing a hash we cannot verify safely.
+            return "done", None
+        return "changed", None
+
+    # Legacy edge-based compatibility: an episode with extracted facts counted
+    # as complete before dip.ink added explicit metadata. Upgrade only when its
+    # stored body proves it is the same source content.
+    for episode in episodes:
+        if episode.mention_count <= 0:
+            continue
+        if episode.legacy_content is None:
+            return "done", None
+        if episode_content_hash(episode.legacy_content) == expected_hash:
+            return "done", episode
+        return "changed", None
+
+    # No completion marker and no entity mentions is a crash-created partial.
+    return "partial", None
+
+
+async def assess_ingest(
+    driver,
+    notes: list[tuple[datetime, str, Path]] | None = None,
+    *,
+    group_id: str = DEFAULT_GROUP_ID,
+    upgrade_legacy: bool = True,
+) -> IngestAssessment:
+    notes = discover_notes() if notes is None else notes
+    notes_by_slug = {slug: (ts, path) for ts, slug, path in notes}
+    note_hashes = {slug: note_content_hash(path) for slug, (_ts, path) in notes_by_slug.items()}
+    episodes_by_slug = await _get_episode_states(driver, group_id)
+    buckets = {name: set() for name in ("done", "partial", "changed", "missing")}
+    legacy_compatible: set[str] = set()
+    upgrades: list[tuple[EpisodeState, str]] = []
+
+    for slug, expected_hash in note_hashes.items():
+        disposition, upgrade = _classify_note(expected_hash, episodes_by_slug.get(slug, []))
+        buckets[disposition].add(slug)
+        if upgrade is not None:
+            legacy_compatible.add(slug)
+            upgrades.append((upgrade, expected_hash))
+
+    upgraded = 0
+    if upgrade_legacy:
+        for episode, expected_hash in upgrades:
+            await _mark_episode_complete(driver, episode.uuid, expected_hash, group_id)
+            upgraded += 1
+        if upgraded:
+            # Return the fresh completion timestamp/hash immediately so status
+            # watermarks and answer-cache invalidation see the lazy migration.
+            episodes_by_slug = await _get_episode_states(driver, group_id)
+
+    return IngestAssessment(
+        notes_by_slug=notes_by_slug,
+        note_hashes=note_hashes,
+        episodes_by_slug=episodes_by_slug,
+        done=buckets["done"],
+        partial=buckets["partial"],
+        changed=buckets["changed"],
+        missing=buckets["missing"],
+        legacy_compatible=legacy_compatible,
+        legacy_upgraded=upgraded,
+    )
+
+
+async def collect_ingest_status(
+    g=None,
+    notes: list[tuple[datetime, str, Path]] | None = None,
+    *,
+    group_id: str = DEFAULT_GROUP_ID,
+    upgrade_legacy: bool = True,
+) -> dict:
+    """Structured ingest state shared by CLI status, API status, and metrics."""
+    own_client = g is None
+    client = build_graphiti_on_group(group_id) if own_client else g
+    try:
+        assessment = await assess_ingest(
+            client.driver,
+            notes,
+            group_id=group_id,
+            upgrade_legacy=upgrade_legacy,
+        )
+        return assessment.as_dict()
+    finally:
+        if own_client:
+            await client.close()
+
+
+async def _get_done_slugs(driver, group_id: str = DEFAULT_GROUP_ID) -> set[str]:
+    """Compatibility helper: explicit completion or legacy entity mentions."""
+    states = await _get_episode_states(driver, group_id)
+    return {
+        slug for slug, episodes in states.items()
+        if any(ep.complete is True or ep.mention_count > 0 for ep in episodes)
+    }
+
+
+async def _get_partial_slugs(driver, group_id: str = DEFAULT_GROUP_ID) -> set[str]:
+    """Compatibility helper for crash-created, not-explicitly-complete episodes."""
+    states = await _get_episode_states(driver, group_id)
+    return {
+        slug for slug, episodes in states.items()
+        if episodes and not any(ep.complete is True or ep.mention_count > 0 for ep in episodes)
+    }
+
+
+async def _remove_episode_for_retry(
+    g,
+    episode: EpisodeState,
+    *,
+    group_id: str,
+    reason: str,
+) -> None:
+    """Use Graphiti's removal path, with scoped cleanup for malformed partials."""
+    try:
+        await g.remove_episode(episode.uuid)
+        return
+    except Exception as error:  # noqa: BLE001
+        log.warning(
+            "Graphiti remove_episode failed for %s (%s); scoped fallback: %s",
+            episode.slug,
+            reason,
+            type(error).__name__,
+        )
+    await g.driver.execute_query(
+        "MATCH (e:Episodic {uuid: $uuid, group_id: $group_id}) DETACH DELETE e",
+        uuid=episode.uuid,
+        group_id=group_id,
+    )
+
+
+async def _prepare_note_for_reingest(
+    g,
+    assessment: IngestAssessment,
+    slug: str,
+    *,
+    group_id: str,
+) -> None:
+    if slug not in assessment.partial and slug not in assessment.changed:
+        return
+    reason = "changed-content" if slug in assessment.changed else "partial"
+    for episode in assessment.episodes_by_slug.get(slug, []):
+        await _remove_episode_for_retry(g, episode, group_id=group_id, reason=reason)
+
+
+async def _ingest_note(
+    g,
+    ts: datetime,
+    slug: str,
+    path: Path,
+    *,
+    group_id: str,
+) -> None:
+    body = read_note_body(path)
+    result = await add_episode_with_retry(
+        g,
+        name=slug,
+        episode_body=body,
+        source=EpisodeType.text,
+        source_description="wiki source note",
+        reference_time=ts,
+        group_id=group_id,
+    )
+    episode = getattr(result, "episode", None)
+    episode_uuid = str(getattr(episode, "uuid", "") or "")
+    if not episode_uuid:
+        raise RuntimeError(f"Graphiti add_episode returned no episode uuid for {slug}")
+    await _mark_episode_complete(g.driver, episode_uuid, episode_content_hash(body), group_id)
+
+
+async def _run_pending_batch(
+    g,
+    assessment: IngestAssessment,
+    selected: list[tuple[datetime, str, Path]],
+    *,
+    group_id: str,
+    prefix: str,
+    circuit_breaker_threshold: int | None = None,
+) -> tuple[int, int, bool]:
+    ok = 0
+    fail = 0
+    consecutive_fail = 0
+    aborted = False
+    for ts, slug, path in selected:
+        try:
+            await _prepare_note_for_reingest(g, assessment, slug, group_id=group_id)
+            await _ingest_note(g, ts, slug, path, group_id=group_id)
+            consecutive_fail = 0
+            ok += 1
+            print(f"[{prefix}] ok ({ok}/{len(selected)}) {slug}")
+        except Exception as error:  # one note failing must not kill the run
+            consecutive_fail += 1
+            fail += 1
+            print(f"[{prefix}] FAIL {slug}: {error!r}", file=sys.stderr)
+        if circuit_breaker_threshold and consecutive_fail >= circuit_breaker_threshold:
+            print(
+                f"[{prefix}] circuit breaker tripped after {consecutive_fail} consecutive "
+                "failures — aborting batch (next tick retries)."
+            )
+            aborted = True
+            break
+    return ok, fail, aborted
+
+
 async def ingest() -> None:
     notes = discover_notes()
     total = len(notes)
@@ -558,187 +944,92 @@ async def ingest() -> None:
     if total == 0:
         print("[ingest] nothing to ingest; check NOTES_ROOT / git clone", file=sys.stderr)
         return
-    selected = notes[:NOTE_LIMIT]
-    print(
-        f"[ingest] ingesting {len(selected)} of {total} "
-        f"({selected[0][0].isoformat()} → {selected[-1][0].isoformat()} UTC)"
-    )
 
-    g = build_graphiti()
-    GROUP_ID = DEFAULT_GROUP_ID
+    group_id = DEFAULT_GROUP_ID
+    g = build_graphiti_on_group(group_id)
     try:
         print(f"[ingest] building indices and constraints on Neo4j database '{NEO4J_DATABASE}'...")
         await g.build_indices_and_constraints()
-
-        sem = asyncio.Semaphore(CONCURRENCY)
-        done = 0
-        failed: list[str] = []
-
-        async def one(ts: datetime, slug: str, path: Path) -> None:
-            nonlocal done
-            body = path.read_text(encoding="utf-8", errors="replace")
-            async with sem:
-                try:
-                    await add_episode_with_retry(
-                        g,
-                        name=slug,  # provenance: every fact → this source note
-                        episode_body=body,
-                        source=EpisodeType.text,
-                        source_description="wiki source note",
-                        reference_time=ts,  # bitemporal valid_time
-                        group_id=GROUP_ID,  # set so communities can form + queries scope
-                    )
-                    done += 1
-                    print(f"[ingest] ok ({done}/{len(selected)}) {slug}")
-                except Exception as e:  # one note failing must not kill the run
-                    failed.append(slug)
-                    print(f"[ingest] FAIL {slug}: {e!r}", file=sys.stderr)
-
-        await asyncio.gather(*(one(ts, slug, p) for ts, slug, p in selected))
+        assessment = await assess_ingest(g.driver, notes, group_id=group_id)
+        selected = [note for note in notes if note[1] in assessment.pending][:NOTE_LIMIT]
         print(
-            f"[ingest] done: {done}/{len(selected)} ok, {len(failed)} failed. "
-            f"Failures: {failed[:10]}{'…' if len(failed) > 10 else ''}"
+            f"[ingest] done={len(assessment.done)}/{total} pending={len(assessment.pending)} "
+            f"partial={len(assessment.partial)} changed={len(assessment.changed)}"
         )
+        if not selected:
+            print("[ingest] nothing pending")
+            return
+        ok, fail, _aborted = await _run_pending_batch(
+            g, assessment, selected, group_id=group_id, prefix="ingest"
+        )
+        print(f"[ingest] done: {ok}/{len(selected)} ok, {fail} failed")
     finally:
         await g.close()
-
-
-async def _get_done_slugs(driver, group_id: str = DEFAULT_GROUP_ID) -> set[str]:
-    """Slugs of episodes that are fully ingested: episode node exists AND has
-    >=1 entity edge (so it's not a half-written crash victim)."""
-    rows, _, _ = await driver.execute_query(
-        "MATCH (e:Episodic {group_id: $group_id})-[:MENTIONS]->"
-        "(:Entity {group_id: $group_id}) "
-        "RETURN collect(DISTINCT e.name) AS done",
-        group_id=group_id,
-    )
-    return set(rows[0]["done"]) if rows else set()
-
-
-async def _get_partial_slugs(driver, group_id: str = DEFAULT_GROUP_ID) -> set[str]:
-    """Episode nodes with ZERO entity edges — a previous crash mid-add_episode.
-    Cleaned before each batch so they re-ingest cleanly."""
-    rows, _, _ = await driver.execute_query(
-        "MATCH (e:Episodic {group_id: $group_id}) "
-        "WHERE NOT (e)-[:MENTIONS]->(:Entity {group_id: $group_id}) "
-        "RETURN collect(DISTINCT e.name) AS partials",
-        group_id=group_id,
-    )
-    return set(rows[0]["partials"]) if rows else set()
 
 
 async def status() -> None:
-    """Print done/pending/total counts. Non-mutating; safe to run anytime."""
-    GROUP_ID = DEFAULT_GROUP_ID
-    notes = discover_notes()
-    all_slugs = {s for _, s, _ in notes}
-    g = build_graphiti_on_group(GROUP_ID)
-    try:
-        done = await _get_done_slugs(g.driver, GROUP_ID)
-        partials = await _get_partial_slugs(g.driver, GROUP_ID)
-    finally:
-        await g.close()
-    pending = all_slugs - done
-    print(f"[status] total notes on disk: {len(all_slugs)}")
-    print(f"[status] fully ingested:      {len(done & all_slugs)}")
-    print(f"[status] partial (crashed):   {len(partials & all_slugs)}")
-    print(f"[status] pending:             {len(pending)}")
-    if partials & all_slugs:
-        print(f"[status] partial slugs (next cron will clean+re-ingest): "
-              f"{sorted(partials & all_slugs)[:5]}")
-    pct = (len(done & all_slugs) / len(all_slugs) * 100) if all_slugs else 0
+    """Print explicit completion/content-hash ingest state.
+
+    Safe legacy episodes with entity edges are lazily upgraded with completion
+    metadata while status is computed.
+    """
+    snapshot = await collect_ingest_status()
+    print(f"[status] total notes on disk: {snapshot['total']}")
+    print(f"[status] fully ingested:      {snapshot['done']}")
+    print(f"[status] partial (crashed):   {snapshot['partial']}")
+    print(f"[status] changed content:     {snapshot['changed']}")
+    print(f"[status] pending:             {snapshot['pending']}")
+    if snapshot["partial_slugs"]:
+        print(f"[status] partial slugs: {snapshot['partial_slugs'][:5]}")
+    if snapshot["changed_slugs"]:
+        print(f"[status] changed slugs: {snapshot['changed_slugs'][:5]}")
+    pct = (snapshot["done"] / snapshot["total"] * 100) if snapshot["total"] else 0
     print(f"[status] progress: {pct:.1f}%")
 
 
 async def cron() -> None:
-    """Resumable bounded batch for the k3s CronJob.
+    """Resumable bounded batch with explicit completion and content identity.
 
-    Idempotent + crash-safe. A note is 'done' iff its episode node exists AND
-    has >=1 entity edge; everything else is pending. Partial episodes (crashed
-    mid-add_episode) are DETACH-DELETEd first so they re-ingest cleanly.
-
-    Circuit breaker: >= CIRCUIT_BREAKER_THRESHOLD consecutive failures (incl.
-    RateLimitError from a blown provider quota window) aborts the batch early so
-    we stop burning retries against a down/quota'd upstream; the next cron tick
-    retries the same notes. Progress is never lost.
+    Zero-fact episodes are complete when their marker/hash is present. Legacy
+    edge-bearing episodes remain compatible and are lazily upgraded. Partials
+    are removed and retried; changed source content is deliberately removed via
+    Graphiti's episode-removal path and re-added once.
     """
-    GROUP_ID = DEFAULT_GROUP_ID
-    BATCH = int(os.environ.get("BATCH_SIZE", "15"))
-    CIRCUIT_BREAKER_THRESHOLD = int(os.environ.get("CIRCUIT_BREAKER_THRESHOLD", "3"))
-    notes_by_slug = {s: (ts, p) for ts, s, p in discover_notes()}
-    all_slugs = set(notes_by_slug)
-    if not all_slugs:
+    group_id = DEFAULT_GROUP_ID
+    batch_size = int(os.environ.get("BATCH_SIZE", "15"))
+    breaker = int(os.environ.get("CIRCUIT_BREAKER_THRESHOLD", "3"))
+    notes = discover_notes()
+    if not notes:
         print("[cron] no notes found; check NOTES_ROOT", file=sys.stderr)
         return
 
-    g = build_graphiti_on_group(GROUP_ID)
+    g = build_graphiti_on_group(group_id)
     try:
-        # 1. Build indices (idempotent; safe even if already present).
         await g.build_indices_and_constraints()
-        # 2. Clean partial episodes (previous crash victims) before re-ingest.
-        partials = await _get_partial_slugs(g.driver, GROUP_ID)
-        if partials:
-            for slug in partials:
-                await g.driver.execute_query(
-                    "MATCH (e:Episodic {name: $name, group_id: $group_id}) DETACH DELETE e",
-                    name=slug,
-                    group_id=GROUP_ID,
-                )
-            print(f"[cron] cleaned {len(partials)} partial episodes: "
-                  f"{sorted(partials)[:5]}")
-        # 3. Compute pending (sorted oldest-first for stable backfill order).
-        done = await _get_done_slugs(g.driver, GROUP_ID)
-        pending = sorted(all_slugs - done)
-        print(f"[cron] done={len(done & all_slugs)}/{len(all_slugs)} "
-              f"pending={len(pending)}")
+        assessment = await assess_ingest(g.driver, notes, group_id=group_id)
+        pending = [note for note in notes if note[1] in assessment.pending]
+        print(
+            f"[cron] done={len(assessment.done)}/{len(notes)} pending={len(pending)} "
+            f"partial={len(assessment.partial)} changed={len(assessment.changed)} "
+            f"legacy_upgraded={assessment.legacy_upgraded}"
+        )
         if not pending:
             print("[cron] nothing pending; backfill complete")
             return
-        batch = pending[:BATCH]
-        print(f"[cron] ingesting batch of {len(batch)} (oldest first)")
-
-        # 4. Ingest with circuit breaker.
-        sem = asyncio.Semaphore(CONCURRENCY)
-        consecutive_fail = 0
-        ok = 0
-        fail = 0
-        aborted = False
-
-        async def one(slug: str) -> bool:
-            nonlocal consecutive_fail, ok, fail
-            ts, path = notes_by_slug[slug]
-            body = path.read_text(encoding="utf-8", errors="replace")
-            async with sem:
-                try:
-                    await add_episode_with_retry(
-                        g,
-                        name=slug,
-                        episode_body=body,
-                        source=EpisodeType.text,
-                        source_description="wiki source note",
-                        reference_time=ts,
-                        group_id=GROUP_ID,
-                    )
-                    consecutive_fail = 0
-                    ok += 1
-                    print(f"[cron] ok ({ok}/{len(batch)}) {slug}")
-                    return True
-                except Exception as e:
-                    consecutive_fail += 1
-                    fail += 1
-                    print(f"[cron] FAIL {slug}: {e!r}", file=sys.stderr)
-                    return False
-
-        for slug in batch:
-            await one(slug)
-            if consecutive_fail >= CIRCUIT_BREAKER_THRESHOLD:
-                print(f"[cron] circuit breaker tripped after {consecutive_fail} "
-                      f"consecutive failures — aborting batch (next tick retries). "
-                      f"Likely LLM quota/upstream issue.")
-                aborted = True
-                break
-        print(f"[cron] batch result: ok={ok} fail={fail} "
-              f"{'(aborted by circuit breaker)' if aborted else ''}")
+        selected = pending[:batch_size]
+        print(f"[cron] ingesting batch of {len(selected)} (oldest first)")
+        ok, fail, aborted = await _run_pending_batch(
+            g,
+            assessment,
+            selected,
+            group_id=group_id,
+            prefix="cron",
+            circuit_breaker_threshold=breaker,
+        )
+        print(
+            f"[cron] batch result: ok={ok} fail={fail} "
+            f"{'(aborted by circuit breaker)' if aborted else ''}"
+        )
     finally:
         await g.close()
 
