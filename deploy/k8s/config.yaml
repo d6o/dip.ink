@@ -1,0 +1,40 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dipink-config
+  namespace: dipink
+data:
+  # Repository and graph isolation defaults.
+  WIKI_BRANCH: "main"
+  GROUP_ID: "main"
+
+  # Extraction/distillation defaults. Empty ladders/overrides inherit the
+  # corresponding single-model extraction setting in server code.
+  LLM_MODEL: "gpt-4.1-mini"
+  LLM_MODEL_LADDER: ""
+  DISTILL_MODEL: ""
+  DISTILL_MODEL_LADDER: ""
+  GRAPH_FUSION: "1"
+  ANSWER_CACHE_TTL: "3600"
+
+  # Wiki embedding/index configuration.
+  WIKI_MCP_EMBED_PROVIDER: "openai"
+  WIKI_MCP_OPENAI_MODEL: "text-embedding-3-small"
+  WIKI_MCP_FASTEMBED_MODEL: "BAAI/bge-small-en-v1.5"
+  WIKI_MCP_REINDEX_SEC: "300"
+  WIKI_MCP_RETRY_INITIAL_SEC: "5"
+  WIKI_MCP_RETRY_MAX_SEC: "300"
+  WIKI_MCP_BACKGROUND_REINDEX: "1"
+  FASTEMBED_CACHE_DIR: "/var/lib/memory/fastembed"
+
+  # Persistent bounded query metrics are used by gaps/status/observability.
+  MCP_METRICS_PATH: "auto"
+
+  # Bounded Graphiti driver defaults; override here for a larger installation.
+  NEO4J_MAX_POOL: "50"
+  NEO4J_ACQ_TIMEOUT: "120"
+
+  # Memory server defaults.
+  MCP_ALLOWED_HOSTS: "localhost,127.0.0.1,memory,memory.dipink.svc.cluster.local"
+  WIKI_GIT_USER_NAME: "wiki-mcp"
+  WIKI_GIT_USER_EMAIL: "wiki-mcp@localhost"

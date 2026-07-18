@@ -33,8 +33,12 @@ spec:
           ports:
             - name: http
               containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: dipink-config
           env:
-            # wiki side
+            # Wiki repository credentials. Non-secret defaults live in the
+            # shared ConfigMap so the server and maintenance jobs stay aligned.
             - name: WIKI_REPO_URL
               valueFrom: {secretKeyRef: {name: dipink-secrets, key: WIKI_REPO_URL}}
             - name: WIKI_REPO_USER
@@ -43,10 +47,8 @@ spec:
               valueFrom: {secretKeyRef: {name: dipink-secrets, key: WIKI_REPO_TOKEN}}
             - {name: CACHE_DIR, value: /var/lib/memory/cache}
             - {name: WIKI_CLONE_PATH, value: /var/lib/memory/wiki}
-            # Add your ingress hostname here (DNS-rebinding protection).
-            - name: MCP_ALLOWED_HOSTS
-              value: "localhost,127.0.0.1,memory,memory.dipink.svc.cluster.local"
-            # graph side
+            # Graph/extraction credentials. Custom provider and distiller keys
+            # are optional; empty/missing values fall back in server code.
             - {name: NEO4J_URI, value: bolt://neo4j:7687}
             - {name: NEO4J_USER, value: neo4j}
             - name: NEO4J_PASSWORD
@@ -54,11 +56,13 @@ spec:
             - name: OPENAI_API_KEY
               valueFrom: {secretKeyRef: {name: dipink-secrets, key: OPENAI_API_KEY}}
             - name: LLM_BASE_URL
-              valueFrom: {secretKeyRef: {name: dipink-secrets, key: LLM_BASE_URL}}
+              valueFrom: {secretKeyRef: {name: dipink-secrets, key: LLM_BASE_URL, optional: true}}
             - name: LLM_API_KEY
-              valueFrom: {secretKeyRef: {name: dipink-secrets, key: LLM_API_KEY}}
-            - {name: LLM_MODEL, value: gpt-4.1-mini}
-            - {name: GROUP_ID, value: main}
+              valueFrom: {secretKeyRef: {name: dipink-secrets, key: LLM_API_KEY, optional: true}}
+            - name: DISTILL_BASE_URL
+              valueFrom: {secretKeyRef: {name: dipink-secrets, key: DISTILL_BASE_URL, optional: true}}
+            - name: DISTILL_API_KEY
+              valueFrom: {secretKeyRef: {name: dipink-secrets, key: DISTILL_API_KEY, optional: true}}
           volumeMounts:
             - name: data
               mountPath: /var/lib/memory

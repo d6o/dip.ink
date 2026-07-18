@@ -2,13 +2,12 @@
 #
 #  - build-communities (weekly, Sun 04:00): entity resolution (merge alias
 #    entities) then community rebuild — the "communities" retrieval layer.
-#  - memory-gaps (weekly, Mon 06:00): mines both MCPs' query logs for zero-hit /
-#    low-relevance queries, drops a "memory gaps" note (which graphiti ingests —
-#    the loop closes: the memory knows what it's missing).
-#  - contradiction-janitor (monthly, 1st 05:00, DRY_RUN first): LLM pass over the
-#    densest entities' current facts, invalidating mutually-exclusive older facts.
-#  - memory-alerts (every 30min): dead-man checks — ingest freshness, community
-#    age, MCP health. A Failed job IS the alert.
+#  - memory-gaps (weekly, Mon 06:00): mines the combined server's query log for
+#    zero-hit / low-relevance queries and drops a memory-gaps report note.
+#  - contradiction-janitor (monthly, 1st 05:00, DRY_RUN first): LLM pass over
+#    dense entities' current facts. Report-only until DRY_RUN is explicitly 0.
+#  - memory-alerts (every 30min): pending-ingest, community age, and server
+#    health checks. A Failed job IS the alert.
 #  - memory-healthcheck (daily, 05:30): DEEP end-to-end pipeline test; failures
 #    also drop a note into the wiki inbox so the failure is visible in memory.
 ---
@@ -33,11 +32,14 @@ spec:
             - name: build
               image: ghcr.io/d6o/dip.ink/memory:latest
               command: ["python", "/app/loops/build_communities.py"]
+              envFrom:
+                - configMapRef:
+                    name: dipink-config
               env:
                 - {name: MAX_CLUSTER, value: "200"}
                 - {name: COMMUNITY_CONC, value: "4"}
+                - {name: ENTITY_RESOLUTION, value: "1"}
                 - {name: PAUSE_INGEST, value: "0"}
-                - {name: GROUP_ID, value: main}
                 - {name: NEO4J_URI, value: bolt://neo4j:7687}
                 - {name: NEO4J_USER, value: neo4j}
                 - name: NEO4J_PASSWORD
@@ -45,10 +47,9 @@ spec:
                 - name: OPENAI_API_KEY
                   valueFrom: {secretKeyRef: {name: dipink-secrets, key: OPENAI_API_KEY}}
                 - name: LLM_BASE_URL
-                  valueFrom: {secretKeyRef: {name: dipink-secrets, key: LLM_BASE_URL}}
+                  valueFrom: {secretKeyRef: {name: dipink-secrets, key: LLM_BASE_URL, optional: true}}
                 - name: LLM_API_KEY
-                  valueFrom: {secretKeyRef: {name: dipink-secrets, key: LLM_API_KEY}}
-                - {name: LLM_MODEL, value: gpt-4.1-mini}
+                  valueFrom: {secretKeyRef: {name: dipink-secrets, key: LLM_API_KEY, optional: true}}
               resources:
                 requests: {cpu: "500m", memory: 512Mi}
                 limits: {cpu: "1", memory: 1Gi}
@@ -74,9 +75,13 @@ spec:
             - name: gaps
               image: ghcr.io/d6o/dip.ink/memory:latest
               command: ["python", "/app/loops/memory_gaps.py"]
+              envFrom:
+                - configMapRef:
+                    name: dipink-config
               env:
                 - {name: MCP_BASE, value: "http://memory.dipink.svc.cluster.local"}
                 - {name: DAYS, value: "7"}
+                - {name: DRY_RUN, value: "0"}
               resources:
                 requests: {cpu: "100m", memory: 128Mi}
                 limits: {cpu: "500m", memory: 256Mi}
@@ -102,9 +107,13 @@ spec:
             - name: janitor
               image: ghcr.io/d6o/dip.ink/memory:latest
               command: ["python", "/app/loops/contradiction_janitor.py"]
+              envFrom:
+                - configMapRef:
+                    name: dipink-config
               env:
                 - {name: TOP_N, value: "50"}
-                - {name: DRY_RUN, value: "1"}    # report-only first; flip to 0 after reviewing output
+                # Report-only default. Set DRY_RUN to "0" only after review.
+                - {name: DRY_RUN, value: "1"}
                 - {name: NEO4J_URI, value: bolt://neo4j:7687}
                 - {name: NEO4J_USER, value: neo4j}
                 - name: NEO4J_PASSWORD
@@ -112,10 +121,9 @@ spec:
                 - name: OPENAI_API_KEY
                   valueFrom: {secretKeyRef: {name: dipink-secrets, key: OPENAI_API_KEY}}
                 - name: LLM_BASE_URL
-                  valueFrom: {secretKeyRef: {name: dipink-secrets, key: LLM_BASE_URL}}
+                  valueFrom: {secretKeyRef: {name: dipink-secrets, key: LLM_BASE_URL, optional: true}}
                 - name: LLM_API_KEY
-                  valueFrom: {secretKeyRef: {name: dipink-secrets, key: LLM_API_KEY}}
-                - {name: LLM_MODEL, value: gpt-4.1-mini}
+                  valueFrom: {secretKeyRef: {name: dipink-secrets, key: LLM_API_KEY, optional: true}}
               resources:
                 requests: {cpu: "200m", memory: 256Mi}
                 limits: {cpu: "1", memory: 512Mi}
@@ -141,6 +149,9 @@ spec:
             - name: alerts
               image: ghcr.io/d6o/dip.ink/memory:latest
               command: ["python", "/app/loops/memory_alerts.py"]
+              envFrom:
+                - configMapRef:
+                    name: dipink-config
               env:
                 - {name: MCP_BASE, value: "http://memory.dipink.svc.cluster.local"}
                 - {name: MAX_PENDING_AGE_HOURS, value: "2"}
@@ -152,9 +163,9 @@ spec:
                 - name: OPENAI_API_KEY
                   valueFrom: {secretKeyRef: {name: dipink-secrets, key: OPENAI_API_KEY}}
                 - name: LLM_BASE_URL
-                  valueFrom: {secretKeyRef: {name: dipink-secrets, key: LLM_BASE_URL}}
+                  valueFrom: {secretKeyRef: {name: dipink-secrets, key: LLM_BASE_URL, optional: true}}
                 - name: LLM_API_KEY
-                  valueFrom: {secretKeyRef: {name: dipink-secrets, key: LLM_API_KEY}}
+                  valueFrom: {secretKeyRef: {name: dipink-secrets, key: LLM_API_KEY, optional: true}}
               resources:
                 requests: {cpu: "100m", memory: 256Mi}
                 limits: {cpu: "500m", memory: 512Mi}
@@ -185,9 +196,12 @@ spec:
                   set -e
                   # --shallow-since (not --depth 1): the curation-liveness check
                   # needs a few days of git history on wiki/sources/notes.
-                  git clone --shallow-since="5 days ago" \
+                  git clone --branch "$WIKI_BRANCH" --single-branch --shallow-since="5 days ago" \
                     "$(echo "$WIKI_REPO_URL" | sed "s#https://#https://${WIKI_REPO_USER}:${WIKI_REPO_TOKEN}@#")" \
                     /notes
+              envFrom:
+                - configMapRef:
+                    name: dipink-config
               env:
                 - {name: GIT_TERMINAL_PROMPT, value: "0"}
                 - name: WIKI_REPO_URL
@@ -202,12 +216,16 @@ spec:
             - name: healthcheck
               image: ghcr.io/d6o/dip.ink/memory:latest
               command: ["python", "/app/loops/memory_healthcheck.py"]
+              envFrom:
+                - configMapRef:
+                    name: dipink-config
               env:
                 - {name: NOTES_DIR, value: /notes}
                 # Agent-facing URL first (set to your ingress hostname);
                 # the internal fallback lets the check say WHICH layer broke.
                 - {name: MCP_BASE, value: "http://memory.dipink.svc.cluster.local"}
                 - {name: MCP_INTERNAL, value: "http://memory.dipink.svc.cluster.local"}
+                - {name: ANSWER_PROBE, value: "what is this memory system's note inbox called"}
                 - {name: NEO4J_URI, value: bolt://neo4j:7687}
                 - {name: NEO4J_USER, value: neo4j}
                 - name: NEO4J_PASSWORD
@@ -215,10 +233,9 @@ spec:
                 - name: OPENAI_API_KEY
                   valueFrom: {secretKeyRef: {name: dipink-secrets, key: OPENAI_API_KEY}}
                 - name: LLM_BASE_URL
-                  valueFrom: {secretKeyRef: {name: dipink-secrets, key: LLM_BASE_URL}}
+                  valueFrom: {secretKeyRef: {name: dipink-secrets, key: LLM_BASE_URL, optional: true}}
                 - name: LLM_API_KEY
-                  valueFrom: {secretKeyRef: {name: dipink-secrets, key: LLM_API_KEY}}
-                - {name: LLM_MODEL, value: gpt-4.1-mini}
+                  valueFrom: {secretKeyRef: {name: dipink-secrets, key: LLM_API_KEY, optional: true}}
               volumeMounts:
                 - {name: notes, mountPath: /notes, readOnly: true}
               resources:
