@@ -1,16 +1,22 @@
 # The operator's memory — usage contract for agents
 
 > Install this file globally so EVERY agent session follows it: append it to
-> `~/.claude/CLAUDE.md` (Claude Code), `~/.config/AGENTS.md` (agents honoring
-> the AGENTS.md convention), or your agent's system prompt. It is the contract
-> that makes the memory compound instead of decay.
+> `~/.claude/CLAUDE.md` (Claude Code still uses that path as its global
+> instructions file), `~/.pi/agent/AGENTS.md` / `~/.config/AGENTS.md` (agents
+> honoring the AGENTS.md convention), or your agent's system prompt. It is the
+> contract that makes the memory compound instead of decay.
+>
+> The repository convention for this project is **Pi / AGENTS.md**. Claude Code
+> client support remains first-class; only the project-side schema file is
+> AGENTS.md rather than CLAUDE.md.
 
-The operator maintains a personal, LLM-curated memory system — the canonical record of their tools, deploys, infra conventions, project context, decisions, and learnings. As an agent, you reach it through **one MCP server** exposing two families of tools:
+The operator maintains a personal, LLM-curated memory system — the canonical record of their tools, deploys, infra conventions, project context, decisions, and learnings. As an agent, you reach it through **one MCP server** exposing two families of tools plus an operational status tool:
 
 | Family | Tools | What it's for |
 |---|---|---|
 | **wiki** | `wiki_search`, `wiki_get`, `wiki_backlinks`, `wiki_note_drop` | Semantic search over curated wiki pages + THE write path (note capture) |
 | **graph** | `graph_answer`, `graph_search`, `graph_get_note`, `graph_entity`, `graph_current_facts`, `graph_changes` | Temporal knowledge graph: direct answers, current-vs-superseded facts, what-changed diffs |
+| **status** | `memory_status` | Bounded operational snapshot (readiness, backlog, ingest lag, version) — never contains note bodies or secrets |
 
 Storage is a private git repo of markdown notes and wiki pages. You generally don't clone it — you go through MCP — but knowing the data lives in git matters when something seems out of date.
 
@@ -32,6 +38,7 @@ If the tools aren't in your tool list and registration fails, you are not on the
 - **Resuming after time away** → `graph_changes(subject, since_days)` — one call instead of five searches.
 - **Provenance** — every graph fact carries a `source_slug`; fetch the original note with `graph_get_note(slug)`.
 - **Reading a curated page in full** → `wiki_get(name)` after `wiki_search`.
+- **Is the memory healthy / how big is the backlog?** → `memory_status` (or HTTP `GET /api/status`). Prefer this over scraping logs when deciding whether capture/curation is stuck.
 
 ## When to search — ALWAYS, before answering
 
@@ -58,7 +65,7 @@ Capture when you learn:
 Do NOT capture:
 
 - The literal question or chat context — only the substantive learning.
-- Things already documented in the project's context file (AGENTS.md/CLAUDE.md) or obviously derivable from the code.
+- Things already documented in the project's context file (AGENTS.md) or obviously derivable from the code.
 - Status updates without content ("did X today" — what's the learning?).
 
 ## How to format a note
@@ -99,7 +106,7 @@ Reference attachments from the note with relative links: `see ./deploy.log`.
 
 ## NEVER
 
-- **NEVER include credentials, tokens, passwords, API keys, JWTs, or SSH private keys** in `note_md` or attachments. Notes are git-tracked. Reference where the secret lives instead: `"token in the vault at /services/<service>/<KEY>"`. If you suspect a value might be sensitive, redact it before passing to the tool.
+- **NEVER include credentials, tokens, passwords, API keys, JWTs, or SSH private keys** in `note_md` or attachments. Notes are git-tracked. Reference where the secret lives instead: `"token in the vault at /services/<service>/<KEY>"`. If you suspect a value might be sensitive, redact it before passing to the tool. There is **no automatic secret scanning** in the curator or the server — agent discipline plus the private repo and gated network are the perimeter.
 - **NEVER edit the wiki directly via these tools.** `wiki_note_drop` writes to `notes/`, the inbox. The curation pass is the only thing that promotes a note to a wiki page. If the wiki is wrong, drop a note saying so.
 - **NEVER skip the search step** to save a tool call. The cost of a search is milliseconds; the cost of a stale or wrong answer the memory has corrected is much higher.
 - **NEVER ask "should I save this as a note?"** If it looks useful, just drop it. Don't add friction.

@@ -16,6 +16,11 @@ Four pieces get installed, whatever the runtime:
    `/recordnotes` has run recently. Compaction is where session memory dies;
    this is what makes capture happen *before* the loss.
 
+The repository convention is **Pi / AGENTS.md**. Claude Code remains fully
+supported as a client: it still uses `~/.claude/CLAUDE.md` for global
+instructions and MCP registration, but the project-side schema and this
+install contract are AGENTS.md, not a CLAUDE.md symlink requirement.
+
 ## 0. Ask for the memory server URL if you don't have it
 
 You need the base URL of the operator's memory server (the docker-compose
@@ -38,9 +43,10 @@ MEMORY_URL=http://localhost:8080   # ← adjust
 claude mcp add memory --transport http $MEMORY_URL/mcp
 ```
 
-Verify: the tools `wiki_search`, `wiki_note_drop`, `graph_answer` (and 7 more)
-should now be available. If registration fails, stop and tell the operator —
-they may need to put you on the right network/VPN first.
+Verify: the tools `wiki_search`, `wiki_note_drop`, `graph_answer`,
+`memory_status` (and the rest of the wiki/graph family) should now be
+available. If registration fails, stop and tell the operator — they may need
+to put you on the right network/VPN first.
 
 ### 2. Install the usage contract
 
@@ -99,7 +105,7 @@ operator's existing settings:
 ## Pi (pi-coding-agent)
 
 Pi uses native extensions instead of MCP registration — the `memory` extension
-declares all ten tools locally (works offline) and talks to the server lazily.
+declares the tools locally (works offline) and talks to the server lazily.
 
 ### 1. Install the memory extension (the tools + the usage skill)
 
@@ -144,13 +150,17 @@ ack is stale — never blocking hard overflow) and wraps `/exit`, `/bye`, and
 ## Verify the loop end to end (both runtimes)
 
 1. `graph_answer("what is this memory system's note inbox called")` — any
-   non-error response proves the read path.
-2. Call `wiki_note_drop` with slug `install-verification` and a short note
+   non-error response proves the read path (a fresh template ships a bootstrap
+   source note so this has something to ground against after first ingest).
+2. `memory_status` — confirm wiki/graph readiness and that inbox/blocked counts
+   are numbers (not an error). This is the same schema as `GET /api/status`.
+3. Call `wiki_note_drop` with slug `install-verification` and a short note
    saying this machine was set up (include the machine name/OS and which
-   runtime you installed for). `ok: true` + `pushed: true` proves the write path.
-3. Run `/recordnotes` once — it should review, possibly drop nothing new, and
+   runtime you installed for). **Do not put credentials in the note.**
+   `ok: true` + `pushed: true` proves the write path.
+4. Run `/recordnotes` once — it should review, possibly drop nothing new, and
    write the compact-ack marker.
-4. Report to the operator: what you registered, what you installed, and the
+5. Report to the operator: what you registered, what you installed, and the
    note-drop result.
 
 ## What this changes about your behavior
@@ -160,5 +170,8 @@ From now on, in every session (per the contract you installed):
 - **Search the memory before answering** anything operator-specific —
   `graph_answer` first for factual questions.
 - **Capture learnings as you go** with `wiki_note_drop` — don't wait to be asked.
+- **Never capture secrets** — reference vault/secret-manager paths only. There
+  is no automatic secret scanner; the private repo + gated network are the
+  perimeter.
 - **Run `/recordnotes`** before compaction or exit (the hooks will remind you)
   or whenever the operator asks to save the session's learnings.
