@@ -96,6 +96,19 @@ ATTACHMENT_BINARY_MAX = 2 * 1024 * 1024  # 2 MB per binary attachment (decoded)
 _repo_lock = threading.Lock()
 
 
+@dataclass(frozen=True)
+class ExistingNoteDrop:
+    folder: str
+    relative_dir: str
+    archived: bool
+
+
+_capture_hash_lock = threading.Lock()
+_capture_hash_root: Path | None = None
+_capture_hash_revision_value: str | None = None
+_capture_hash_index: dict[str, list[ExistingNoteDrop]] = {}
+
+
 # --- Git plumbing for clone-at-startup, periodic pull, and note-drop push ---
 
 
@@ -314,31 +327,122 @@ def source_note_markdown(folder_name: str, note_md: str, capture_hash: str | Non
     return "---\n" + yaml.safe_dump(new_fm, sort_keys=False, allow_unicode=True) + "---\n\n" + body.rstrip() + "\n"
 
 
-def find_existing_note_drop(slug: str, capture_hash: str) -> str | None:
-    """Return an existing inbox folder for a retried note-drop request."""
-    notes_root = Path(WIKI_ROOT) / "notes"
-    if not notes_root.exists():
+def _capture_hash_revision(root: Path) -> str | None:
+    """Cheap current-HEAD token; a changed checkout triggers one index refresh."""
+    git_dir = root / ".git"
+    head = git_dir / "HEAD"
+    try:
+        value = head.read_text(encoding="utf-8").strip()
+        if value.startswith("ref:"):
+            ref_name = value.split(":", 1)[1].strip()
+            ref = git_dir / ref_name
+            if ref.exists():
+                return ref.read_text(encoding="utf-8").strip()
+            packed = git_dir / "packed-refs"
+            if packed.exists():
+                for line in packed.read_text(encoding="utf-8").splitlines():
+                    if line and not line.startswith(("#", "^")):
+                        sha, name = line.split(" ", 1)
+                        if name == ref_name:
+                            return sha
+        return value
+    except OSError:
         return None
-    for folder in sorted(notes_root.glob(f"*-{slug}")):
-        if not folder.is_dir():
-            continue
-        source_file = folder / f"{folder.name}.md"
-        if not source_file.exists():
-            continue
-        try:
-            fm, _body = read_frontmatter_and_body(source_file.read_text(encoding="utf-8"))
-        except Exception:
-            continue
-        if fm.get("capture-hash") == capture_hash:
-            return folder.name
+
+
+def _refresh_capture_hash_index(*, force: bool = False) -> None:
+    """Index capture hashes across live inboxes and canonical archives.
+
+    The scan is O(notes) only once per git revision (or every call for a
+    non-git test/dev tree). Normal retries are O(1), which remains practical at
+    ~10k source notes.
+    """
+    global _capture_hash_root, _capture_hash_revision_value, _capture_hash_index
+    root = Path(WIKI_ROOT)
+    revision = _capture_hash_revision(root)
+    with _capture_hash_lock:
+        if (
+            not force
+            and revision is not None
+            and _capture_hash_root == root
+            and _capture_hash_revision_value == revision
+        ):
+            return
+
+        indexed: dict[str, list[ExistingNoteDrop]] = defaultdict(list)
+        locations = (
+            (root / "notes", False),
+            (root / "wiki" / "sources" / "notes", True),
+        )
+        for location, archived in locations:
+            if not location.exists():
+                continue
+            for source_file in location.rglob("*.md"):
+                folder = source_file.parent
+                if source_file.stem != folder.name:
+                    continue
+                try:
+                    fm, _body = read_frontmatter_and_body(
+                        source_file.read_text(encoding="utf-8")
+                    )
+                except Exception:
+                    continue
+                capture_hash = fm.get("capture-hash")
+                if not isinstance(capture_hash, str) or not capture_hash:
+                    continue
+                try:
+                    relative_dir = folder.relative_to(root).as_posix()
+                except ValueError:
+                    continue
+                indexed[capture_hash].append(ExistingNoteDrop(
+                    folder=folder.name,
+                    relative_dir=relative_dir,
+                    archived=archived,
+                ))
+
+        _capture_hash_root = root
+        _capture_hash_revision_value = revision
+        _capture_hash_index = dict(indexed)
+
+
+def find_existing_note_drop(
+    slug: str,
+    capture_hash: str,
+    *,
+    force_refresh: bool = False,
+) -> ExistingNoteDrop | None:
+    """Find a retried payload in notes/ or wiki/sources/notes/."""
+    _refresh_capture_hash_index(force=force_refresh)
+    suffix = f"-{slug}"
+    with _capture_hash_lock:
+        matches = list(_capture_hash_index.get(capture_hash, ()))
+    for existing in matches:
+        if existing.folder.endswith(suffix):
+            return existing
     return None
 
 
-def note_drop_result(folder_name: str, sha: str = "", already_exists: bool = False) -> dict:
+def note_drop_result(
+    folder: str | ExistingNoteDrop,
+    sha: str = "",
+    already_exists: bool = False,
+) -> dict:
+    if isinstance(folder, ExistingNoteDrop):
+        folder_name = folder.folder
+        relative_dir = folder.relative_dir
+        archived = folder.archived
+    else:
+        folder_name = folder
+        relative_dir = f"notes/{folder_name}"
+        archived = False
+    if already_exists and not sha:
+        sha = _capture_hash_revision(Path(WIKI_ROOT)) or ""
     result = {
         "ok": True,
         "folder": folder_name,
         "source_file": f"{folder_name}.md",
+        "path": relative_dir,
+        "archived": archived,
         "commit": sha,
         "pushed": True,
         "already_exists": already_exists,
@@ -346,9 +450,9 @@ def note_drop_result(folder_name: str, sha: str = "", already_exists: bool = Fal
     # Best-effort web URL for the pushed folder (host-specific path shape).
     repo_web = re.sub(r"\.git$", "", WIKI_REPO_URL)
     if "github.com" in WIKI_REPO_URL or "gitlab" in WIKI_REPO_URL:
-        result["url"] = f"{repo_web}/tree/{WIKI_BRANCH}/notes/{folder_name}"
+        result["url"] = f"{repo_web}/tree/{WIKI_BRANCH}/{relative_dir}"
     elif repo_web.startswith("http"):
-        result["url"] = f"{repo_web}/src/branch/{WIKI_BRANCH}/notes/{folder_name}"  # gitea/forgejo
+        result["url"] = f"{repo_web}/src/branch/{WIKI_BRANCH}/{relative_dir}"  # gitea/forgejo
     return result
 
 
@@ -1080,7 +1184,7 @@ def _wiki_note_drop_impl(
         if existing:
             log.info(
                 "wiki_note_drop idempotent hit before sync slug=%s folder=%s duration=%.2fs",
-                slug, existing, time.monotonic() - started,
+                slug, existing.folder, time.monotonic() - started,
             )
             return note_drop_result(existing, already_exists=True)
 
@@ -1092,11 +1196,11 @@ def _wiki_note_drop_impl(
         except Exception as e:
             return {"ok": False, "error": f"failed to sync repo to origin/{WIKI_BRANCH}: {e}"}
 
-        existing = find_existing_note_drop(slug, capture_hash)
+        existing = find_existing_note_drop(slug, capture_hash, force_refresh=True)
         if existing:
             log.info(
                 "wiki_note_drop idempotent hit after sync slug=%s folder=%s duration=%.2fs",
-                slug, existing, time.monotonic() - started,
+                slug, existing.folder, time.monotonic() - started,
             )
             return note_drop_result(existing, already_exists=True)
 

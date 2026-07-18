@@ -2,7 +2,7 @@
 
 ## Summary
 
-Lane A is in progress. Items 4 and 9 are complete: Neo4j lifecycle is explicit and bounded, and ingest now has durable completion/content identity that correctly handles zero-fact, partial, changed, unchanged, and legacy episodes.
+Lane A is in progress. Items 4, 9, and 6 are complete: Neo4j lifecycle is explicit and bounded, ingest has durable completion/content identity, and note-drop retries remain idempotent after inbox notes move into the canonical archive.
 
 ## Completed items
 
@@ -27,6 +27,14 @@ Lane A is in progress. Items 4 and 9 are complete: Neo4j lifecycle is explicit a
 - The deep healthcheck now accepts explicit zero-fact completion and legacy edge compatibility, but not an unmarked zero-edge partial.
 - Added focused tests for zero-fact completion, partial cleanup/retry, changed remove/re-add, unchanged idempotency, legacy migration, and blocked discovery.
 
+### Item 6 — archive-aware note-drop idempotency
+
+- Capture hashes are indexed across both `notes/` (including nested queues) and `wiki/sources/notes/` canonical archives.
+- The index refreshes once per git revision, making normal retries O(1) instead of rescanning ~10k notes per write; the post-fetch/reset lookup forces a refresh.
+- Archived retries return the original folder plus bounded location metadata (`path`, `archived`, current commit-ish value) with `already_exists: true` and do not create or push a duplicate.
+- Idempotency remains scoped by both capture hash and requested slug, so a different payload using the same slug proceeds to a new timestamped folder.
+- Added tests for live-inbox retries, archived retries, full note-drop short-circuiting, same-slug/different-payload behavior, and same-revision cache reuse.
+
 ## Important decisions
 
 - `GROUP_ID` remains a Neo4j node/edge property partition. `NEO4J_DATABASE` (default `neo4j`) is the actual database selector.
@@ -34,6 +42,7 @@ Lane A is in progress. Items 4 and 9 are complete: Neo4j lifecycle is explicit a
 - The integration test is skipped in ordinary unit/image builds and runs when `NEO4J_INTEGRATION=1` points at a real Neo4j 5.26.2 instance.
 - The ingest hash covers the exact decoded text passed as Graphiti's `episode_body`, not file metadata or extracted-fact count.
 - Legacy completion is upgraded only when the stored episode body proves the hash safely; compatibility remains read-only when historical content is unavailable.
+- Capture-hash lookup includes quarantined/deferred inbox locations for retry safety, even though blocked notes are excluded from Graphiti ingest.
 
 ## Tests run
 
@@ -41,6 +50,7 @@ Lane A is in progress. Items 4 and 9 are complete: Neo4j lifecycle is explicit a
 - Real `neo4j:5.26.2` container + `pytest tests/test_neo4j_integration.py -q -s` — 1 passed; no unhandled-task, `IncompleteCommit`, defunct-connection, or leak warning signatures; legacy completion metadata verified in Neo4j.
 - `pytest tests/test_ingest_completion.py tests/test_driver_lifecycle.py -q -s` — 10 passed.
 - Full server suite after item 9 — 19 passed, 1 skipped.
+- `pytest tests/test_note_drop_resilience.py -q` after item 6 — 10 passed.
 
 ## Dependencies / coordinator TODOs
 
