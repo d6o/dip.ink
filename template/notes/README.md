@@ -2,7 +2,7 @@
 
 Inbox for notes dropped by agent sessions (usually via the `wiki_note_drop` MCP tool). The drop protocol is defined in `AGENTS.md` in the dip.ink repo.
 
-Entries here are **transient**: drained by the `/processnotes` skill (see `.claude/commands/processnotes.md`) and deleted from disk after ingest. Git history preserves them.
+Entries here are **transient**: drained by the `/processnotes` skill (see `.pi/prompts/processnotes.md`) and deleted from disk after ingest. Git history preserves them.
 
 ## Format agents should use
 

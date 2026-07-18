@@ -62,7 +62,7 @@ git init -b main && git add -A && git commit -m "init memory"
 gh repo create my-memory --private --source . --push
 ```
 
-The template contains the wiki skeleton (`wiki/`, `notes/`, `raw/`), the schema contract (`CLAUDE.md`), the lint/index/rotate/distill scripts, the curator prompts, and the CI workflows.
+The template contains the wiki skeleton (`wiki/`, `notes/`, `raw/`), the schema contract (`AGENTS.md` — the open agent-context convention; Pi loads it natively, and Claude Code users can `ln -s AGENTS.md CLAUDE.md` or add it to their project settings), the lint/index/rotate/distill scripts, the curator prompts, and the CI workflows.
 
 Then, in the repo's GitHub settings:
 - **Secrets → Actions**: add `PI_API_KEY` (the LLM key the curator agent uses — your OpenAI key works).
@@ -176,11 +176,10 @@ dip.ink/
 ├── docker-compose.yml      ← the whole stack on one host
 ├── .env.example
 ├── template/               ← YOUR memory repo starts as a copy of this
-│   ├── CLAUDE.md           ← the wiki schema + curation rules (the contract agents follow)
+│   ├── AGENTS.md           ← the wiki schema + curation rules (the contract agents follow)
 │   ├── wiki/  notes/  raw/
 │   ├── scripts/            ← wikilint, wikiindex, logrotate, wikidistill + curator supervisor
-│   ├── .claude/commands/   ← interactive commands (/processnotes, /wikilint, ...)
-│   ├── .pi/prompts/        ← the headless curator prompt
+│   ├── .pi/prompts/        ← curator prompts (headless auto + interactive)
 │   └── .github/workflows/  ← curator (hourly), synthesis (weekly), reviewqueue (daily)
 ├── server/                 ← THE memory server (one image, three roles)
 │   ├── server.py           ← assembles the single MCP + HTTP app

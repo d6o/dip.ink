@@ -34,8 +34,8 @@ scripts/     # Tooling that operates on the wiki.
   wikiutil.py    # Shared helpers (is_skipped, is_archive, read_frontmatter).
   processnotes-prepare-inbox.sh # Rebuilds oldest-first live N=4 batch.
   processnotes-supervisor.sh    # Runs fresh curator agent batches hourly.
-CLAUDE.md    # This file. The schema. Co-evolves with the wiki.
-.claude/commands/{processnotes,wikilint,wikidistill}.md   # Interactive commands.
+AGENTS.md    # This file. The schema. Co-evolves with the wiki.
+.pi/prompts/{processnotes,wikilint,wikidistill}.md   # Interactive prompts.
 .pi/prompts/processnotes-auto.md # Lean headless curator prompt.
 ```
 
@@ -144,7 +144,7 @@ The live `wiki/log.md` keeps roughly the last 14 days. Older entries rotate into
 
 ### Process notes (`/processnotes`)
 
-Agent sessions drop notes into `notes/` when they learn things (via the `wiki_note_drop` MCP tool — see `AGENTS.md` in the dip.ink repo). Each note is a **folder** named `YYYY-MM-DD-HHMMSS-<slug>/` containing `<folder>.md` (or legacy `NOTE.md`) plus any attachments. The `/processnotes` command drains this inbox — see `.claude/commands/processnotes.md` for the full workflow (dedup via log, secret scan with redact-and-reference, discuss-or-announce, write pages, validate, move note folders to `wiki/sources/notes/`, log, commit, push).
+Agent sessions drop notes into `notes/` when they learn things (via the `wiki_note_drop` MCP tool — see `AGENTS.md` in the dip.ink repo). Each note is a **folder** named `YYYY-MM-DD-HHMMSS-<slug>/` containing `<folder>.md` (or legacy `NOTE.md`) plus any attachments. The `/processnotes` command drains this inbox — see `.pi/prompts/processnotes.md` for the full workflow (dedup via log, secret scan with redact-and-reference, discuss-or-announce, write pages, validate, move note folders to `wiki/sources/notes/`, log, commit, push).
 
 ### Auto-curate (headless)
 
@@ -161,7 +161,7 @@ Differences from manual `/processnotes`:
 - **Review queue, not flag-and-stop.** Most notes get processed. Decisions that genuinely need the operator's judgment land as one-line bullets in `wiki/Curator review queue.md` under three buckets: **Substantial rewrites**, **Contradictions to verify**, **Secrets routed to the vault**. Routine actions do NOT go on the queue.
 - **Pages stay clean.** No inline `<!-- needs review -->` markers, no hedging prose. The queue is the only place that says "look at this."
 - **`auto-ingest` log entries.** Each sub-batch that read at least one note appends one compact entry to `wiki/log.md`.
-- **Synthesis pressure.** Each sub-batch does a one-synthesis-max check for repeated patterns. A separate weekly synthesis pass (`.claude/commands/synthesis-auto.md`) can create/update up to three synthesis pages when patterns accumulate.
+- **Synthesis pressure.** Each sub-batch does a one-synthesis-max check for repeated patterns. A separate weekly synthesis pass (`.pi/prompts/synthesis-auto.md`) can create/update up to three synthesis pages when patterns accumulate.
 
 ### Lint + index + rotate + distill (`/wikilint`)
 
@@ -192,6 +192,6 @@ The wiki covers whatever the operator wants their future agent sessions to know:
 - How they deploy things; infra conventions.
 - Workflows, decisions, and their reasoning.
 - Learnings distilled from articles, papers, and podcasts they feed in.
-- Project-specific context (though each project's own CLAUDE.md still owns its code-facing rules).
+- Project-specific context (though each project's own AGENTS.md still owns its code-facing rules).
 
 When in doubt about whether something belongs, ask.

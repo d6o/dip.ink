@@ -24,7 +24,7 @@ If the operator asks anything about how they do things — deploys, services, pr
 
 If you discover something a future session would want to know — infra facts, tool configs, decisions + reasoning, gotchas (error signature + root cause + fix), learnings from sources — call `wiki_note_drop`. **Err toward capture**: duplicates are cheap (the curator filters them); missed captures are expensive.
 
-Do NOT capture: the literal question/chat context, things already in CLAUDE.md or obvious from code, status updates without content.
+Do NOT capture: the literal question/chat context, things already in the project's context file (AGENTS.md/CLAUDE.md) or obvious from code, status updates without content.
 
 ## Note format
 

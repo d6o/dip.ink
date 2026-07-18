@@ -82,7 +82,7 @@ BACKGROUND_REINDEX_ENABLED = os.environ.get("WIKI_MCP_BACKGROUND_REINDEX", "1").
 # --- Note-drop validation limits ---
 
 # Used by the wiki_note_drop MCP tool. Matches the notes/ inbox protocol
-# documented in the wiki repo's CLAUDE.md.
+# documented in the wiki repo's AGENTS.md.
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 FILENAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 NOTE_BODY_MAX = 256 * 1024              # 256 KB source-note body cap

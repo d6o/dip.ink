@@ -5,7 +5,7 @@ Private memory repo for a [dip.ink](https://github.com/d6o/dip.ink) deployment.
 - `notes/` — inbox: agents drop timestamped note folders here (via `wiki_note_drop`).
 - `wiki/` — the curated wiki the hourly curator maintains. Browse it in Obsidian.
 - `raw/` — immutable source documents for manual ingestion.
-- `CLAUDE.md` — the schema + curation contract every maintaining agent follows.
+- `AGENTS.md` — the schema + curation contract every maintaining agent follows.
 - `scripts/` — linter, index generator, log rotation, weekly distill, curator supervisor.
 - `.github/workflows/` — the curator (hourly), synthesis (weekly), review-queue (daily) agents.
 

@@ -58,7 +58,7 @@ Capture when you learn:
 Do NOT capture:
 
 - The literal question or chat context — only the substantive learning.
-- Things already documented in CLAUDE.md or obviously derivable from the code.
+- Things already documented in the project's context file (AGENTS.md/CLAUDE.md) or obviously derivable from the code.
 - Status updates without content ("did X today" — what's the learning?).
 
 ## How to format a note

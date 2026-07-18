@@ -17,7 +17,7 @@ Exit code:
     1   errors found
     2   warnings (no errors)
 
-The schema this enforces lives in CLAUDE.md.
+The schema this enforces lives in AGENTS.md.
 """
 from __future__ import annotations
 
