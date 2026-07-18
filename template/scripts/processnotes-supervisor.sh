@@ -75,7 +75,9 @@ live_inbox_count() {
   local count=0 path
   for path in notes/*; do
     [[ -d "$path" ]] || continue
-    [[ "$(basename "$path")" == ".deferred" ]] && continue
+    case "$(basename "$path")" in
+      .deferred|.blocked) continue ;;
+    esac
     count=$((count + 1))
   done
   echo "$count"

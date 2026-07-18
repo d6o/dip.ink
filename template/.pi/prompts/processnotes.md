@@ -10,8 +10,8 @@ Full workflow and quality-filter rules are in `AGENTS.md` under "Process notes (
 
 **Credentials, tokens, and passwords must never be submitted in notes or written to the wiki. Reference only the corresponding secret-manager path.**
 
-1. **List `notes/` subdirectories** (skip `README.md` and anything not a folder). If empty, say "inbox empty" and stop.
-2. **Dedup against log**: for each note folder name, grep `wiki/log.md` for `ingest` entries mentioning it. Skip any already processed. (Shouldn't happen since folders get deleted after ingest, but guard anyway.)
+1. **List live `notes/` subdirectories** (skip `README.md`, `notes/.deferred/`, `notes/.blocked/`, and anything not a folder). Existing blocked entries are terminal: never include them in a normal batch. If no live folders exist, say "inbox empty" and stop.
+2. **Dedup against log**: for each live folder, run `python3 scripts/processnotes-is-ingested.py <slug>`. For an exact prior `ingest |` or `auto-ingest |` match, run `bash scripts/processnotes-block-note.sh <slug> already-ingested`. This moves the complete folder to `notes/.blocked/<slug>/`, preserves every existing note/attachment byte, and adds a machine-readable `BLOCKED.md` receipt. Never skip an exact duplicate in place. If every live folder is terminally deduped, commit and push those blocked moves without writing a wiki/log heartbeat.
 3. **Read all remaining source-note files**. Group by topic. Related notes ingest together — cross-referencing is the main win of batch processing.
 4. **Discuss with the operator — but skip when the proposal is all obvious extensions.** The discuss step is real value when there's a judgment call to make; it's friction otherwise. Skip the dialogue (announce briefly and proceed) when ALL of the following hold:
    - Every note maps cleanly to an existing entity or concept page (no new entity / concept / synthesis / decision pages needed).
@@ -53,7 +53,7 @@ Full workflow and quality-filter rules are in `AGENTS.md` under "Process notes (
 
    <summary of what was ingested, pages touched, cross-refs noted, attachments copied to assets/>
    ```
-8. **Verify the moves landed** — every processed note folder should now exist at `wiki/sources/notes/YYYY/MM/DD/<folder>/` with `<folder>.md`. The `notes/` directory should contain only the inbox README and any unprocessed folders. **Don't `rm -rf`** — the move in step 5 is permanent. If a folder is still in `notes/` after step 5 finished, it wasn't processed and shouldn't be deleted.
+8. **Verify the moves landed** — every processed note folder should now exist at `wiki/sources/notes/YYYY/MM/DD/<folder>/` with `<folder>.md`. The `notes/` directory should contain only the inbox README, `.deferred/`, `.blocked/`, and any intentionally unprocessed live folders. **Don't `rm -rf`** — the move in step 5 is permanent. If a folder is still live in `notes/` after step 5 finished, it wasn't processed and shouldn't be deleted.
 9. **Commit**: `ingest: notes batch YYYY-MM-DD`.
 10. **Push**: `git push`. Every `/processnotes` run ends with a push so the remote copy stays current — do not skip this step even on a small batch.
 
@@ -66,12 +66,13 @@ If you find a bare `.md` file at the top of `notes/` (not in a folder), the capt
 Not every note becomes wiki content:
 - **Thin note** (not enough info to file): ask the operator; if unclear, delete the folder and log as `note | dropped thin: <folder>: <why>`.
 - **Stale note** (contradicts newer wiki content): flag the conflict to the operator; usually delete.
-- **Duplicate note** (already in wiki): log as `note | dropped duplicate: <folder>`, delete, no pages changed.
-- **Wrong note** (claim looks incorrect): flag to the operator. Don't silently correct or silently accept.
+- **Duplicate note** (content is already covered but its exact slug was not previously logged): log as `note | dropped duplicate: <folder>`, delete, no pages changed.
+- **Wrong or malformed note**: flag to the operator. If it should be quarantined, run `bash scripts/processnotes-block-note.sh <slug> needs-operator-review` (or the narrower `corrupt-input`, `unparseable-input`, or `malformed-note` reason). Do not edit the note or attachments before blocking.
 
 Record drops in `log.md` too — auditable trail of what came in and what made it through.
 
 ## Don't
 
 - Don't edit `raw/` (notes are not raw sources — they're inbox items).
+- Don't read or re-batch existing entries under `notes/.blocked/`.
 - Don't commit before the operator approves the page writes.
