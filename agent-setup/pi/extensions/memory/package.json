@@ -7,7 +7,14 @@
   "scripts": {
     "clean": "echo 'nothing to clean'",
     "build": "echo 'nothing to build'",
-    "check": "echo 'nothing to check'"
+    "check": "npm run typecheck",
+    "typecheck": "tsc --noEmit --skipLibCheck --target ES2022 --module NodeNext --moduleResolution NodeNext --types node index.ts"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "0.80.10",
+    "@types/node": "24.13.3",
+    "typebox": "1.1.38",
+    "typescript": "5.9.3"
   },
   "pi": {
     "extensions": ["./index.ts"]

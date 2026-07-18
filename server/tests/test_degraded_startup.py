@@ -49,17 +49,24 @@ def write_page(root: Path, name: str, body: str) -> None:
     (root / f"{name}.md").write_text(body, encoding="utf-8")
 
 
-def write_cache(cache_dir: Path, pages: dict[str, tuple[str, np.ndarray]]) -> None:
+def write_cache(
+    cache_dir: Path,
+    pages: dict[str, tuple[str, np.ndarray]],
+    *,
+    hash_format: str | None = None,
+) -> None:
     cache_dir.mkdir(parents=True, exist_ok=True)
     names = sorted(pages)
-    np.savez(
-        cache_dir / "index.npz",
-        model="fake/fake-model@100",
-        dim=3,
-        names=np.array(names),
-        hashes=np.array([pages[name][0] for name in names]),
-        vectors=np.stack([pages[name][1] for name in names]).astype(np.float32),
-    )
+    values = {
+        "model": "fake/fake-model@100",
+        "dim": 3,
+        "names": np.array(names),
+        "hashes": np.array([pages[name][0] for name in names]),
+        "vectors": np.stack([pages[name][1] for name in names]).astype(np.float32),
+    }
+    if hash_format is not None:
+        values["hash_format"] = hash_format
+    np.savez(cache_dir / "index.npz", **values)
 
 
 class DegradedStartupTests(unittest.TestCase):
@@ -97,7 +104,7 @@ class DegradedStartupTests(unittest.TestCase):
         self.assertTrue(stats["degraded"])
         self.assertEqual(stats["omitted"], 1)
         self.assertEqual(index.get("Alpha")["body"], stable_body)
-        self.assertIsNone(index.get("Beta"))
+        self.assertEqual(index.get("Beta")["body"], "Beta changed page")
         results = index.search("Alpha deployment", 3)
         self.assertEqual(results[0]["name"], "Alpha")
         self.assertEqual(results[0]["search_mode"], "lexical-degraded")
@@ -108,6 +115,7 @@ class DegradedStartupTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(payload["status"], "degraded")
         self.assertEqual(payload["pages_indexed"], 1)
+        self.assertEqual(payload["pages_cataloged"], 2)
         self.assertEqual(payload["pages_omitted"], 1)
         self.assertIn("status=429", payload["last_error"])
         cache = np.load(self.cache / "index.npz", allow_pickle=False)
@@ -121,6 +129,7 @@ class DegradedStartupTests(unittest.TestCase):
 
         self.assertFalse(stats["ready"])
         self.assertFalse(index.snapshot()["ready"])
+        self.assertEqual(index.get("Only")["body"], "No cached vector")
         with self.assertRaises(server.IndexNotReadyError):
             index.search("Only", 3)
 
@@ -131,6 +140,71 @@ class DegradedStartupTests(unittest.TestCase):
         self.assertTrue(json.loads(live.body)["live"])
         self.assertEqual(health.status_code, 503)
         self.assertEqual(json.loads(health.body)["status"], "error")
+
+    def test_description_only_change_reembeds_exact_input(self):
+        write_page(
+            self.root,
+            "Alpha",
+            "---\nindex-description: first description\n---\nSame body",
+        )
+        embedder = FakeEmbedder(fail=False)
+        index = server.Index(self.root, embedder, self.cache)
+        first = index.reindex()
+        self.assertTrue(first["ok"])
+        self.assertEqual(embedder.calls, 1)
+
+        write_page(
+            self.root,
+            "Alpha",
+            "---\nindex-description: changed description\n---\nSame body",
+        )
+        second = index.reindex()
+
+        self.assertTrue(second["ok"])
+        self.assertEqual(second["embedded"], 1)
+        self.assertEqual(embedder.calls, 2)
+
+    def test_legacy_body_hash_is_accepted_once_then_migrated_without_embedding(self):
+        body = "Legacy cached body"
+        write_page(
+            self.root,
+            "Alpha",
+            "---\nindex-description: current metadata\n---\n" + body,
+        )
+        write_cache(
+            self.cache,
+            {"Alpha": (server.hash_body(body), np.array([1.0, 0.0, 0.0], dtype=np.float32))},
+        )
+        embedder = FakeEmbedder(fail=True)
+        index = server.Index(self.root, embedder, self.cache)
+
+        stats = index.reindex()
+
+        self.assertTrue(stats["ok"])
+        self.assertEqual(stats["embedded"], 0)
+        self.assertEqual(stats["legacy_migrated"], 1)
+        self.assertEqual(embedder.calls, 0)
+        data = np.load(self.cache / "index.npz", allow_pickle=False)
+        self.assertEqual(str(data["hash_format"]), server.EMBED_HASH_FORMAT)
+        self.assertEqual(len(str(data["hashes"][0])), 64)
+
+    def test_backlinks_and_get_include_page_missing_fresh_vector(self):
+        alpha_body = "Alpha stable"
+        write_page(self.root, "Alpha", alpha_body)
+        write_page(self.root, "Beta", "Beta changed and links [[Alpha]]")
+        write_cache(
+            self.cache,
+            {"Alpha": (server.hash_body(alpha_body), np.array([1.0, 0.0, 0.0], dtype=np.float32))},
+        )
+        index = server.Index(self.root, FakeEmbedder(fail=True), self.cache)
+
+        stats = index.reindex()
+
+        self.assertTrue(stats["degraded"])
+        self.assertEqual(index.get("Beta")["body"], "Beta changed and links [[Alpha]]")
+        self.assertEqual(index.backlinks_of("Alpha"), ["Beta"])
+        self.assertEqual(index.snapshot()["pages_indexed"], 1)
+        self.assertEqual(index.snapshot()["pages_cataloged"], 2)
 
     def test_later_success_atomically_publishes_full_index_and_clears_error(self):
         stable_body = "Alpha deployment reference"

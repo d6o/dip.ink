@@ -1,19 +1,13 @@
-"""memory-alerts — dead-man checks for the agentic memory. Exit 1 = alert.
+"""memory-alerts — shallow operational checks. Exit 1 = alert.
 
-Three checks (the ones whose absence caused real silent failures in this saga):
-  1. Ingest freshness: newest note on disk (git) vs newest episode in the graph.
-     If the gap exceeds MAX_PENDING_AGE_HOURS, ingest is stuck (cron suspended,
-     git clone failing, LLM down...).
-  2. Community age: newest Community.created_at older than MAX_COMMUNITY_AGE_DAYS
-     means the weekly rebuild failed/stopped.
-  3. The memory server's /health.
-
-Runs every 30 min with backoffLimit=0 — a FAILED job is the alert (visible in
-`kubectl get jobs -n graphiti`, k9s, events). Cheap and dependency-free.
+Checks the shared `/api/status` snapshot rather than treating graph inactivity as
+failure. Pending note→episode lag is the freshness signal: a quiet memory with
+zero pending notes is healthy regardless of the newest episode's age. Community
+age and component readiness remain hard checks. Blocked notes and review-queue
+items are visible warnings but do not fail the job by themselves.
 """
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 import sys
@@ -27,63 +21,75 @@ MAX_PENDING_AGE_H = float(os.environ.get("MAX_PENDING_AGE_HOURS", "2"))
 MAX_COMMUNITY_AGE_D = float(os.environ.get("MAX_COMMUNITY_AGE_DAYS", "8"))
 
 failures: list[str] = []
+warnings: list[str] = []
 
 
-def check_health(name: str, base: str) -> None:
+def evaluate_status(snapshot: dict) -> None:
+    """Apply deterministic alert policy to one bounded status snapshot."""
+    components = snapshot.get("components") or {}
+    for name in ("wiki", "graph", "git_clone"):
+        component = components.get(name) or {}
+        if not component.get("ready"):
+            failures.append(f"component {name} not ready ({component.get('error') or 'unknown'})")
+
+    ingest = snapshot.get("ingest") or {}
+    if ingest.get("error"):
+        failures.append(f"ingest status unavailable ({ingest.get('error')})")
+    pending = int(ingest.get("pending") or 0)
+    lag_seconds = float(ingest.get("lag_seconds") or 0.0)
+    if pending > 0 and lag_seconds > MAX_PENDING_AGE_H * 3600:
+        failures.append(
+            f"ingest pending lag: {pending} note(s), oldest {lag_seconds / 3600:.1f}h "
+            f"(threshold {MAX_PENDING_AGE_H:g}h)"
+        )
+
+    communities = snapshot.get("communities") or {}
+    community_count = int(communities.get("count") or 0)
+    community_age = communities.get("age_seconds")
+    if community_count == 0:
+        failures.append("communities: none in graph")
+    elif community_age is not None and float(community_age) > MAX_COMMUNITY_AGE_D * 86400:
+        failures.append(
+            f"communities stale: newest is {float(community_age) / 86400:.1f}d old "
+            f"(threshold {MAX_COMMUNITY_AGE_D:g}d)"
+        )
+
+    queues = snapshot.get("queues") or {}
+    blocked = int((queues.get("blocked") or {}).get("count") or 0)
+    review = int(queues.get("review_queue_open") or 0)
+    if blocked:
+        warnings.append(f"blocked notes awaiting audit: {blocked}")
+    if review:
+        warnings.append(f"curator review queue open: {review}")
+
+
+def check_status(base: str) -> None:
     try:
-        with urllib.request.urlopen(f"{base}/health", timeout=15) as r:
-            if r.status != 200:
-                failures.append(f"{name} /health HTTP {r.status}")
-    except Exception as e:
-        failures.append(f"{name} unreachable: {e}")
-
-
-async def check_graph() -> None:
-    from ingest import build_graphiti
-    g = build_graphiti()
-    try:
-        # 1. ingest freshness — compare newest episode's slug-timestamp with now.
-        rows, _, _ = await g.driver.execute_query(
-            "MATCH (e:Episodic) RETURN max(e.name) AS newest")
-        newest = rows[0]["newest"] if rows else None
-        if newest and len(newest) >= 17:
-            try:
-                ts = datetime.strptime(newest[:17], "%Y-%m-%d-%H%M%S").replace(tzinfo=timezone.utc)
-                age_h = (datetime.now(timezone.utc) - ts).total_seconds() / 3600
-                # Notes don't arrive constantly; alert only past the threshold + slack.
-                # A quiet weekend is fine; a 12h gap on a weekday usually means stuck.
-                if age_h > MAX_PENDING_AGE_H * 6:  # 12h with the default 2h knob
-                    failures.append(f"ingest freshness: newest episode is {age_h:.1f}h old ({newest[:40]})")
-            except ValueError:
-                pass
-        # 2. community age
-        rows, _, _ = await g.driver.execute_query(
-            "MATCH (c:Community) RETURN max(c.created_at) AS newest, count(c) AS n")
-        if rows and rows[0]["n"]:
-            newest_c = rows[0]["newest"]
-            if newest_c is not None:
-                age_d = (datetime.now(timezone.utc) - newest_c.to_native().replace(tzinfo=timezone.utc)
-                         if hasattr(newest_c, "to_native") else datetime.now(timezone.utc) - newest_c
-                         ).total_seconds() / 86400
-                if age_d > MAX_COMMUNITY_AGE_D:
-                    failures.append(f"communities stale: newest is {age_d:.1f}d old (weekly rebuild failing?)")
-        else:
-            failures.append("communities: none in graph")
-    finally:
-        await g.close()
+        with urllib.request.urlopen(f"{base}/api/status", timeout=20) as response:
+            if response.status != 200:
+                failures.append(f"memory-server /api/status HTTP {response.status}")
+                return
+            snapshot = json.loads(response.read())
+    except Exception as error:  # noqa: BLE001
+        failures.append(f"memory-server unreachable: {error}")
+        return
+    if not isinstance(snapshot, dict):
+        failures.append("memory-server /api/status returned a non-object")
+        return
+    evaluate_status(snapshot)
 
 
 def main() -> None:
-    check_health("memory-server", MCP_BASE)
-    try:
-        asyncio.run(check_graph())
-    except Exception as e:
-        failures.append(f"graph checks errored: {e}")
+    failures.clear()
+    warnings.clear()
+    check_status(MCP_BASE)
 
+    for warning in warnings:
+        print(f"  ~~ WARN: {warning}")
     if failures:
         print("MEMORY ALERTS FIRING:")
-        for f in failures:
-            print(f"  !! {f}")
+        for failure in failures:
+            print(f"  !! {failure}")
         raise SystemExit(1)
     print(f"all memory checks OK at {datetime.now(timezone.utc).isoformat()}")
 

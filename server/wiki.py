@@ -96,6 +96,19 @@ ATTACHMENT_BINARY_MAX = 2 * 1024 * 1024  # 2 MB per binary attachment (decoded)
 _repo_lock = threading.Lock()
 
 
+@dataclass(frozen=True)
+class ExistingNoteDrop:
+    folder: str
+    relative_dir: str
+    archived: bool
+
+
+_capture_hash_lock = threading.Lock()
+_capture_hash_root: Path | None = None
+_capture_hash_revision_value: str | None = None
+_capture_hash_index: dict[str, list[ExistingNoteDrop]] = {}
+
+
 # --- Git plumbing for clone-at-startup, periodic pull, and note-drop push ---
 
 
@@ -314,31 +327,122 @@ def source_note_markdown(folder_name: str, note_md: str, capture_hash: str | Non
     return "---\n" + yaml.safe_dump(new_fm, sort_keys=False, allow_unicode=True) + "---\n\n" + body.rstrip() + "\n"
 
 
-def find_existing_note_drop(slug: str, capture_hash: str) -> str | None:
-    """Return an existing inbox folder for a retried note-drop request."""
-    notes_root = Path(WIKI_ROOT) / "notes"
-    if not notes_root.exists():
+def _capture_hash_revision(root: Path) -> str | None:
+    """Cheap current-HEAD token; a changed checkout triggers one index refresh."""
+    git_dir = root / ".git"
+    head = git_dir / "HEAD"
+    try:
+        value = head.read_text(encoding="utf-8").strip()
+        if value.startswith("ref:"):
+            ref_name = value.split(":", 1)[1].strip()
+            ref = git_dir / ref_name
+            if ref.exists():
+                return ref.read_text(encoding="utf-8").strip()
+            packed = git_dir / "packed-refs"
+            if packed.exists():
+                for line in packed.read_text(encoding="utf-8").splitlines():
+                    if line and not line.startswith(("#", "^")):
+                        sha, name = line.split(" ", 1)
+                        if name == ref_name:
+                            return sha
+        return value
+    except OSError:
         return None
-    for folder in sorted(notes_root.glob(f"*-{slug}")):
-        if not folder.is_dir():
-            continue
-        source_file = folder / f"{folder.name}.md"
-        if not source_file.exists():
-            continue
-        try:
-            fm, _body = read_frontmatter_and_body(source_file.read_text(encoding="utf-8"))
-        except Exception:
-            continue
-        if fm.get("capture-hash") == capture_hash:
-            return folder.name
+
+
+def _refresh_capture_hash_index(*, force: bool = False) -> None:
+    """Index capture hashes across live inboxes and canonical archives.
+
+    The scan is O(notes) only once per git revision (or every call for a
+    non-git test/dev tree). Normal retries are O(1), which remains practical at
+    ~10k source notes.
+    """
+    global _capture_hash_root, _capture_hash_revision_value, _capture_hash_index
+    root = Path(WIKI_ROOT)
+    revision = _capture_hash_revision(root)
+    with _capture_hash_lock:
+        if (
+            not force
+            and revision is not None
+            and _capture_hash_root == root
+            and _capture_hash_revision_value == revision
+        ):
+            return
+
+        indexed: dict[str, list[ExistingNoteDrop]] = defaultdict(list)
+        locations = (
+            (root / "notes", False),
+            (root / "wiki" / "sources" / "notes", True),
+        )
+        for location, archived in locations:
+            if not location.exists():
+                continue
+            for source_file in location.rglob("*.md"):
+                folder = source_file.parent
+                if source_file.stem != folder.name:
+                    continue
+                try:
+                    fm, _body = read_frontmatter_and_body(
+                        source_file.read_text(encoding="utf-8")
+                    )
+                except Exception:
+                    continue
+                capture_hash = fm.get("capture-hash")
+                if not isinstance(capture_hash, str) or not capture_hash:
+                    continue
+                try:
+                    relative_dir = folder.relative_to(root).as_posix()
+                except ValueError:
+                    continue
+                indexed[capture_hash].append(ExistingNoteDrop(
+                    folder=folder.name,
+                    relative_dir=relative_dir,
+                    archived=archived,
+                ))
+
+        _capture_hash_root = root
+        _capture_hash_revision_value = revision
+        _capture_hash_index = dict(indexed)
+
+
+def find_existing_note_drop(
+    slug: str,
+    capture_hash: str,
+    *,
+    force_refresh: bool = False,
+) -> ExistingNoteDrop | None:
+    """Find a retried payload in notes/ or wiki/sources/notes/."""
+    _refresh_capture_hash_index(force=force_refresh)
+    suffix = f"-{slug}"
+    with _capture_hash_lock:
+        matches = list(_capture_hash_index.get(capture_hash, ()))
+    for existing in matches:
+        if existing.folder.endswith(suffix):
+            return existing
     return None
 
 
-def note_drop_result(folder_name: str, sha: str = "", already_exists: bool = False) -> dict:
+def note_drop_result(
+    folder: str | ExistingNoteDrop,
+    sha: str = "",
+    already_exists: bool = False,
+) -> dict:
+    if isinstance(folder, ExistingNoteDrop):
+        folder_name = folder.folder
+        relative_dir = folder.relative_dir
+        archived = folder.archived
+    else:
+        folder_name = folder
+        relative_dir = f"notes/{folder_name}"
+        archived = False
+    if already_exists and not sha:
+        sha = _capture_hash_revision(Path(WIKI_ROOT)) or ""
     result = {
         "ok": True,
         "folder": folder_name,
         "source_file": f"{folder_name}.md",
+        "path": relative_dir,
+        "archived": archived,
         "commit": sha,
         "pushed": True,
         "already_exists": already_exists,
@@ -346,13 +450,17 @@ def note_drop_result(folder_name: str, sha: str = "", already_exists: bool = Fal
     # Best-effort web URL for the pushed folder (host-specific path shape).
     repo_web = re.sub(r"\.git$", "", WIKI_REPO_URL)
     if "github.com" in WIKI_REPO_URL or "gitlab" in WIKI_REPO_URL:
-        result["url"] = f"{repo_web}/tree/{WIKI_BRANCH}/notes/{folder_name}"
+        result["url"] = f"{repo_web}/tree/{WIKI_BRANCH}/{relative_dir}"
     elif repo_web.startswith("http"):
-        result["url"] = f"{repo_web}/src/branch/{WIKI_BRANCH}/notes/{folder_name}"  # gitea/forgejo
+        result["url"] = f"{repo_web}/src/branch/{WIKI_BRANCH}/{relative_dir}"  # gitea/forgejo
     return result
 
 
 # --- In-memory index ---
+
+
+EMBED_HASH_FORMAT = "embedding-input-v1"
+LEGACY_HASH_FORMAT = "legacy-body-v0"
 
 
 @dataclass
@@ -365,7 +473,9 @@ class Page:
     tags: list[str] = field(default_factory=list)
     description: str = ""
     body: str = ""
-    body_hash: str = ""
+    body_hash: str = ""  # legacy cache compatibility only
+    embedding_hash: str = ""
+    cache_hash_format: str = EMBED_HASH_FORMAT
     wikilinks_out: set[str] = field(default_factory=set)
     embedding: np.ndarray | None = None
 
@@ -455,11 +565,9 @@ class Index:
     def __init__(self, root: Path, embedder: Embedder, cache_dir: Path | None = None):
         self.root = root
         self.embedder = embedder
-        # Fold the embed window into the cache identity. The on-disk cache reuses
-        # an embedding whenever a page's body_hash is unchanged — but widening
-        # max_embed_chars changes the embedding *input* without changing the body,
-        # so the window must be part of the key or a window change silently reuses
-        # the old (truncated) vectors. Changing it forces a one-time full re-embed.
+        # Fold the embed window into the model identity as a coarse guard. Each
+        # page additionally hashes the exact title + description + body slice
+        # sent to the provider, so any future input metadata change invalidates.
         self.model_name = f"{embedder.provider}/{embedder.model_name}@{embedder.max_embed_chars}"
         self.dim = embedder.dim
         self.cache_dir = cache_dir
@@ -503,6 +611,14 @@ class Index:
                 return {}
             names = [str(n) for n in data["names"]]
             hashes = [str(h) for h in data["hashes"]]
+            hash_format = (
+                str(data["hash_format"])
+                if "hash_format" in data.files
+                else LEGACY_HASH_FORMAT
+            )
+            if hash_format not in {EMBED_HASH_FORMAT, LEGACY_HASH_FORMAT}:
+                log.warning("ignoring cache with unknown hash format %r", hash_format)
+                return {}
             vectors = data["vectors"].astype(np.float32)
             if vectors.shape != (len(names), self.dim):
                 log.warning("cache vector shape mismatch %s != (%d,%d); ignoring",
@@ -511,8 +627,15 @@ class Index:
             out: dict[str, Page] = {}
             for n, h, v in zip(names, hashes, vectors):
                 out[n] = Page(
-                    name=n, path=Path(""), type=None, category=None, status=None,
-                    body_hash=h, embedding=v,
+                    name=n,
+                    path=Path(""),
+                    type=None,
+                    category=None,
+                    status=None,
+                    body_hash=h if hash_format == LEGACY_HASH_FORMAT else "",
+                    embedding_hash=h if hash_format == EMBED_HASH_FORMAT else "",
+                    cache_hash_format=hash_format,
+                    embedding=v,
                 )
             log.info("loaded %d cached embeddings from %s", len(out), path)
             return out
@@ -527,11 +650,15 @@ class Index:
             return
         try:
             self.cache_dir.mkdir(parents=True, exist_ok=True)
-            names = sorted(pages.keys())
+            usable = {
+                name: page for name, page in pages.items()
+                if page.embedding is not None and page.embedding_hash
+            }
+            names = sorted(usable)
             if not names:
                 return
-            hashes = [pages[n].body_hash for n in names]
-            vectors = np.stack([pages[n].embedding for n in names]).astype(np.float32)
+            hashes = [usable[n].embedding_hash for n in names]
+            vectors = np.stack([usable[n].embedding for n in names]).astype(np.float32)
             tmp = path.with_suffix(".tmp.npz")
             np.savez(
                 tmp,
@@ -539,6 +666,7 @@ class Index:
                 dim=self.dim,
                 names=np.array(names),
                 hashes=np.array(hashes),
+                hash_format=EMBED_HASH_FORMAT,
                 vectors=vectors,
             )
             tmp.replace(path)
@@ -586,6 +714,11 @@ class Index:
         text = "\n\n".join(parts)
         return text[:self.embedder.max_embed_chars]
 
+    @staticmethod
+    def _embedding_hash(text: str) -> str:
+        """Hash the exact provider input, after all composition/truncation."""
+        return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
     def _publish(
         self,
         pages: dict[str, Page],
@@ -605,10 +738,12 @@ class Index:
         )
         now = time.time()
         with self._lock:
-            self.pages = usable
+            # Catalog and graph metadata remain available even for pages whose
+            # fresh vector is temporarily omitted during provider degradation.
+            self.pages = dict(pages)
             self.names = names
             self.matrix = matrix
-            self.backlinks = self._compute_backlinks(usable)
+            self.backlinks = self._compute_backlinks(pages)
             self._last_indexed = now
             self._last_attempt = now
             if successful:
@@ -649,7 +784,8 @@ class Index:
                 "ready": self._ready,
                 "status": self._status,
                 "degraded": self._degraded,
-                "pages_indexed": len(self.pages),
+                "pages_indexed": len(self.names),
+                "pages_cataloged": len(self.pages),
                 "pages_scanned": self._scanned_pages,
                 "pages_omitted": self._omitted_pages,
                 "provider": self.embedder.provider,
@@ -687,13 +823,33 @@ class Index:
 
             to_embed: list[tuple[str, str]] = []
             unchanged = 0
+            migrated_legacy = 0
             for name, page in scanned.items():
+                embed_text = self._embed_text_for_page(page)
+                page.embedding_hash = self._embedding_hash(embed_text)
+                page.cache_hash_format = EMBED_HASH_FORMAT
                 prev = old.get(name)
-                if prev is not None and prev.body_hash == page.body_hash and prev.embedding is not None:
+                exact_hit = (
+                    prev is not None
+                    and prev.cache_hash_format == EMBED_HASH_FORMAT
+                    and prev.embedding_hash == page.embedding_hash
+                    and prev.embedding is not None
+                )
+                legacy_hit = (
+                    prev is not None
+                    and prev.cache_hash_format == LEGACY_HASH_FORMAT
+                    and prev.body_hash == page.body_hash
+                    and prev.embedding is not None
+                )
+                if exact_hit or legacy_hit:
                     page.embedding = prev.embedding
                     unchanged += 1
+                    if legacy_hit:
+                        # One-time compatibility acceptance. Saving this
+                        # successful snapshot rewrites the entry to exact-input.
+                        migrated_legacy += 1
                 else:
-                    to_embed.append((name, self._embed_text_for_page(page)))
+                    to_embed.append((name, embed_text))
 
             removed = [name for name in old if name not in scanned]
             cached_baseline = {
@@ -704,7 +860,7 @@ class Index:
             # A slow/dead provider cannot prevent readiness when a valid baseline exists.
             if to_embed and cached_baseline:
                 self._publish(
-                    cached_baseline,
+                    scanned,
                     status="degraded",
                     degraded=True,
                     error=None,
@@ -724,7 +880,7 @@ class Index:
                 except Exception as error:
                     if cached_baseline:
                         self._publish(
-                            cached_baseline,
+                            scanned,
                             status="degraded",
                             degraded=True,
                             error=error,
@@ -732,10 +888,16 @@ class Index:
                             scanned_pages=len(scanned),
                         )
                     else:
-                        self.record_failure(
-                            error,
-                            scanned_pages=len(scanned),
+                        # Publish the full metadata catalog even with zero
+                        # usable vectors. get/backlinks remain available while
+                        # semantic search correctly reports unready.
+                        self._publish(
+                            scanned,
+                            status="degraded",
+                            degraded=True,
+                            error=error,
                             omitted_pages=len(to_embed),
+                            scanned_pages=len(scanned),
                         )
                     elapsed = time.time() - t0
                     snap = self.snapshot()
@@ -768,13 +930,14 @@ class Index:
                 successful=True,
             )
 
-            if to_embed or removed:
+            if to_embed or removed or migrated_legacy:
                 self._save_cache(scanned)
 
             elapsed = time.time() - t0
             log.info(
-                "reindex done in %.1fs: %d pages (%d unchanged, %d new/changed, %d removed)",
-                elapsed, len(scanned), unchanged, len(to_embed), len(removed),
+                "reindex done in %.1fs: %d pages (%d unchanged, %d new/changed, "
+                "%d legacy-migrated, %d removed)",
+                elapsed, len(scanned), unchanged, len(to_embed), migrated_legacy, len(removed),
             )
             return {
                 "ok": True,
@@ -786,6 +949,7 @@ class Index:
                 "scanned": len(scanned),
                 "unchanged": unchanged,
                 "embedded": len(to_embed),
+                "legacy_migrated": migrated_legacy,
                 "omitted": 0,
                 "removed": len(removed),
             }
@@ -1080,7 +1244,7 @@ def _wiki_note_drop_impl(
         if existing:
             log.info(
                 "wiki_note_drop idempotent hit before sync slug=%s folder=%s duration=%.2fs",
-                slug, existing, time.monotonic() - started,
+                slug, existing.folder, time.monotonic() - started,
             )
             return note_drop_result(existing, already_exists=True)
 
@@ -1092,11 +1256,11 @@ def _wiki_note_drop_impl(
         except Exception as e:
             return {"ok": False, "error": f"failed to sync repo to origin/{WIKI_BRANCH}: {e}"}
 
-        existing = find_existing_note_drop(slug, capture_hash)
+        existing = find_existing_note_drop(slug, capture_hash, force_refresh=True)
         if existing:
             log.info(
                 "wiki_note_drop idempotent hit after sync slug=%s folder=%s duration=%.2fs",
-                slug, existing, time.monotonic() - started,
+                slug, existing.folder, time.monotonic() - started,
             )
             return note_drop_result(existing, already_exists=True)
 
@@ -1156,6 +1320,30 @@ def _wiki_note_drop_impl(
         return note_drop_result(folder_name, sha)
 
 
+def _wiki_note_drop_recorded(
+    slug: str,
+    note_md: str,
+    attachments: dict[str, str] | None,
+    binary_attachments: dict[str, str] | None,
+) -> dict:
+    started = time.monotonic()
+    result = _wiki_note_drop_impl(slug, note_md, attachments, binary_attachments)
+    outcome = (
+        "already_exists" if result.get("ok") and result.get("already_exists")
+        else "ok" if result.get("ok")
+        else "error"
+    )
+    _record_query({
+        "ts": time.time(),
+        "at": _now_iso(),
+        "source": "mcp",
+        "tool": "wiki_note_drop",
+        "outcome": outcome,
+        "duration_ms": int((time.monotonic() - started) * 1000),
+    })
+    return result
+
+
 @mcp.tool()
 async def wiki_note_drop(
     slug: str,
@@ -1194,7 +1382,13 @@ async def wiki_note_drop(
     the vault at /services/foo/API_TOKEN").
     """
     return await anyio.to_thread.run_sync(
-        functools.partial(_wiki_note_drop_impl, slug, note_md, attachments, binary_attachments)
+        functools.partial(
+            _wiki_note_drop_recorded,
+            slug,
+            note_md,
+            attachments,
+            binary_attachments,
+        )
     )
 
 
@@ -1212,20 +1406,28 @@ def health(req: Request) -> Response:
     return JSONResponse(snapshot, status_code=200 if snapshot["ready"] else 503)
 
 
-def http_search(req: Request) -> Response:
-    q = req.query_params.get("q", "").strip()
-    if not q:
-        return JSONResponse({"error": "missing q"}, status_code=400)
-    k = max(1, min(int(req.query_params.get("k", "5")), 25))
-    try:
-        results = idx.search(q, k)
-    except IndexNotReadyError:
-        return JSONResponse({"error": "wiki index is not ready", **idx.snapshot()}, status_code=503)
+def _http_search_impl(q: str, k: int) -> list[dict]:
+    """Blocking HTTP search implementation (embedding + metrics file write)."""
+    results = idx.search(q, k)
     _record_query({
         "ts": time.time(), "at": _now_iso(), "source": "http", "tool": "search",
         "query": q[:200], "k": k, "n": len(results),
         "top": [{"name": r["name"], "score": round(r["score"], 4)} for r in results[:3]],
     })
+    return results
+
+
+async def http_search(req: Request) -> Response:
+    q = req.query_params.get("q", "").strip()
+    if not q:
+        return JSONResponse({"error": "missing q"}, status_code=400)
+    k = max(1, min(int(req.query_params.get("k", "5")), 25))
+    try:
+        results = await anyio.to_thread.run_sync(
+            functools.partial(_http_search_impl, q, k)
+        )
+    except IndexNotReadyError:
+        return JSONResponse({"error": "wiki index is not ready", **idx.snapshot()}, status_code=503)
     return JSONResponse({"query": q, "results": results})
 
 
@@ -1253,8 +1455,8 @@ def http_backlinks(req: Request) -> Response:
     return JSONResponse({"name": name, "backlinks": bl})
 
 
-def http_reindex(req: Request) -> Response:
-    stats = _reindex_once(idx)
+async def http_reindex(req: Request) -> Response:
+    stats = await anyio.to_thread.run_sync(functools.partial(_reindex_once, idx))
     return JSONResponse(stats, status_code=200 if stats.get("ready") else 503)
 
 

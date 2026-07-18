@@ -66,6 +66,97 @@ class StaleLockTests(unittest.TestCase):
         self.assertFalse(seen[0], "index.lock still present when git first ran")
 
 
+class ArchiveAwareIdempotencyTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name) / "wiki"
+        self.root.mkdir(parents=True)
+        self.patch_root = mock.patch.object(wiki, "WIKI_ROOT", self.root)
+        self.patch_root.start()
+        wiki._capture_hash_root = None
+        wiki._capture_hash_revision_value = None
+        wiki._capture_hash_index = {}
+
+    def tearDown(self):
+        self.patch_root.stop()
+        self.tmp.cleanup()
+
+    def _write_source(self, relative_dir: str, folder: str, capture_hash: str) -> None:
+        target = self.root / relative_dir / folder
+        target.mkdir(parents=True)
+        (target / f"{folder}.md").write_text(
+            f"---\ncapture-hash: {capture_hash}\n---\n\n# {folder}\n",
+            encoding="utf-8",
+        )
+
+    def test_retry_before_curation_finds_live_inbox(self):
+        folder = "2026-07-18-120000-retry-me"
+        self._write_source("notes", folder, "hash-live")
+
+        existing = wiki.find_existing_note_drop("retry-me", "hash-live")
+
+        self.assertIsNotNone(existing)
+        self.assertEqual(existing.folder, folder)
+        self.assertFalse(existing.archived)
+        result = wiki.note_drop_result(existing, already_exists=True)
+        self.assertTrue(result["already_exists"])
+        self.assertEqual(result["path"], f"notes/{folder}")
+
+    def test_retry_after_curation_finds_canonical_archive(self):
+        folder = "2026-07-18-120000-retry-me"
+        archive = "wiki/sources/notes/2026/07/18"
+        self._write_source(archive, folder, "hash-archived")
+
+        existing = wiki.find_existing_note_drop("retry-me", "hash-archived")
+
+        self.assertIsNotNone(existing)
+        self.assertEqual(existing.folder, folder)
+        self.assertTrue(existing.archived)
+        result = wiki.note_drop_result(existing, already_exists=True)
+        self.assertTrue(result["archived"])
+        self.assertEqual(result["path"], f"{archive}/{folder}")
+
+    def test_note_drop_impl_returns_archived_idempotent_result_without_git_write(self):
+        folder = "2026-07-18-120000-retry-me"
+        note_md = "---\ntopic: retry\n---\nbody"
+        capture_hash = wiki.note_drop_payload_hash(note_md, {}, {})
+        self._write_source("wiki/sources/notes/2026/07/18", folder, capture_hash)
+        (self.root / ".git").mkdir()
+
+        with mock.patch.object(wiki, "WIKI_REPO_URL", "https://git.example/wiki.git"), \
+             mock.patch.object(wiki, "WIKI_REPO_TOKEN", "configured"), \
+             mock.patch.object(wiki, "_run_git") as run_git:
+            result = wiki._wiki_note_drop_impl("retry-me", note_md)
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["already_exists"])
+        self.assertTrue(result["archived"])
+        run_git.assert_not_called()
+
+    def test_different_payload_with_same_slug_is_not_deduplicated(self):
+        folder = "2026-07-18-120000-retry-me"
+        self._write_source("notes", folder, "original-hash")
+
+        self.assertIsNone(wiki.find_existing_note_drop("retry-me", "different-hash"))
+
+    def test_capture_hash_scan_is_cached_for_same_git_revision(self):
+        folder = "2026-07-18-120000-retry-me"
+        self._write_source("notes", folder, "hash-live")
+        git_dir = self.root / ".git" / "refs" / "heads"
+        git_dir.mkdir(parents=True)
+        (self.root / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+        (git_dir / "main").write_text("abc123\n", encoding="utf-8")
+
+        with mock.patch.object(
+            wiki, "read_frontmatter_and_body", wraps=wiki.read_frontmatter_and_body
+        ) as parse:
+            self.assertIsNotNone(wiki.find_existing_note_drop("retry-me", "hash-live"))
+            first_count = parse.call_count
+            self.assertIsNotNone(wiki.find_existing_note_drop("retry-me", "hash-live"))
+        self.assertGreater(first_count, 0)
+        self.assertEqual(parse.call_count, first_count)
+
+
 class EventLoopSafetyTests(unittest.TestCase):
     def test_note_drop_tool_runs_impl_off_the_event_loop(self):
         """The async MCP tool must delegate to a worker thread so a slow git op
