@@ -14,7 +14,9 @@ Shared here: /mcp (the single MCP transport), /health (combined readiness),
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+import functools
 
+import anyio.to_thread
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -37,7 +39,9 @@ async def metrics(req: Request) -> JSONResponse:
     """Tail of the shared query log (for the weekly gaps miner)."""
     days = float(req.query_params.get("days", "7"))
     try:
-        events = core.read_metrics(days)
+        events = await anyio.to_thread.run_sync(
+            functools.partial(core.read_metrics, days)
+        )
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
     return JSONResponse({"events": events, "days": days})

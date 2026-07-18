@@ -1376,20 +1376,28 @@ def health(req: Request) -> Response:
     return JSONResponse(snapshot, status_code=200 if snapshot["ready"] else 503)
 
 
-def http_search(req: Request) -> Response:
-    q = req.query_params.get("q", "").strip()
-    if not q:
-        return JSONResponse({"error": "missing q"}, status_code=400)
-    k = max(1, min(int(req.query_params.get("k", "5")), 25))
-    try:
-        results = idx.search(q, k)
-    except IndexNotReadyError:
-        return JSONResponse({"error": "wiki index is not ready", **idx.snapshot()}, status_code=503)
+def _http_search_impl(q: str, k: int) -> list[dict]:
+    """Blocking HTTP search implementation (embedding + metrics file write)."""
+    results = idx.search(q, k)
     _record_query({
         "ts": time.time(), "at": _now_iso(), "source": "http", "tool": "search",
         "query": q[:200], "k": k, "n": len(results),
         "top": [{"name": r["name"], "score": round(r["score"], 4)} for r in results[:3]],
     })
+    return results
+
+
+async def http_search(req: Request) -> Response:
+    q = req.query_params.get("q", "").strip()
+    if not q:
+        return JSONResponse({"error": "missing q"}, status_code=400)
+    k = max(1, min(int(req.query_params.get("k", "5")), 25))
+    try:
+        results = await anyio.to_thread.run_sync(
+            functools.partial(_http_search_impl, q, k)
+        )
+    except IndexNotReadyError:
+        return JSONResponse({"error": "wiki index is not ready", **idx.snapshot()}, status_code=503)
     return JSONResponse({"query": q, "results": results})
 
 
@@ -1417,8 +1425,8 @@ def http_backlinks(req: Request) -> Response:
     return JSONResponse({"name": name, "backlinks": bl})
 
 
-def http_reindex(req: Request) -> Response:
-    stats = _reindex_once(idx)
+async def http_reindex(req: Request) -> Response:
+    stats = await anyio.to_thread.run_sync(functools.partial(_reindex_once, idx))
     return JSONResponse(stats, status_code=200 if stats.get("ready") else 503)
 
 

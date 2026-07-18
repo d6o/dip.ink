@@ -33,6 +33,8 @@ elif _metrics_env.lower() in {"off", "none", "0", "disabled"}:
     METRICS_PATH = None
 else:
     METRICS_PATH = Path(_metrics_env)
+METRICS_MAX_BYTES = max(64 * 1024, int(os.environ.get("MCP_METRICS_MAX_BYTES", "5242880")))
+METRICS_BACKUPS = max(0, min(int(os.environ.get("MCP_METRICS_BACKUPS", "2")), 10))
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("dipink")
@@ -58,6 +60,30 @@ def now_iso() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
+def _rotated_metrics_path(index: int) -> Path:
+    assert METRICS_PATH is not None
+    return Path(f"{METRICS_PATH}.{index}")
+
+
+def _rotate_metrics_locked(incoming_bytes: int) -> None:
+    if METRICS_PATH is None or not METRICS_PATH.exists():
+        return
+    try:
+        if METRICS_PATH.stat().st_size + incoming_bytes <= METRICS_MAX_BYTES:
+            return
+        if METRICS_BACKUPS == 0:
+            METRICS_PATH.unlink(missing_ok=True)
+            return
+        _rotated_metrics_path(METRICS_BACKUPS).unlink(missing_ok=True)
+        for index in range(METRICS_BACKUPS - 1, 0, -1):
+            source = _rotated_metrics_path(index)
+            if source.exists():
+                source.replace(_rotated_metrics_path(index + 1))
+        METRICS_PATH.replace(_rotated_metrics_path(1))
+    except OSError as error:
+        log.warning("failed to rotate query metrics at %s: %s", METRICS_PATH, error)
+
+
 def record_query(event: dict) -> None:
     """Record a tool-call event: always to stdout (visible in container logs),
     and to METRICS_PATH as JSONL when configured. Best-effort — instrumentation
@@ -72,6 +98,8 @@ def record_query(event: dict) -> None:
     try:
         with _metrics_lock:
             METRICS_PATH.parent.mkdir(parents=True, exist_ok=True)
+            encoded_size = len((payload + "\n").encode("utf-8"))
+            _rotate_metrics_locked(encoded_size)
             with METRICS_PATH.open("a", encoding="utf-8") as fh:
                 fh.write(payload + "\n")
     except Exception as e:
@@ -79,16 +107,30 @@ def record_query(event: dict) -> None:
 
 
 def read_metrics(days: float) -> list[dict]:
-    """Tail of the shared query log, filtered by event ts. At most 5000 events."""
+    """Read bounded rotated query logs, filtered by timestamp (max 5000)."""
+    days = max(0.0, min(float(days), 365.0))
     cutoff = time.time() - days * 86400
     events: list[dict] = []
-    if METRICS_PATH is not None and METRICS_PATH.exists():
-        with METRICS_PATH.open(encoding="utf-8") as fh:
-            for line in fh:
-                try:
-                    e = json.loads(line)
-                    if e.get("ts", 0) >= cutoff:
-                        events.append(e)
-                except Exception:
-                    continue
+    if METRICS_PATH is None:
+        return events
+    # Oldest backup first, then the active file, preserving event order.
+    paths = [
+        _rotated_metrics_path(index)
+        for index in range(METRICS_BACKUPS, 0, -1)
+    ] + [METRICS_PATH]
+    with _metrics_lock:
+        for path in paths:
+            if not path.exists():
+                continue
+            try:
+                with path.open(encoding="utf-8") as fh:
+                    for line in fh:
+                        try:
+                            event = json.loads(line)
+                            if event.get("ts", 0) >= cutoff:
+                                events.append(event)
+                        except Exception:
+                            continue
+            except OSError as error:
+                log.warning("failed to read query metrics from %s: %s", path, error)
     return events[-5000:]
