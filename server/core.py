@@ -2,7 +2,8 @@
 
 wiki.py registers wiki_search / wiki_get / wiki_backlinks / wiki_note_drop;
 graph.py registers graph_answer / graph_search / graph_get_note / graph_entity /
-graph_current_facts / graph_changes. server.py assembles the HTTP app and runs.
+graph_current_facts / graph_changes; server.py registers memory_status and
+assembles the HTTP app.
 """
 from __future__ import annotations
 

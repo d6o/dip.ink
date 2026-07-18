@@ -2,7 +2,7 @@
 
 ## Summary
 
-Lane A is in progress. Items 4, 9, 6, 8, 7, and 10 are complete: runtime and cache correctness is hardened, blocking HTTP work is isolated, and graph answers now require packet provenance with cache freshness tied to explicit ingest completion.
+Lane A is in progress. Items 4, 9, 6, 8, 7, 10, and 11 are complete: runtime/cache/grounding correctness is hardened and agents/operators now have one bounded component-degrading `memory_status` interface over MCP and HTTP.
 
 ## Completed items
 
@@ -61,6 +61,17 @@ Lane A is in progress. Items 4, 9, 6, 8, 7, and 10 are complete: runtime and cac
 - Answer-cache keys now include the latest scoped `dipink_completed_at` watermark. A watermark change clears the old cache immediately; watermark query failure disables caching rather than risking stale answers.
 - Added tests for invented-source rejection, citation filtering, confidence downgrade, valid-answer preservation, no-hallucination abstention, grounding counters, group-scoped watermark reads, cache hits, and new-ingest invalidation.
 
+### Item 11 — memory_status tool + API
+
+- Added one shared status collector used by the `memory_status` MCP tool and `/api/status`; the Pi extension registers the same zero-argument tool schema.
+- The bounded schema covers wiki/graph/git readiness, indexed/scanned/omitted/cataloged pages and index age, inbox/deferred/blocked counts and ages, bounded blocked slugs/reasons, review queue count, newest note/episode, pending/partial/changed ingest and lag, communities, 24-hour usage/errors, and build version/revision.
+- Filesystem, hashing, and metrics-log work runs in worker threads; graph checks remain async. Each component is caught independently so one failure never hides healthy sections.
+- Status ingest discovery uses the server's actual wiki clone roots, not the ingest CronJob's separate default checkout paths.
+- Results are briefly cached and returned as defensive copies; no note bodies, review text, raw query text, credentials, or unbounded collections are exposed.
+- Added Pi extension typecheck metadata with pinned local dev dependencies; `npm run typecheck` passes with `skipLibCheck` for third-party SDK declaration defects.
+- The collector lives in the already-owned/copied `server.py` rather than a new module because `server/Dockerfile` has a hard-coded copy list and is outside Lane A ownership.
+- Added schema/bounds/privacy, component degradation, MCP/API equality, cache-copy, route, and Pi registration tests.
+
 ## Important decisions
 
 - `GROUP_ID` remains a Neo4j node/edge property partition. `NEO4J_DATABASE` (default `neo4j`) is the actual database selector.
@@ -72,6 +83,7 @@ Lane A is in progress. Items 4, 9, 6, 8, 7, and 10 are complete: runtime and cac
 - Legacy embedding vectors are deliberately accepted once even though historical cache files cannot prove which old metadata produced them; once rewritten, all future metadata changes invalidate exactly.
 - The JSON `/api/metrics` compatibility endpoint remains unchanged; bounding is implemented underneath it rather than replacing its response schema.
 - `not_found` with a null answer is treated as a correctly grounded abstention; fabricated non-null answers rejected for missing provenance are marked not-grounded for observability.
+- Status reports blocked identifiers/reasons only in a bounded list because those are explicitly operational; it never returns source-note or review-queue prose.
 
 ## Tests run
 
@@ -83,6 +95,9 @@ Lane A is in progress. Items 4, 9, 6, 8, 7, and 10 are complete: runtime and cac
 - `pytest tests/test_degraded_startup.py -q -s` after item 8 — 7 passed.
 - `pytest tests/test_http_responsiveness.py -q -s` after item 7 — 5 passed, including three slow-handler `/live` responsiveness cases.
 - `pytest tests/test_graph_grounding.py -q -s` after item 10 — 8 passed.
+- `pytest tests/test_memory_status.py -q -s` after item 11 — 5 passed.
+- Full server suite after item 11 — 45 passed, 1 skipped.
+- `(cd agent-setup/pi/extensions/memory && npm install --package-lock=false --ignore-scripts && npm run typecheck)` — passed; temporary `node_modules/` removed.
 
 ## Dependencies / coordinator TODOs
 

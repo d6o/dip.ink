@@ -1,11 +1,12 @@
 /**
  * memory — pi extension bridging the operator's dip.ink memory server.
  *
- * Exposes all ten tools of the single memory MCP server as native pi tools:
+ * Exposes all eleven tools of the single memory MCP server as native pi tools:
  *
  *   wiki_search / wiki_get / wiki_backlinks / wiki_note_drop   (wiki side)
  *   graph_answer / graph_search / graph_get_note / graph_entity /
  *   graph_current_facts / graph_changes                        (graph side)
+ *   memory_status                                               (operations)
  *
  * The agent-facing usage rules live in ./skill/SKILL.md and are contributed to
  * pi via the `resources_discover` event.
@@ -209,6 +210,16 @@ interface ToolSpec {
 }
 
 const TOOLS: ToolSpec[] = [
+  {
+    name: "memory_status",
+    label: "Memory Status",
+    description:
+      "Return a bounded operational summary of memory component readiness, wiki indexing, " +
+      "inbox/deferred/blocked/review queues, ingest lag/partials, communities, recent usage, " +
+      "and build version. Components degrade independently and no raw note/query content is returned.",
+    promptSnippet: "Get bounded operational status for the memory system",
+    parameters: Type.Object({}),
+  },
   {
     name: "graph_answer",
     label: "Memory Answer",

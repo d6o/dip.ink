@@ -520,8 +520,8 @@ def build_graphiti_on_group(group_id: str = DEFAULT_GROUP_ID) -> Graphiti:
     return build_graphiti()
 
 
-def discover_notes() -> list[tuple[datetime, str, Path]]:
-    """Walk NOTES_ROOT + INBOX_ROOTS, return [(reference_time, slug, path)] sorted
+def discover_notes(roots: list[Path] | None = None) -> list[tuple[datetime, str, Path]]:
+    """Walk configured or explicit roots, returning (time, slug, path) sorted
     ascending (oldest first — required for correct bitemporal supersession).
 
     Each source note lives at .../<slug>/<slug>.md where the canonical file's
@@ -533,7 +533,7 @@ def discover_notes() -> list[tuple[datetime, str, Path]]:
     """
     out: list[tuple[datetime, str, Path]] = []
     seen: set[str] = set()
-    for root in [NOTES_ROOT, *INBOX_ROOTS]:
+    for root in (roots if roots is not None else [NOTES_ROOT, *INBOX_ROOTS]):
         if not root.exists():
             continue
         for md in root.rglob("*.md"):
@@ -759,10 +759,13 @@ async def assess_ingest(
     *,
     group_id: str = DEFAULT_GROUP_ID,
     upgrade_legacy: bool = True,
+    precomputed_hashes: dict[str, str] | None = None,
 ) -> IngestAssessment:
     notes = discover_notes() if notes is None else notes
     notes_by_slug = {slug: (ts, path) for ts, slug, path in notes}
-    note_hashes = {slug: note_content_hash(path) for slug, (_ts, path) in notes_by_slug.items()}
+    note_hashes = precomputed_hashes or {
+        slug: note_content_hash(path) for slug, (_ts, path) in notes_by_slug.items()
+    }
     episodes_by_slug = await _get_episode_states(driver, group_id)
     buckets = {name: set() for name in ("done", "partial", "changed", "missing")}
     legacy_compatible: set[str] = set()
@@ -804,6 +807,7 @@ async def collect_ingest_status(
     *,
     group_id: str = DEFAULT_GROUP_ID,
     upgrade_legacy: bool = True,
+    precomputed_hashes: dict[str, str] | None = None,
 ) -> dict:
     """Structured ingest state shared by CLI status, API status, and metrics."""
     own_client = g is None
@@ -814,6 +818,7 @@ async def collect_ingest_status(
             notes,
             group_id=group_id,
             upgrade_legacy=upgrade_legacy,
+            precomputed_hashes=precomputed_hashes,
         )
         return assessment.as_dict()
     finally:
