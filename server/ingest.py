@@ -734,7 +734,13 @@ def _classify_note(
         if episode.content_hash is None and episode.legacy_content is not None:
             if episode_content_hash(episode.legacy_content) == expected_hash:
                 return "done", episode
-            return "changed", None
+            # A pre-hash episode may differ because an archived source note went
+            # through a historical format migration/redaction. There is no prior
+            # authoritative hash to prove which bytes were original, so keep the
+            # legacy episode compatible and read-only instead of re-extracting
+            # old history. Future episodes always carry content_hash and do get
+            # deterministic changed-content handling below.
+            return "done", None
         if episode.content_hash is None:
             # Completed by a pre-hash writer, but content is unavailable. Keep
             # compatibility without inventing a hash we cannot verify safely.
@@ -751,7 +757,9 @@ def _classify_note(
             return "done", None
         if episode_content_hash(episode.legacy_content) == expected_hash:
             return "done", episode
-        return "changed", None
+        # Legacy edge-bearing episodes predate authoritative content hashes.
+        # A mismatch is not sufficient evidence to remove/re-extract them.
+        return "done", None
 
     # No completion marker and no entity mentions is a crash-created partial.
     return "partial", None

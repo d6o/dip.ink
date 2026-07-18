@@ -35,7 +35,9 @@ One process, one MCP endpoint (`/mcp`), all tools. One image, three roles:
   a non-atomic read-modify-write). Episode name = note slug (provenance);
   reference_time = the slug's timestamp prefix (real bitemporal timeline).
   Explicit completion metadata + content hash; zero-fact notes can be complete;
-  blocked notes are excluded from discovery.
+  blocked notes are excluded from discovery. Content changes are reingested only
+  when a prior authoritative hash exists; pre-hash legacy mismatches stay
+  compatible/read-only because historical format migrations are ambiguous.
 - `loops/` — the self-maintenance jobs (see table below).
 
 ## wiki side behavior

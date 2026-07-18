@@ -219,6 +219,22 @@ class IngestCompletionTests(unittest.TestCase):
 
         asyncio.run(run())
 
+    def test_legacy_content_mismatch_stays_compatible_without_reingest(self):
+        async def run() -> None:
+            graph = FakeGraph([episode(
+                self.slug,
+                "historical pre-migration body",
+                mention_count=2,
+            )])
+            assessment = await ingest.assess_ingest(graph.driver, [self.note])
+            self.assertEqual(assessment.done, {self.slug})
+            self.assertEqual(assessment.changed, set())
+            self.assertEqual(assessment.pending, set())
+            self.assertEqual(assessment.legacy_upgraded, 0)
+            self.assertEqual(graph.driver.marked, [])
+
+        asyncio.run(run())
+
     def test_legacy_upgrade_can_be_disabled_for_read_only_status(self):
         async def run() -> None:
             graph = FakeGraph([episode(

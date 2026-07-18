@@ -6,10 +6,10 @@ set -euo pipefail
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$repo_root"
 
-mapfile -t integration_files < <(
+integration_files=$(
   find server/tests -maxdepth 1 -type f -name 'test_*integration*.py' -print | sort
 )
-if [[ ${#integration_files[@]} -eq 0 ]]; then
+if [[ -z "$integration_files" ]]; then
   echo "::error::No server/tests/test_*integration*.py module exists; refusing a zero-test or mock-only integration success." >&2
   exit 1
 fi
