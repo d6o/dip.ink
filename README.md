@@ -225,12 +225,10 @@ dip.ink/
 │   ├── .pi/prompts/        ← curator prompts (headless auto + interactive)
 │   └── .github/workflows/  ← curator (hourly), synthesis (weekly), reviewqueue (daily)
 ├── server/                 ← THE memory server (one image, three roles)
-│   ├── server.py           ← assembles the single MCP + HTTP app
-│   ├── core.py             ← shared FastMCP instance + query-metrics log
+│   ├── server.py           ← assembles MCP/HTTP + memory_status / /api/status
+│   ├── core.py             ← FastMCP, query metrics + Prometheus registry
 │   ├── wiki.py             ← wiki_search / wiki_get / wiki_backlinks / wiki_note_drop
 │   ├── graph.py            ← graph_answer / graph_search / graph_changes / ...
-│   ├── status.py           ← memory_status / /api/status snapshot
-│   ├── observability.py    ← Prometheus /metrics
 │   ├── ingest.py           ← notes → Graphiti episodes (resumable, crash-safe, circuit-breaker)
 │   └── loops/              ← healthcheck, gaps miner, alerts, contradiction janitor,
 │                             entity resolution, community builder

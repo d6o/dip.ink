@@ -21,17 +21,15 @@ One process, one MCP endpoint (`/mcp`), all tools. One image, three roles:
   in-process wiki fusion), `graph_get_note`, `graph_entity`,
   `graph_current_facts`, `graph_changes`, plus `/api/answer`,
   `/api/graph/search`, `/api/graph/health`.
-- `status.py` — shared operational snapshot for `memory_status` / `/api/status`
+- `server.py` — assembles everything onto one Starlette app and owns the
+  bounded operational snapshot used by `memory_status` / `/api/status`
   (component readiness, index age, inbox/deferred/blocked, review queue,
   ingest pending/partial/lag, communities, query summary, build/version).
-  Degrades component-by-component; never returns note bodies, query text, or
-  credentials.
-- `observability.py` — Prometheus text exposition at `/metrics` (bounded-
-  cardinality tool counters + status gauges). Distinct from the JSON
-  `/api/metrics` query-log tail used by the gaps miner.
-- `server.py` — assembles everything onto one Starlette app; owns the combined
-  `/health` (wiki index state + `graph_ready`), `/api/status`, `/metrics`, and
-  `/api/metrics`.
+  It degrades component-by-component and never returns note bodies, query text,
+  or credentials.
+- `core.py` also owns the bounded-cardinality Prometheus registry rendered by
+  `server.py` at `/metrics`. This is distinct from the JSON `/api/metrics`
+  query-log tail used by the gaps miner.
 - `ingest.py` — notes → Graphiti episodes. Resumable, crash-safe,
   circuit-breaker; **CONCURRENCY must stay 1** (graphiti's edge invalidation is
   a non-atomic read-modify-write). Episode name = note slug (provenance);

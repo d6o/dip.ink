@@ -5,10 +5,11 @@ description: The operator's externalized memory. Search before answering ANY que
 
 # memory — the operator's memory, exposed as native pi tools
 
-The operator maintains a personal, LLM-curated memory system. The `memory` extension gives you ten native tools against it. Treat the memory as more authoritative than your training data on anything operator-specific.
+The operator maintains a personal, LLM-curated memory system. The `memory` extension gives you eleven native tools against it. Treat the memory as more authoritative than your training data on anything operator-specific.
 
 ## Which tool when
 
+- **Operational health/backlog** → `memory_status` for component readiness, inbox/deferred/blocked counts, ingest lag, communities, recent usage, and build version. It never returns note bodies or raw query text.
 - **Factual question** ("what port does X use?", "what did I decide about Y?") → `graph_answer` FIRST. Direct distilled `{answer, confidence, sources, escalate}` (~150 tokens). If `escalate: true` or `not_found`, fall back to `graph_search`.
 - **Broad/exploratory context** → `graph_search` (facts + community summary + entities + source excerpt + semantic wiki hits) or `wiki_search` (curated pages).
 - **What's true NOW** (excluding superseded facts) → `graph_current_facts` or `graph_entity`.
