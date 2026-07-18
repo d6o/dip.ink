@@ -80,6 +80,12 @@ class MemoryAlertPolicyTests(unittest.TestCase):
         memory_alerts.evaluate_status(snapshot)
         self.assertIn("communities: none in graph", memory_alerts.failures)
 
+    def test_ingest_status_error_fires_instead_of_false_quiet_health(self):
+        snapshot = healthy_status()
+        snapshot["ingest"]["error"] = "OSError"
+        memory_alerts.evaluate_status(snapshot)
+        self.assertTrue(any("ingest status unavailable" in failure for failure in memory_alerts.failures))
+
     def test_component_down_still_fires(self):
         snapshot = healthy_status()
         snapshot["components"]["graph"] = {"ready": False, "error": "down"}

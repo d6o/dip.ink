@@ -33,6 +33,8 @@ def evaluate_status(snapshot: dict) -> None:
             failures.append(f"component {name} not ready ({component.get('error') or 'unknown'})")
 
     ingest = snapshot.get("ingest") or {}
+    if ingest.get("error"):
+        failures.append(f"ingest status unavailable ({ingest.get('error')})")
     pending = int(ingest.get("pending") or 0)
     lag_seconds = float(ingest.get("lag_seconds") or 0.0)
     if pending > 0 and lag_seconds > MAX_PENDING_AGE_H * 3600:

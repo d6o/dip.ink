@@ -76,7 +76,7 @@ Lane A implementation is complete for items 4, 9, 6, 8, 7, 10, 11, 12, and serve
 
 - `memory_alerts` now consumes the shared `/api/status` schema and alerts only when `ingest.pending > 0` and the oldest pending lag exceeds `MAX_PENDING_AGE_HOURS`.
 - A quiet memory with zero pending notes is healthy even when the newest episode is old; the previous wall-clock inactivity heuristic is removed.
-- Wiki/graph/git component readiness, missing/stale communities, and server reachability remain hard failures.
+- Wiki/graph/git component readiness, unavailable ingest status, missing/stale communities, and server reachability remain hard failures.
 - Blocked-note and open review-queue counts are emitted as warnings, not job failures.
 - The daily deep healthcheck description and explicit-completion query now match the new semantics.
 - Added focused quiet/old-pending/recent-pending/blocked/review/community/component/server tests; the real Neo4j integration test feeds a live graph/community status snapshot through the alert policy.
