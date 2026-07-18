@@ -2,7 +2,7 @@
 
 ## Summary
 
-Lane A is in progress. Items 4, 9, and 6 are complete: Neo4j lifecycle is explicit and bounded, ingest has durable completion/content identity, and note-drop retries remain idempotent after inbox notes move into the canonical archive.
+Lane A is in progress. Items 4, 9, 6, and 8 are complete: lifecycle and ingest state are durable, archived note-drop retries are idempotent, and embedding cache identity now follows the exact provider input without forcing a historical rebuild.
 
 ## Completed items
 
@@ -35,6 +35,15 @@ Lane A is in progress. Items 4, 9, and 6 are complete: Neo4j lifecycle is explic
 - Idempotency remains scoped by both capture hash and requested slug, so a different payload using the same slug proceeds to a new timestamped folder.
 - Added tests for live-inbox retries, archived retries, full note-drop short-circuiting, same-slug/different-payload behavior, and same-revision cache reuse.
 
+### Item 8 — future-correct embedding cache keys
+
+- New cache entries hash the exact title + `index-description` + body string after the configured truncation window, rather than hashing body alone.
+- Legacy body-hash vectors are accepted once without provider calls, then rewritten to the exact-input format on the next successful cache save.
+- Description-only changes now invalidate and re-embed as expected.
+- The page catalog/backlink graph is now separate from the vector matrix: scanned metadata, `wiki_get`, and backlinks remain available when a changed page has no fresh vector during provider degradation.
+- Readiness and `pages_indexed` continue to describe usable vectors; `pages_cataloged` reports all scanned pages retained for non-vector reads.
+- Added regression tests for metadata-only invalidation, one-time legacy migration, degraded catalog/get/backlinks, zero-cache degradation, and recovery.
+
 ## Important decisions
 
 - `GROUP_ID` remains a Neo4j node/edge property partition. `NEO4J_DATABASE` (default `neo4j`) is the actual database selector.
@@ -43,6 +52,7 @@ Lane A is in progress. Items 4, 9, and 6 are complete: Neo4j lifecycle is explic
 - The ingest hash covers the exact decoded text passed as Graphiti's `episode_body`, not file metadata or extracted-fact count.
 - Legacy completion is upgraded only when the stored episode body proves the hash safely; compatibility remains read-only when historical content is unavailable.
 - Capture-hash lookup includes quarantined/deferred inbox locations for retry safety, even though blocked notes are excluded from Graphiti ingest.
+- Legacy embedding vectors are deliberately accepted once even though historical cache files cannot prove which old metadata produced them; once rewritten, all future metadata changes invalidate exactly.
 
 ## Tests run
 
@@ -51,6 +61,7 @@ Lane A is in progress. Items 4, 9, and 6 are complete: Neo4j lifecycle is explic
 - `pytest tests/test_ingest_completion.py tests/test_driver_lifecycle.py -q -s` — 10 passed.
 - Full server suite after item 9 — 19 passed, 1 skipped.
 - `pytest tests/test_note_drop_resilience.py -q` after item 6 — 10 passed.
+- `pytest tests/test_degraded_startup.py -q -s` after item 8 — 7 passed.
 
 ## Dependencies / coordinator TODOs
 

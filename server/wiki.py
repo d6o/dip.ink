@@ -459,6 +459,10 @@ def note_drop_result(
 # --- In-memory index ---
 
 
+EMBED_HASH_FORMAT = "embedding-input-v1"
+LEGACY_HASH_FORMAT = "legacy-body-v0"
+
+
 @dataclass
 class Page:
     name: str
@@ -469,7 +473,9 @@ class Page:
     tags: list[str] = field(default_factory=list)
     description: str = ""
     body: str = ""
-    body_hash: str = ""
+    body_hash: str = ""  # legacy cache compatibility only
+    embedding_hash: str = ""
+    cache_hash_format: str = EMBED_HASH_FORMAT
     wikilinks_out: set[str] = field(default_factory=set)
     embedding: np.ndarray | None = None
 
@@ -559,11 +565,9 @@ class Index:
     def __init__(self, root: Path, embedder: Embedder, cache_dir: Path | None = None):
         self.root = root
         self.embedder = embedder
-        # Fold the embed window into the cache identity. The on-disk cache reuses
-        # an embedding whenever a page's body_hash is unchanged — but widening
-        # max_embed_chars changes the embedding *input* without changing the body,
-        # so the window must be part of the key or a window change silently reuses
-        # the old (truncated) vectors. Changing it forces a one-time full re-embed.
+        # Fold the embed window into the model identity as a coarse guard. Each
+        # page additionally hashes the exact title + description + body slice
+        # sent to the provider, so any future input metadata change invalidates.
         self.model_name = f"{embedder.provider}/{embedder.model_name}@{embedder.max_embed_chars}"
         self.dim = embedder.dim
         self.cache_dir = cache_dir
@@ -607,6 +611,14 @@ class Index:
                 return {}
             names = [str(n) for n in data["names"]]
             hashes = [str(h) for h in data["hashes"]]
+            hash_format = (
+                str(data["hash_format"])
+                if "hash_format" in data.files
+                else LEGACY_HASH_FORMAT
+            )
+            if hash_format not in {EMBED_HASH_FORMAT, LEGACY_HASH_FORMAT}:
+                log.warning("ignoring cache with unknown hash format %r", hash_format)
+                return {}
             vectors = data["vectors"].astype(np.float32)
             if vectors.shape != (len(names), self.dim):
                 log.warning("cache vector shape mismatch %s != (%d,%d); ignoring",
@@ -615,8 +627,15 @@ class Index:
             out: dict[str, Page] = {}
             for n, h, v in zip(names, hashes, vectors):
                 out[n] = Page(
-                    name=n, path=Path(""), type=None, category=None, status=None,
-                    body_hash=h, embedding=v,
+                    name=n,
+                    path=Path(""),
+                    type=None,
+                    category=None,
+                    status=None,
+                    body_hash=h if hash_format == LEGACY_HASH_FORMAT else "",
+                    embedding_hash=h if hash_format == EMBED_HASH_FORMAT else "",
+                    cache_hash_format=hash_format,
+                    embedding=v,
                 )
             log.info("loaded %d cached embeddings from %s", len(out), path)
             return out
@@ -631,11 +650,15 @@ class Index:
             return
         try:
             self.cache_dir.mkdir(parents=True, exist_ok=True)
-            names = sorted(pages.keys())
+            usable = {
+                name: page for name, page in pages.items()
+                if page.embedding is not None and page.embedding_hash
+            }
+            names = sorted(usable)
             if not names:
                 return
-            hashes = [pages[n].body_hash for n in names]
-            vectors = np.stack([pages[n].embedding for n in names]).astype(np.float32)
+            hashes = [usable[n].embedding_hash for n in names]
+            vectors = np.stack([usable[n].embedding for n in names]).astype(np.float32)
             tmp = path.with_suffix(".tmp.npz")
             np.savez(
                 tmp,
@@ -643,6 +666,7 @@ class Index:
                 dim=self.dim,
                 names=np.array(names),
                 hashes=np.array(hashes),
+                hash_format=EMBED_HASH_FORMAT,
                 vectors=vectors,
             )
             tmp.replace(path)
@@ -690,6 +714,11 @@ class Index:
         text = "\n\n".join(parts)
         return text[:self.embedder.max_embed_chars]
 
+    @staticmethod
+    def _embedding_hash(text: str) -> str:
+        """Hash the exact provider input, after all composition/truncation."""
+        return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
     def _publish(
         self,
         pages: dict[str, Page],
@@ -709,10 +738,12 @@ class Index:
         )
         now = time.time()
         with self._lock:
-            self.pages = usable
+            # Catalog and graph metadata remain available even for pages whose
+            # fresh vector is temporarily omitted during provider degradation.
+            self.pages = dict(pages)
             self.names = names
             self.matrix = matrix
-            self.backlinks = self._compute_backlinks(usable)
+            self.backlinks = self._compute_backlinks(pages)
             self._last_indexed = now
             self._last_attempt = now
             if successful:
@@ -753,7 +784,8 @@ class Index:
                 "ready": self._ready,
                 "status": self._status,
                 "degraded": self._degraded,
-                "pages_indexed": len(self.pages),
+                "pages_indexed": len(self.names),
+                "pages_cataloged": len(self.pages),
                 "pages_scanned": self._scanned_pages,
                 "pages_omitted": self._omitted_pages,
                 "provider": self.embedder.provider,
@@ -791,13 +823,33 @@ class Index:
 
             to_embed: list[tuple[str, str]] = []
             unchanged = 0
+            migrated_legacy = 0
             for name, page in scanned.items():
+                embed_text = self._embed_text_for_page(page)
+                page.embedding_hash = self._embedding_hash(embed_text)
+                page.cache_hash_format = EMBED_HASH_FORMAT
                 prev = old.get(name)
-                if prev is not None and prev.body_hash == page.body_hash and prev.embedding is not None:
+                exact_hit = (
+                    prev is not None
+                    and prev.cache_hash_format == EMBED_HASH_FORMAT
+                    and prev.embedding_hash == page.embedding_hash
+                    and prev.embedding is not None
+                )
+                legacy_hit = (
+                    prev is not None
+                    and prev.cache_hash_format == LEGACY_HASH_FORMAT
+                    and prev.body_hash == page.body_hash
+                    and prev.embedding is not None
+                )
+                if exact_hit or legacy_hit:
                     page.embedding = prev.embedding
                     unchanged += 1
+                    if legacy_hit:
+                        # One-time compatibility acceptance. Saving this
+                        # successful snapshot rewrites the entry to exact-input.
+                        migrated_legacy += 1
                 else:
-                    to_embed.append((name, self._embed_text_for_page(page)))
+                    to_embed.append((name, embed_text))
 
             removed = [name for name in old if name not in scanned]
             cached_baseline = {
@@ -808,7 +860,7 @@ class Index:
             # A slow/dead provider cannot prevent readiness when a valid baseline exists.
             if to_embed and cached_baseline:
                 self._publish(
-                    cached_baseline,
+                    scanned,
                     status="degraded",
                     degraded=True,
                     error=None,
@@ -828,7 +880,7 @@ class Index:
                 except Exception as error:
                     if cached_baseline:
                         self._publish(
-                            cached_baseline,
+                            scanned,
                             status="degraded",
                             degraded=True,
                             error=error,
@@ -836,10 +888,16 @@ class Index:
                             scanned_pages=len(scanned),
                         )
                     else:
-                        self.record_failure(
-                            error,
-                            scanned_pages=len(scanned),
+                        # Publish the full metadata catalog even with zero
+                        # usable vectors. get/backlinks remain available while
+                        # semantic search correctly reports unready.
+                        self._publish(
+                            scanned,
+                            status="degraded",
+                            degraded=True,
+                            error=error,
                             omitted_pages=len(to_embed),
+                            scanned_pages=len(scanned),
                         )
                     elapsed = time.time() - t0
                     snap = self.snapshot()
@@ -872,13 +930,14 @@ class Index:
                 successful=True,
             )
 
-            if to_embed or removed:
+            if to_embed or removed or migrated_legacy:
                 self._save_cache(scanned)
 
             elapsed = time.time() - t0
             log.info(
-                "reindex done in %.1fs: %d pages (%d unchanged, %d new/changed, %d removed)",
-                elapsed, len(scanned), unchanged, len(to_embed), len(removed),
+                "reindex done in %.1fs: %d pages (%d unchanged, %d new/changed, "
+                "%d legacy-migrated, %d removed)",
+                elapsed, len(scanned), unchanged, len(to_embed), migrated_legacy, len(removed),
             )
             return {
                 "ok": True,
@@ -890,6 +949,7 @@ class Index:
                 "scanned": len(scanned),
                 "unchanged": unchanged,
                 "embedded": len(to_embed),
+                "legacy_migrated": migrated_legacy,
                 "omitted": 0,
                 "removed": len(removed),
             }
