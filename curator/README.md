@@ -27,7 +27,7 @@ concurrency:
 ```
 
 so they never race on `wiki/log.md` or other shared pages. Public images are
-pinned to `ghcr.io/d6o/dip.ink/pi-runner:v0.1.3`.
+pinned to `ghcr.io/d6o/dip.ink/pi-runner:v0.1.4`.
 
 ## pi-runner (this directory)
 
@@ -79,9 +79,10 @@ headless agent (Claude Code, Codex CLI, ...):
 - **Provider-aware preflight.** OpenAI-compatible providers get a 1-token probe
   before later batches; Anthropic/native/custom providers configured via
   `PI_MODELS_JSON` skip the HTTP preflight instead of failing it.
-- **Blocked quarantine.** FLAGged and already-ingested folders move to
-  `notes/.blocked/` with a receipt and never re-enter the live oldest-first
-  queue.
+- **Blocked quarantine.** FLAGged, malformed, and already-ingested folders move
+  to `notes/.blocked/` with a receipt and never re-enter the live oldest-first
+  queue. The inbox preparer parses required YAML frontmatter before provider
+  use, so one malformed note cannot poison its valid neighbors.
 - **Optimistic with receipts.** No human in the loop; non-routine decisions go
   to `wiki/Curator review queue.md`.
 - **No automatic secret scanning.** Agents must never submit credentials; the
@@ -93,7 +94,7 @@ headless agent (Claude Code, Codex CLI, ...):
 ## Testing
 
 `template/scripts/test-processnotes-supervisor.sh` covers the supervisor's
-batching, budget, probe-failure, blocked exclusion, and no-op semantics with
+batching, budget, probe-failure, blocked/malformed exclusion, and no-op semantics with
 fakes — run it from the template (or your memory repo) root:
 
 ```sh

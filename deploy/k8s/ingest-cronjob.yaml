@@ -42,7 +42,7 @@ spec:
                 - {name: notes, mountPath: /notes}
           containers:
             - name: ingest
-              image: ghcr.io/d6o/dip.ink/memory:v0.1.3
+              image: ghcr.io/d6o/dip.ink/memory:v0.1.4
               envFrom:
                 - configMapRef:
                     name: dipink-config

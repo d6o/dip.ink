@@ -65,7 +65,16 @@ EOF
   for ((i=1; i<=notes; i++)); do
     folder=$(printf '2026-01-01-0000%02d-note' "$i")
     if [[ "$i" -le 4 ]]; then dest="$repo/notes/$folder"; else dest="$repo/notes/.deferred/$folder"; fi
-    mkdir -p "$dest"; echo "$folder" > "$dest/NOTE.md"
+    mkdir -p "$dest"
+    cat > "$dest/NOTE.md" <<EOF
+---
+captured: 2026-01-01T00:00:00Z
+session: supervisor fixture
+topic: test fixture
+---
+
+# $folder
+EOF
   done
   git -C "$repo" add .
   git -C "$repo" commit -q -m seed
@@ -209,8 +218,27 @@ echo 'exact ingest-log dedup test OK'
 PREP="$TMP/prepare"
 mkdir -p "$PREP/notes/.blocked/2025-12-31-235959-blocked"
 echo blocked > "$PREP/notes/.blocked/2025-12-31-235959-blocked/NOTE.md"
-for i in 6 2 5 1 4; do mkdir -p "$PREP/notes/2026-note-$i"; done
-echo bare > "$PREP/notes/2026-note-3.md"
+for i in 6 2 5 1 4; do
+  mkdir -p "$PREP/notes/2026-note-$i"
+  cat > "$PREP/notes/2026-note-$i/NOTE.md" <<EOF
+---
+captured: 2026-01-01T00:00:00Z
+session: prepare fixture
+topic: test fixture
+---
+
+# 2026-note-$i
+EOF
+done
+cat > "$PREP/notes/2026-note-3.md" <<'EOF'
+---
+captured: 2026-01-01T00:00:00Z
+session: bare prepare fixture
+topic: test fixture
+---
+
+# 2026-note-3
+EOF
 prepare_output=$(NOTES_DIR="$PREP/notes" INBOX_BATCH_SIZE=4 "$ROOT/scripts/processnotes-prepare-inbox.sh")
 [[ $(find "$PREP/notes" -mindepth 1 -maxdepth 1 -type d ! -name .deferred ! -name .blocked | wc -l | tr -d ' ') -eq 4 ]]
 [[ -f "$PREP/notes/2026-note-3/2026-note-3.md" || -f "$PREP/notes/.deferred/2026-note-3/2026-note-3.md" ]]
@@ -218,6 +246,46 @@ prepare_output=$(NOTES_DIR="$PREP/notes" INBOX_BATCH_SIZE=4 "$ROOT/scripts/proce
 [[ -f "$PREP/notes/.blocked/2025-12-31-235959-blocked/NOTE.md" ]]
 grep -q 'pool=6 live=4 held=2 blocked=1 cap=4' <<<"$prepare_output"
 echo 'prepare inbox blocked-exclusion test OK'
+
+# Malformed YAML is quarantined before provider use and valid neighbors refill
+# the oldest-first batch instead of being poisoned by the bad note.
+MALFORMED="$TMP/malformed-prepare"
+mkdir -p "$MALFORMED/notes/.deferred"
+for i in 2 3 4 5 6; do
+  folder="2026-01-01-00000${i}-valid"
+  dest="$MALFORMED/notes/$folder"
+  [[ "$i" -le 4 ]] || dest="$MALFORMED/notes/.deferred/$folder"
+  mkdir -p "$dest"
+  cat > "$dest/NOTE.md" <<EOF
+---
+captured: 2026-01-01T00:00:00Z
+session: valid neighbor $i
+topic: malformed queue test
+---
+
+# valid $i
+EOF
+done
+bad=2026-01-01-000001-malformed
+mkdir -p "$MALFORMED/notes/$bad"
+cat > "$MALFORMED/notes/$bad/NOTE.md" <<'EOF'
+---
+captured: 2026-01-01T00:00:00Z
+session: invalid: unquoted colon poisons YAML
+topic: malformed queue test
+---
+
+# malformed
+EOF
+malformed_output=$(NOTES_DIR="$MALFORMED/notes" INBOX_BATCH_SIZE=4 BLOCKED_AT=2026-01-02T03:04:05Z \
+  "$ROOT/scripts/processnotes-prepare-inbox.sh" 2>&1)
+[[ -d "$MALFORMED/notes/.blocked/$bad" ]]
+grep -Fqx 'reason: "malformed-note"' "$MALFORMED/notes/.blocked/$bad/BLOCKED.md"
+[[ $(find "$MALFORMED/notes" -mindepth 1 -maxdepth 1 -type d ! -name .deferred ! -name .blocked | wc -l | tr -d ' ') -eq 4 ]]
+[[ $(find "$MALFORMED/notes/.deferred" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ') -eq 1 ]]
+grep -q "blocking malformed note: $bad" <<<"$malformed_output"
+grep -q 'pool=5 live=4 held=1 blocked=1 cap=4' <<<"$malformed_output"
+echo 'malformed frontmatter quarantine and queue progress test OK'
 
 # A logged oldest duplicate becomes terminal, while later notes continue in a fresh batch.
 rm -f "$TMP/runner-count" "$TMP/probe-count" "$TMP/now-index"

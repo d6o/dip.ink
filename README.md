@@ -76,7 +76,7 @@ The three workflows (`curator` hourly, `synthesis` weekly, `reviewqueue` daily) 
 
 ### 2. Deploy the memory stack
 
-Public runtime images are **immutable tags**, not moving `latest`. v0.1.3 is the first public release pin.
+Public runtime images are **immutable tags**, not moving `latest`. v0.1.4 is the first public release pin.
 
 ```sh
 cd dip.ink
@@ -138,7 +138,7 @@ A fresh template already contains one bootstrap source note under `wiki/sources/
 2. `memory_status` / `/api/status` should show wiki readiness, graph readiness, inbox/deferred/blocked counts, and ingest lag.
 3. The default healthcheck probe (`ANSWER_PROBE`, defaulting to a question about the note inbox) should return high/medium confidence with valid provenance once ingest has completed.
 4. An agent finishing real work drops a note: `wiki_note_drop("traefik-timeout-fix", "...")` → committed and pushed to your repo's `notes/` inbox.
-5. Within the hour, the `curator` workflow promotes it into wiki pages (or updates existing ones), moves the note to `wiki/sources/notes/YYYY/MM/DD/`, and pushes. FLAGged or already-ingested folders go to `notes/.blocked/` instead of blocking the live queue.
+5. Within the hour, the `curator` workflow promotes it into wiki pages (or updates existing ones), moves the note to `wiki/sources/notes/YYYY/MM/DD/`, and pushes. FLAGged, malformed, or already-ingested folders go to `notes/.blocked/` instead of blocking the live queue; malformed frontmatter is quarantined before any provider call.
 6. Any future session asks: *"how did I fix the traefik timeout?"* → `graph_answer` returns the fix, its confidence, and the source-note slug — which `graph_get_note` can fetch verbatim.
 7. If the note contradicted an older fact ("timeout is 30s" → "timeout is 600s"), the old fact is marked superseded — `graph_answer` reports the current value and can mention the old one in `superseded_note`.
 
@@ -214,7 +214,7 @@ dip.ink/
 │   ├── claude-code/        ← skill + PreCompact hook
 │   └── pi/                 ← memory extension (native tools), /recordnotes prompt,
 │                             compact/exit gate extension
-├── docker-compose.yml      ← the whole stack on one host (pinned v0.1.3 images)
+├── docker-compose.yml      ← the whole stack on one host (pinned v0.1.4 images)
 ├── .env.example
 ├── .github/workflows/      ← required CI + immutable image publication
 ├── ci/                     ← CI helpers (YAML/k8s/contracts, Neo4j integration runner, Pi typecheck)
@@ -241,7 +241,7 @@ dip.ink/
 
 ## Production (k8s)
 
-`deploy/k8s/` mirrors the compose stack for a cluster: Neo4j Deployment + PVC, the memory-server Deployment, the 15-min ingest CronJob, and the maintenance CronJobs. Images are published to GHCR by this repo's CI and **pinned to `v0.1.3`**.
+`deploy/k8s/` mirrors the compose stack for a cluster: Neo4j Deployment + PVC, the memory-server Deployment, the 15-min ingest CronJob, and the maintenance CronJobs. Images are published to GHCR by this repo's CI and **pinned to `v0.1.4`**.
 
 The Secret example lives **outside** the apply set so a directory apply cannot overwrite real credentials with placeholders:
 
@@ -278,9 +278,9 @@ Metric labels are bounded-cardinality only (`tool`, `outcome`, `confidence`, `ca
 
 - Required CI (`.github/workflows/ci.yml`) gates server unit tests, a real Neo4j 5.26.2 integration job, curator supervisor tests, template wikilint/index, workflow/YAML/kustomize smoke, Pi extension typecheck, and both Docker image builds.
 - Image publication (`.github/workflows/images.yml`) runs on `main` (moving `main` + immutable full-git-SHA tags) and on `v*` tags (semver + SHA). It does **not** publish `latest`.
-- Public manifests and template workflows pin `ghcr.io/d6o/dip.ink/{memory,pi-runner}:v0.1.3`.
+- Public manifests and template workflows pin `ghcr.io/d6o/dip.ink/{memory,pi-runner}:v0.1.4`.
 
-Release sequence for maintainers: push main → wait CI green → tag `v0.1.3` → wait image publication green → sync private instances / deploy.
+Release sequence for maintainers: push main → wait CI green → tag `v0.1.4` → wait image publication green → sync private instances / deploy.
 
 ## Operational notes (learned the hard way)
 
