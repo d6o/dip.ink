@@ -275,7 +275,31 @@ def lint(pages_info: dict[Path, dict]) -> list[dict]:
                     "msg": "superseded decision should have superseded-by: \"[[X]]\"",
                 })
 
-        # 9. wikilink targets exist (case-insensitive); flag case mismatch
+        # 9. source-note path shape: wiki/sources/notes/YYYY/MM/DD/<slug>/<slug>.md
+        # with the slug's date prefix matching the directory date. Catches
+        # curator mis-nesting like notes/YYYY-MM-DD/<slug>/ or doubly nested
+        # <slug>/<slug>/ folders.
+        if is_source_note_page(fp):
+            parts = fp.parts
+            for i, part in enumerate(parts[:-1]):
+                if part == "sources" and i + 1 < len(parts) and parts[i + 1] == "notes":
+                    rel = parts[i + 2:]
+                    ok = (
+                        len(rel) == 5
+                        and re.fullmatch(r"\d{4}", rel[0]) is not None
+                        and re.fullmatch(r"\d{2}", rel[1]) is not None
+                        and re.fullmatch(r"\d{2}", rel[2]) is not None
+                        and rel[3].startswith(f"{rel[0]}-{rel[1]}-{rel[2]}-")
+                    )
+                    if not ok:
+                        issues.append({
+                            "severity": ERR, "file": str(fp),
+                            "msg": "mis-nested source note; expected "
+                                   "wiki/sources/notes/YYYY/MM/DD/<slug>/<slug>.md",
+                        })
+                    break
+
+        # 10. wikilink targets exist (case-insensitive); flag case mismatch
         if not is_source_note_page(fp):
             for target in find_wikilinks(body):
                 if not target:
