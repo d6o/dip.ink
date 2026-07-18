@@ -14,9 +14,20 @@ to that repo. Everything it needs ships inside the template:
 | Weekly synthesis workflow | `.github/workflows/synthesis.yml` |
 | Daily review-queue workflow | `.github/workflows/reviewqueue.yml` |
 | Supervisor (batching, budget, probes) | `scripts/processnotes-supervisor.sh` |
-| Inbox batcher (oldest-4 live, rest deferred) | `scripts/processnotes-prepare-inbox.sh` |
+| Inbox batcher (oldest-4 live, rest deferred; `.blocked/` excluded) | `scripts/processnotes-prepare-inbox.sh` |
 | The curator prompt | `.pi/prompts/processnotes-auto.md` |
 | Validators | `scripts/wikilint.py` + `wikiindex.py` + `logrotate.py` + `wikidistill.py` |
+
+All three workflows share one concurrency group:
+
+```yaml
+concurrency:
+  group: memory-repo-writer
+  cancel-in-progress: false
+```
+
+so they never race on `wiki/log.md` or other shared pages. Public images are
+pinned to `ghcr.io/d6o/dip.ink/pi-runner:v0.1.0`.
 
 ## pi-runner (this directory)
 
@@ -30,7 +41,8 @@ to that repo. Everything it needs ships inside the template:
 4. on changes: runs `VALIDATOR`, then commits, fetches, rebases, and pushes
    with bounded retries.
 
-The image is published as `ghcr.io/d6o/dip.ink/pi-runner` by this repo's CI.
+The image is published as `ghcr.io/d6o/dip.ink/pi-runner` by this repo's CI
+(semver + SHA tags; no mutable `latest`).
 
 ### Environment
 
@@ -39,10 +51,13 @@ The image is published as `ghcr.io/d6o/dip.ink/pi-runner` by this repo's CI.
 | `PROMPT_PATH` | (required) | prompt file, relative to the repo checkout |
 | `PI_API_KEY` | (required) | LLM key for the agent |
 | `PI_PROVIDER` / `PI_MODEL` | `openai` / `gpt-4.1-mini` | any provider Pi supports |
-| `PI_MODELS_JSON` | — | ephemeral custom provider config (OpenAI-compatible endpoints) |
+| `PI_MODELS_JSON` | — | ephemeral custom provider config (OpenAI-compatible endpoints). Set as a repo Actions variable; the runner writes it to Pi's models config. |
 | `WIKI_REPO_TOKEN` | (required to push) | HTTPS token; in GitHub Actions use `x-access-token:${{ secrets.GITHUB_TOKEN }}` |
 | `VALIDATOR` | `true` | shell command that must pass before commit |
 | `COMMIT_MESSAGE`, `GIT_USER_NAME`, `GIT_USER_EMAIL`, `GIT_BRANCH` | sensible defaults | |
+
+`PI_MODELS_JSON` is **curator/Pi-runner configuration only**. It is not a
+memory-server environment variable and is not injected into Compose/k8s.
 
 ## Swapping the agent
 
@@ -59,19 +74,27 @@ headless agent (Claude Code, Codex CLI, ...):
 
 - **Fresh session per sub-batch of 4.** Bounded context, bounded blast radius.
 - **Durable progress.** Commit+push per sub-batch; a later crash loses nothing.
-- **Probe before batch.** A 1-token completion against the LLM endpoint before
-  every batch after the first; a dead provider stops the run instead of
-  burning the hour.
+- **Empty-inbox short circuit.** The supervisor checks the inbox before any
+  hourly LLM preflight; empty runs make zero provider calls.
+- **Provider-aware preflight.** OpenAI-compatible providers get a 1-token probe
+  before later batches; Anthropic/native/custom providers configured via
+  `PI_MODELS_JSON` skip the HTTP preflight instead of failing it.
+- **Blocked quarantine.** FLAGged and already-ingested folders move to
+  `notes/.blocked/` with a receipt and never re-enter the live oldest-first
+  queue.
 - **Optimistic with receipts.** No human in the loop; non-routine decisions go
-  to `wiki/Curator review queue.md` (see the prompt for the exact three buckets).
+  to `wiki/Curator review queue.md`.
+- **No automatic secret scanning.** Agents must never submit credentials; the
+  private repo and gated network are the perimeter. The curator does not scan
+  or redact secrets and does not claim to make a committed secret safe.
 - **The validator owns correctness.** The agent never runs lint/index/rotate
   itself; the runner runs the full chain and refuses to commit on failure.
 
 ## Testing
 
 `template/scripts/test-processnotes-supervisor.sh` covers the supervisor's
-batching, budget, probe-failure, and no-op semantics with fakes — run it from
-the template (or your memory repo) root:
+batching, budget, probe-failure, blocked exclusion, and no-op semantics with
+fakes — run it from the template (or your memory repo) root:
 
 ```sh
 bash scripts/test-processnotes-supervisor.sh

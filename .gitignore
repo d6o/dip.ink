@@ -3,3 +3,5 @@ __pycache__/
 *.pyc
 .env
 .idea/
+node_modules/
+ci/pi/node_modules/
