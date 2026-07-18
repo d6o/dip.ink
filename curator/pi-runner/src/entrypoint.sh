@@ -154,7 +154,10 @@ fi
 # the complete diff (including newly created files) before committing.
 git add -A
 log "checking staged diff integrity"
-if ! git diff --cached --check; then
+# Extra blank lines at EOF are harmless Markdown formatting drift and should not
+# discard an otherwise valid curator batch. Disable only blank-at-eof while
+# retaining Git's trailing-space and space-before-tab integrity checks.
+if ! git -c core.whitespace=-blank-at-eof diff --cached --check; then
   log "error: staged diff check failed; aborting commit"
   exit 3
 fi

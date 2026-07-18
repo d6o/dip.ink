@@ -27,7 +27,7 @@ concurrency:
 ```
 
 so they never race on `wiki/log.md` or other shared pages. Public images are
-pinned to `ghcr.io/d6o/dip.ink/pi-runner:v0.1.4`.
+pinned to `ghcr.io/d6o/dip.ink/pi-runner:v0.1.5`.
 
 ## pi-runner (this directory)
 
@@ -90,6 +90,9 @@ headless agent (Claude Code, Codex CLI, ...):
   or redact secrets and does not claim to make a committed secret safe.
 - **The validator owns correctness.** The agent never runs lint/index/rotate
   itself; the runner runs the full chain and refuses to commit on failure.
+  Staged diff checks still reject trailing spaces and space-before-tab, but
+  tolerate harmless extra blank lines at EOF so valid Markdown batches are not
+  discarded for formatting-only drift.
 
 ## Testing
 

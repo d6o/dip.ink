@@ -10,7 +10,7 @@ from pathlib import Path
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
-PINNED_RELEASE = "v0.1.4"
+PINNED_RELEASE = "v0.1.5"
 
 
 def load_yaml(path: Path) -> dict:
@@ -212,6 +212,14 @@ def check_release(errors: list[str]) -> None:
         errors.append(f"deploy manifests do not reference memory:{PINNED_RELEASE}")
     if f"ghcr.io/d6o/dip.ink/pi-runner:{PINNED_RELEASE}" not in production_text:
         errors.append(f"template workflows do not reference pi-runner:{PINNED_RELEASE}")
+
+    runner_entrypoint = (ROOT / "curator" / "pi-runner" / "src" / "entrypoint.sh").read_text(
+        encoding="utf-8"
+    )
+    if "git -c core.whitespace=-blank-at-eof diff --cached --check" not in runner_entrypoint:
+        errors.append(
+            "pi-runner must ignore only harmless blank-at-eof drift while retaining other staged whitespace checks"
+        )
 
     # Root docs must not reintroduce packaging drift fixed in this release.
     readme = (ROOT / "README.md").read_text(encoding="utf-8") if (ROOT / "README.md").is_file() else ""
