@@ -17,7 +17,7 @@ Find places where the wiki has accumulated many source notes and entity/concept 
 - A synthesis is warranted when at least 3 source notes or 3 pages point at the same workflow / failure mode / migration / operating pattern and no existing synthesis already explains it.
 - Link heavily: entity/concept pages and source notes are the evidence. Do not reprint long note details.
 - Do not create source stubs. Source notes live at `wiki/sources/notes/YYYY/MM/DD/<slug>/<slug>.md` and are linked as `[[<slug>|short title]]`.
-- Do not edit source notes except for secret redaction. They are frozen citations.
+- Do not edit source notes. They are frozen citations.
 - Do not invent new entity categories or status enums.
 
 ## Workflow

@@ -1,8 +1,8 @@
 name: reviewqueue
 
 # Daily pass over wiki/Curator review queue.md: resolves entries that can be
-# settled from already-available evidence; leaves secrets-to-rotate and
-# subjective calls for the operator.
+# settled from already-available evidence and leaves subjective calls for the
+# operator.
 
 on:
   schedule:

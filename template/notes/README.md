@@ -31,6 +31,6 @@ topic: 1–5 word topic
 
 `NOTE.md` body: freeform markdown. Over-explain rather than under-explain — the processor can't read the capturing session's transcript. Reference attachments with relative paths: `![](./diagram.png)`, `see ./output.log`.
 
-**Never include credentials.** Reference where they live instead.
+**Never include credentials, tokens, or passwords.** Reference only the corresponding secret-manager path.
 
 Duplicates are fine; missed captures are expensive.
