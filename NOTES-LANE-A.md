@@ -119,15 +119,19 @@ Lane A implementation is complete for items 4, 9, 6, 8, 7, 10, 11, 12, and serve
 - `pytest tests/test_memory_status.py -q -s` after item 11 — 5 passed.
 - Full server suite after item 11 — 45 passed, 1 skipped.
 - `(cd agent-setup/pi/extensions/memory && npm install --package-lock=false --ignore-scripts && npm run typecheck)` — passed; temporary `node_modules/` removed.
-- `pytest tests/test_memory_alerts.py -q` after item 12 — 9 passed.
+- `pytest tests/test_memory_alerts.py -q` after item 12/follow-up — 10 passed.
 - Real Neo4j 5.26.2 lifecycle/status/alert integration after item 12 — 1 passed.
 - `pytest tests/test_observability.py -q` — 5 passed.
-- Full server pytest suite after server-side item 16 — 59 passed, 1 skipped.
-- `docker build -f server/Dockerfile -t dipink-lane-a-server-test server` — passed; build-time unittest suite ran 60 tests, 1 skipped.
+- Final full server pytest suite — 60 passed, 1 skipped (the opt-in Neo4j integration test).
+- Final real Neo4j 5.26.2 integration run — 1 passed with lifecycle, status, alerts, healthcheck, ingest metadata, and no unhandled-task/leak signatures.
+- Final `docker build -f server/Dockerfile -t dipink-lane-a-server-test server` — passed; build-time unittest suite ran 61 tests, 1 skipped.
+- Final Pi extension install/typecheck — passed; temporary `node_modules/` removed and no package lock generated.
 
 ## Dependencies / coordinator TODOs
 
-- None for item 4.
+- Lane C must consume the exact `/metrics` contract in its ServiceMonitor, PrometheusRule, and Grafana resources.
+- Lane D owns public prose/config documentation; the Pi extension change here is registration/schema/typecheck metadata only.
+- No Lane A code blockers remain.
 
 ## Failures / blockers
 
