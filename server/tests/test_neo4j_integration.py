@@ -34,6 +34,7 @@ os.environ.setdefault("INBOX_ROOTS", "")
 
 import graph  # noqa: E402
 import ingest  # noqa: E402
+import server  # noqa: E402
 from loops import memory_alerts, memory_healthcheck  # noqa: E402
 
 
@@ -86,10 +87,26 @@ class Neo4jLifecycleIntegrationTests(unittest.TestCase):
                 await graph.close()
                 self.assertIsNone(graph._g)
 
-                # Both short-lived loop jobs exercise real clients and close them.
+                # The shallow alert policy consumes a status graph/community
+                # snapshot collected against this real Neo4j instance.
+                graph_component, ingest_state, communities = await server._graph_status()
                 memory_alerts.failures.clear()
-                await memory_alerts.check_graph()
+                memory_alerts.warnings.clear()
+                memory_alerts.evaluate_status({
+                    "components": {
+                        "wiki": {"ready": True},
+                        "graph": graph_component,
+                        "git_clone": {"ready": True},
+                    },
+                    "ingest": ingest_state,
+                    "communities": communities,
+                    "queues": {
+                        "blocked": {"count": 0},
+                        "review_queue_open": 0,
+                    },
+                })
                 self.assertEqual(memory_alerts.failures, [])
+                await graph.close()
 
                 memory_healthcheck.failures.clear()
                 memory_healthcheck.NOW = now

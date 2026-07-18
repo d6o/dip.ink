@@ -2,7 +2,7 @@
 
 ## Summary
 
-Lane A is in progress. Items 4, 9, 6, 8, 7, 10, and 11 are complete: runtime/cache/grounding correctness is hardened and agents/operators now have one bounded component-degrading `memory_status` interface over MCP and HTTP.
+Lane A is in progress. Items 4, 9, 6, 8, 7, 10, 11, and 12 are complete: the server exposes bounded grounded status, and freshness alerts now follow actual pending note→episode lag so quiet periods remain healthy.
 
 ## Completed items
 
@@ -72,6 +72,15 @@ Lane A is in progress. Items 4, 9, 6, 8, 7, 10, and 11 are complete: runtime/cac
 - The collector lives in the already-owned/copied `server.py` rather than a new module because `server/Dockerfile` has a hard-coded copy list and is outside Lane A ownership.
 - Added schema/bounds/privacy, component degradation, MCP/API equality, cache-copy, route, and Pi registration tests.
 
+### Item 12 — correct alerts/freshness
+
+- `memory_alerts` now consumes the shared `/api/status` schema and alerts only when `ingest.pending > 0` and the oldest pending lag exceeds `MAX_PENDING_AGE_HOURS`.
+- A quiet memory with zero pending notes is healthy even when the newest episode is old; the previous wall-clock inactivity heuristic is removed.
+- Wiki/graph/git component readiness, missing/stale communities, and server reachability remain hard failures.
+- Blocked-note and open review-queue counts are emitted as warnings, not job failures.
+- The daily deep healthcheck description and explicit-completion query now match the new semantics.
+- Added focused quiet/old-pending/recent-pending/blocked/review/community/component/server tests; the real Neo4j integration test feeds a live graph/community status snapshot through the alert policy.
+
 ## Important decisions
 
 - `GROUP_ID` remains a Neo4j node/edge property partition. `NEO4J_DATABASE` (default `neo4j`) is the actual database selector.
@@ -84,6 +93,7 @@ Lane A is in progress. Items 4, 9, 6, 8, 7, 10, and 11 are complete: runtime/cac
 - The JSON `/api/metrics` compatibility endpoint remains unchanged; bounding is implemented underneath it rather than replacing its response schema.
 - `not_found` with a null answer is treated as a correctly grounded abstention; fabricated non-null answers rejected for missing provenance are marked not-grounded for observability.
 - Status reports blocked identifiers/reasons only in a bounded list because those are explicitly operational; it never returns source-note or review-queue prose.
+- Alert thresholds apply directly to pending lag (no hidden 6× slack multiplier); the scheduler's configured grace is the policy.
 
 ## Tests run
 
@@ -98,6 +108,8 @@ Lane A is in progress. Items 4, 9, 6, 8, 7, 10, and 11 are complete: runtime/cac
 - `pytest tests/test_memory_status.py -q -s` after item 11 — 5 passed.
 - Full server suite after item 11 — 45 passed, 1 skipped.
 - `(cd agent-setup/pi/extensions/memory && npm install --package-lock=false --ignore-scripts && npm run typecheck)` — passed; temporary `node_modules/` removed.
+- `pytest tests/test_memory_alerts.py -q` after item 12 — 9 passed.
+- Real Neo4j 5.26.2 lifecycle/status/alert integration after item 12 — 1 passed.
 
 ## Dependencies / coordinator TODOs
 

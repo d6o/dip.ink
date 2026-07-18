@@ -1,7 +1,7 @@
 """memory-healthcheck — daily DEEP end-to-end test of the whole memory pipeline.
 
-Complements memory_alerts.py (the 30-min shallow dead-man: newest-episode age,
-community age, /health). This is the daily full-loop verification:
+Complements memory_alerts.py (the 30-min shallow check: actual pending-ingest
+lag, community age, component readiness). This is the daily full-loop verification:
 
   A. WRITE PATH   — real notes reached the wiki repo in the last 48h (proven
                     by real traffic); if the period was quiet, drop a canary via
