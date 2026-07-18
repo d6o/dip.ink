@@ -7,7 +7,7 @@ name: images
 # Main publishes a moving `main` development tag plus an immutable full-git-SHA
 # tag. A `v*` release tag publishes that exact tag, its normalized SemVer tag,
 # and the same immutable full-git-SHA tag. The workflow deliberately does not
-# publish `latest`; public manifests pin v0.1.1 (or an immutable SHA) and move
+# publish `latest`; public manifests pin v0.1.2 (or an immutable SHA) and move
 # only through an explicit release.
 #
 # Path filters are intentionally omitted so a pure-docs release commit can still
@@ -36,6 +36,7 @@ jobs:
             context: ./curator/pi-runner
     steps:
       - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
         with:
@@ -59,6 +60,7 @@ jobs:
         with:
           context: ${{ matrix.context }}
           push: true
+          platforms: linux/amd64,linux/arm64
           build-args: |
             DIPINK_VERSION=${{ github.ref_type == 'tag' && github.ref_name || 'main' }}
             DIPINK_BUILD=${{ github.sha }}
