@@ -5,6 +5,11 @@
 #   - memory loops   python loops/<job>.py
 FROM python:3.12-slim
 
+ARG DIPINK_VERSION=dev
+ARG DIPINK_BUILD=unknown
+ENV DIPINK_VERSION=$DIPINK_VERSION \
+    DIPINK_BUILD=$DIPINK_BUILD
+
 # curl for healthcheck; git for the wiki clone + note-drop push + ingest clones.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         curl git ca-certificates \

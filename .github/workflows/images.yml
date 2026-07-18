@@ -7,7 +7,7 @@ name: images
 # Main publishes a moving `main` development tag plus an immutable full-git-SHA
 # tag. A `v*` release tag publishes that exact tag, its normalized SemVer tag,
 # and the same immutable full-git-SHA tag. The workflow deliberately does not
-# publish `latest`; public manifests pin v0.1.0 (or an immutable SHA) and move
+# publish `latest`; public manifests pin v0.1.1 (or an immutable SHA) and move
 # only through an explicit release.
 #
 # Path filters are intentionally omitted so a pure-docs release commit can still
@@ -59,6 +59,9 @@ jobs:
         with:
           context: ${{ matrix.context }}
           push: true
+          build-args: |
+            DIPINK_VERSION=${{ github.ref_type == 'tag' && github.ref_name || 'main' }}
+            DIPINK_BUILD=${{ github.sha }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=${{ matrix.name }}

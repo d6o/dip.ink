@@ -96,6 +96,7 @@ One process, one MCP endpoint (`/mcp`), all tools. One image, three roles:
 | `WIKI_MCP_EMBED_PROVIDER` | `openai` | `openai` or `fastembed` |
 | `NEO4J_URI` / `NEO4J_USER` / `NEO4J_PASSWORD` | `bolt://neo4j:7687` / `neo4j` / — | graph storage |
 | `NEO4J_MAX_POOL` / `NEO4J_ACQ_TIMEOUT` | bounded defaults | explicit driver pool (no post-construction client swap) |
+| `LEGACY_UPGRADE_BATCH` | `25` | legacy episodes upgraded to explicit completion metadata per ingest tick; status/metrics stay read-only |
 | `CACHE_DIR` | — | persist embeddings + the query-metrics log |
 | `MCP_METRICS_PATH` | `auto` | path for query metrics JSONL, or `off` |
 | `MCP_ALLOWED_HOSTS` | `localhost,127.0.0.1,memory` | add your ingress hostname (DNS-rebinding protection) |

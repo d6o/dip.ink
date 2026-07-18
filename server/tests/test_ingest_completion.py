@@ -219,6 +219,26 @@ class IngestCompletionTests(unittest.TestCase):
 
         asyncio.run(run())
 
+    def test_legacy_upgrade_can_be_disabled_for_read_only_status(self):
+        async def run() -> None:
+            graph = FakeGraph([episode(
+                self.slug,
+                "current body",
+                mention_count=2,
+            )])
+            assessment = await ingest.assess_ingest(
+                graph.driver,
+                [self.note],
+                upgrade_legacy=True,
+                legacy_upgrade_limit=0,
+            )
+            self.assertEqual(assessment.done, {self.slug})
+            self.assertEqual(assessment.legacy_compatible, {self.slug})
+            self.assertEqual(assessment.legacy_upgraded, 0)
+            self.assertEqual(graph.driver.marked, [])
+
+        asyncio.run(run())
+
     def test_unchanged_explicit_episode_is_not_reprocessed(self):
         async def run() -> None:
             graph = FakeGraph([episode(

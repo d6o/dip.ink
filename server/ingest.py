@@ -506,6 +506,10 @@ def build_graphiti() -> Graphiti:
 
 
 DEFAULT_GROUP_ID = os.environ.get("GROUP_ID", "main")
+# Existing installations can have thousands of edge-bearing legacy episodes.
+# Upgrade their explicit completion metadata gradually during ingest ticks rather
+# than turning the first status/Prometheus scrape into a write-heavy migration.
+LEGACY_UPGRADE_BATCH = max(0, int(os.environ.get("LEGACY_UPGRADE_BATCH", "25")))
 
 
 def build_graphiti_on_group(group_id: str = DEFAULT_GROUP_ID) -> Graphiti:
@@ -759,6 +763,7 @@ async def assess_ingest(
     *,
     group_id: str = DEFAULT_GROUP_ID,
     upgrade_legacy: bool = True,
+    legacy_upgrade_limit: int | None = None,
     precomputed_hashes: dict[str, str] | None = None,
 ) -> IngestAssessment:
     notes = discover_notes() if notes is None else notes
@@ -780,7 +785,11 @@ async def assess_ingest(
 
     upgraded = 0
     if upgrade_legacy:
-        for episode, expected_hash in upgrades:
+        selected_upgrades = (
+            upgrades if legacy_upgrade_limit is None
+            else upgrades[:max(0, legacy_upgrade_limit)]
+        )
+        for episode, expected_hash in selected_upgrades:
             await _mark_episode_complete(driver, episode.uuid, expected_hash, group_id)
             upgraded += 1
         if upgraded:
@@ -806,7 +815,8 @@ async def collect_ingest_status(
     notes: list[tuple[datetime, str, Path]] | None = None,
     *,
     group_id: str = DEFAULT_GROUP_ID,
-    upgrade_legacy: bool = True,
+    upgrade_legacy: bool = False,
+    legacy_upgrade_limit: int | None = None,
     precomputed_hashes: dict[str, str] | None = None,
 ) -> dict:
     """Structured ingest state shared by CLI status, API status, and metrics."""
@@ -818,6 +828,7 @@ async def collect_ingest_status(
             notes,
             group_id=group_id,
             upgrade_legacy=upgrade_legacy,
+            legacy_upgrade_limit=legacy_upgrade_limit,
             precomputed_hashes=precomputed_hashes,
         )
         return assessment.as_dict()
@@ -955,7 +966,13 @@ async def ingest() -> None:
     try:
         print(f"[ingest] building indices and constraints on Neo4j database '{NEO4J_DATABASE}'...")
         await g.build_indices_and_constraints()
-        assessment = await assess_ingest(g.driver, notes, group_id=group_id)
+        assessment = await assess_ingest(
+            g.driver,
+            notes,
+            group_id=group_id,
+            upgrade_legacy=True,
+            legacy_upgrade_limit=LEGACY_UPGRADE_BATCH,
+        )
         selected = [note for note in notes if note[1] in assessment.pending][:NOTE_LIMIT]
         print(
             f"[ingest] done={len(assessment.done)}/{total} pending={len(assessment.pending)} "
@@ -973,10 +990,10 @@ async def ingest() -> None:
 
 
 async def status() -> None:
-    """Print explicit completion/content-hash ingest state.
+    """Print explicit completion/content-hash ingest state without mutating it.
 
-    Safe legacy episodes with entity edges are lazily upgraded with completion
-    metadata while status is computed.
+    Legacy metadata migration is intentionally bounded to ingest ticks so a
+    status command or Prometheus scrape remains read-only and predictable.
     """
     snapshot = await collect_ingest_status()
     print(f"[status] total notes on disk: {snapshot['total']}")
@@ -1011,7 +1028,13 @@ async def cron() -> None:
     g = build_graphiti_on_group(group_id)
     try:
         await g.build_indices_and_constraints()
-        assessment = await assess_ingest(g.driver, notes, group_id=group_id)
+        assessment = await assess_ingest(
+            g.driver,
+            notes,
+            group_id=group_id,
+            upgrade_legacy=True,
+            legacy_upgrade_limit=LEGACY_UPGRADE_BATCH,
+        )
         pending = [note for note in notes if note[1] in assessment.pending]
         print(
             f"[cron] done={len(assessment.done)}/{len(notes)} pending={len(pending)} "

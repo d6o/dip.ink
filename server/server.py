@@ -296,7 +296,7 @@ async def _graph_status() -> tuple[dict, dict, dict]:
             client,
             notes,
             group_id=group_id,
-            upgrade_legacy=True,
+            upgrade_legacy=False,
             precomputed_hashes=hashes,
         )
         ingest.update({
