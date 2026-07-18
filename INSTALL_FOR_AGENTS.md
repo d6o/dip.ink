@@ -117,8 +117,25 @@ curl -fsSL $base/package.json   -o ~/.pi/agent/extensions/memory/package.json
 curl -fsSL $base/skill/SKILL.md -o ~/.pi/agent/extensions/memory/skill/SKILL.md
 ```
 
-Point it at the server (skip if using the default `http://localhost:8080/mcp`):
-export `MEMORY_MCP_URL=$MEMORY_URL/mcp` in the shell profile Pi runs under.
+Point it at the server (skip if using the default `http://localhost:8080/mcp`).
+This is **one-time machine/runtime configuration**, not something to type before
+every Pi invocation:
+
+```sh
+export MEMORY_MCP_URL="$MEMORY_URL/mcp"
+```
+
+Persist that export in the shell profile or service configuration that launches
+Pi. Every process that loads the `memory` extension must inherit the variable:
+interactive Pi sessions and SDK subagents inherit their parent process; tmux
+launchers must forward it from the shell; Docker/Kubernetes workloads set it in
+the container environment. After correcting a running interactive installation,
+run `/reload` so Pi reloads the extension.
+
+An isolated CI runner only needs `MEMORY_MCP_URL` when it also installs the
+`memory` extension. The included curator `pi-runner` deliberately creates an
+empty per-run Pi config and exposes no external MCP tools, so its Gitea/GitHub
+Actions jobs do not need this variable.
 
 ### 2. Install the usage contract
 
