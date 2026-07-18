@@ -91,6 +91,60 @@ run_supervisor() {
   )
 }
 
+# Empty inbox must exit before any provider/preflight call.
+rm -f "$TMP/runner-count" "$TMP/probe-count" "$TMP/now-index"
+REPO="$TMP/empty"; ENV_FILE="$TMP/empty-env"; make_repo "$REPO" 0
+printf '0\n' > "$TMP/empty-times"
+run_supervisor "$REPO" "$ENV_FILE" FAKE_SUCCESS_LIMIT=9 FAKE_NOW_VALUES="$TMP/empty-times"
+grep -q '^BATCHES_COMPLETED=0$' "$ENV_FILE"
+grep -q '^SUPERVISOR_STOP_REASON=empty_inbox$' "$ENV_FILE"
+grep -q '^SUPERVISOR_PROBES_RUN=0$' "$ENV_FILE"
+[[ ! -f "$TMP/probe-count" ]]
+[[ ! -f "$TMP/runner-count" ]]
+echo 'empty-inbox zero-probe test OK'
+
+# Native non-OpenAI providers skip OpenAI-compatible preflight by default.
+rm -f "$TMP/runner-count" "$TMP/probe-count" "$TMP/now-index"
+REPO="$TMP/provider-aware"; ENV_FILE="$TMP/provider-aware-env"; make_repo "$REPO" 4
+printf '0\n600\n' > "$TMP/provider-aware-times"
+(
+  cd "$REPO"
+  env \
+    CURATOR_PREFLIGHT= \
+    CURATOR_PREFLIGHT_OK=0 \
+    CURATOR_LLM_BASE_URL= \
+    CURATOR_LLM_MODEL=test-model \
+    PI_PROVIDER=anthropic \
+    GITHUB_ENV="$ENV_FILE" SUPERVISOR_START_EPOCH=0 \
+    CURATOR_RUNNER_BIN="$TMP/fake-runner" \
+    INBOX_PREPARE_BIN="$ROOT/scripts/processnotes-prepare-inbox.sh" \
+    CURATOR_PROBE_BIN="$TMP/fake-probe" SUPERVISOR_NOW_BIN="$TMP/fake-now" \
+    BLOCK_NOTE_BIN="$ROOT/scripts/processnotes-block-note.sh" \
+    IS_INGESTED_BIN="$ROOT/scripts/processnotes-is-ingested.py" \
+    FAKE_RUNNER_COUNT="$TMP/runner-count" FAKE_PROBE_COUNT="$TMP/probe-count" \
+    FAKE_NOW_INDEX="$TMP/now-index" \
+    FAKE_SUCCESS_LIMIT=9 FAKE_NOW_VALUES="$TMP/provider-aware-times" \
+    "$ROOT/scripts/processnotes-supervisor.sh"
+)
+grep -q '^BATCHES_COMPLETED=1$' "$ENV_FILE"
+grep -q '^SUPERVISOR_STOP_REASON=empty_inbox$' "$ENV_FILE"
+grep -q '^SUPERVISOR_PROBES_RUN=0$' "$ENV_FILE"
+[[ ! -f "$TMP/probe-count" ]]
+echo 'provider-aware preflight skip test OK'
+
+# Explicit CURATOR_PREFLIGHT=0 disables probes even for openai + probe bin.
+rm -f "$TMP/runner-count" "$TMP/probe-count" "$TMP/now-index"
+REPO="$TMP/preflight-off"; ENV_FILE="$TMP/preflight-off-env"; make_repo "$REPO" 4
+printf '0\n600\n' > "$TMP/preflight-off-times"
+run_supervisor "$REPO" "$ENV_FILE" \
+  CURATOR_PREFLIGHT=0 CURATOR_PREFLIGHT_OK=0 \
+  FAKE_SUCCESS_LIMIT=9 FAKE_NOW_VALUES="$TMP/preflight-off-times"
+grep -q '^BATCHES_COMPLETED=1$' "$ENV_FILE"
+grep -q '^SUPERVISOR_STOP_REASON=empty_inbox$' "$ENV_FILE"
+grep -q '^SUPERVISOR_PROBES_RUN=0$' "$ENV_FILE"
+[[ ! -f "$TMP/probe-count" ]]
+echo 'preflight-off zero-probe test OK'
+
 # Blocking preserves all existing source/attachment bytes and writes a bounded receipt.
 BLOCK="$TMP/block"
 slug=2026-01-01-000000-corrupt-note
@@ -196,7 +250,10 @@ run_supervisor "$REPO" "$ENV_FILE" FAKE_SUCCESS_LIMIT=3 FAKE_NOW_VALUES="$TMP/mu
 grep -q '^BATCHES_COMPLETED=3$' "$ENV_FILE"
 grep -q '^SUPERVISOR_STOP_REASON=empty_inbox$' "$ENV_FILE"
 [[ $(git -C "$REPO" rev-list --count HEAD) -eq 4 ]]
-[[ $(cat "$TMP/probe-count") -eq 3 ]]
+# Empty-inbox check runs before preflight, so only later non-empty batches probe
+# after the first workflow-preflight reuse: batches 2 and 3 → 2 probes.
+[[ $(cat "$TMP/probe-count") -eq 2 ]]
+grep -q '^SUPERVISOR_PROBES_RUN=2$' "$ENV_FILE"
 echo 'multi-batch and LLM probe test OK'
 
 # Four 12-minute batches fit; a fifth is blocked by the 20-minute floor.
