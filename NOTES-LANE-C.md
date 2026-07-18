@@ -2,13 +2,13 @@
 
 ## Final summary
 
-**Status: in progress.** Items 1 and 15 are implemented; items 14 and 16 remain.
+**Status: in progress.** Items 1, 15, and 14 are implemented; item 16 remains.
 
 ## Status by plan item
 
 - [x] Item 1 — k8s Secret apply safety
 - [x] Item 15 — deploy/config parity and supported configuration
-- [ ] Item 14 — immutable deploy image pinning
+- [x] Item 14 — immutable deploy image pinning
 - [ ] Item 16 — monitoring manifests and Grafana dashboard
 
 ## Design decisions
@@ -21,6 +21,7 @@
 - Contradiction janitor is report-only by default in both targets (`DRY_RUN=1` / `JANITOR_DRY_RUN=1`).
 - Extraction and graph-answer distillation can use separate OpenAI-compatible endpoints/model ladders while the one-key OpenAI default remains intact.
 - `PI_MODELS_JSON` is curator/Pi-runner configuration, not a memory-server variable; `.env.example` identifies the cross-lane repository-CI handoff instead of injecting an unused value into runtime containers.
+- Compose now consumes the published `memory:v0.1.0` image instead of implicitly building mutable local source; local development can use an explicit override file, while the shipped deploy remains immutable.
 
 ## Commands and results
 
@@ -35,9 +36,16 @@
 - Inline PyYAML assertions — passed: exact Compose service set is `neo4j`, `memory`, plus the six intended jobs; exact Kubernetes CronJob role set matches; shared model ladder, distiller, embedding, cache/metrics inputs are present; both janitors default to report-only.
 - `kubectl kustomize deploy/k8s` — passed after adding `dipink-config` and shared `envFrom` references.
 
+### Item 14
+
+- `docker compose --env-file <temporary-fixture> config` and `kubectl kustomize deploy/k8s` — passed after image changes.
+- Inline image assertion — passed: all seven Compose memory services and all seven rendered Kubernetes memory containers use `ghcr.io/d6o/dip.ink/memory:v0.1.0`; Compose deploy services have no `build` fallback.
+- `rg -n 'image:.*:latest' deploy docker-compose.yml` — zero matches.
+- PCRE2 assertion for any dip.ink memory tag other than `v0.1.0` — zero matches.
+
 ## Dependencies and coordinator TODOs
 
-- Lane D owns README updates. It must replace the old `deploy/k8s/secrets.example.yaml` path with `deploy/examples/dipink-secrets.example.yaml` and replace directory apply with `kubectl apply -k deploy/k8s` after the real Secret is applied separately.
+- Lane D owns README updates. It must replace the old `deploy/k8s/secrets.example.yaml` path with `deploy/examples/dipink-secrets.example.yaml`, replace directory apply with `kubectl apply -k deploy/k8s` after the real Secret is applied separately, and remove `docker compose ... --build` from production quickstarts.
 - Lane B owns actual curator workflow propagation of `PI_PROVIDER`, `PI_MODEL`, and `PI_MODELS_JSON`; Lane C only documents that handoff because Compose/Kubernetes do not run the curator.
 - Lane A owns `memory_status`; the coordinator should verify after merge that Lane A introduced no additional required status environment variable. The current server branch exposes no status-specific configuration name.
 - The coordinator must perform post-merge and live-cluster validation; this lane does not apply resources to live services.
