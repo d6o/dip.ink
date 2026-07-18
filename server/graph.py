@@ -71,8 +71,20 @@ DISTILL_MODEL_LADDER = parse_model_ladder(
 # one) and the graph only changes on ingest ticks, so a short TTL is safe.
 # Only real answers are cached — not_found/error always re-run.
 ANSWER_CACHE_TTL = float(os.environ.get("ANSWER_CACHE_TTL", "3600"))  # seconds; 0 disables
-_ANSWER_CACHE: dict[str, tuple[float, dict, int]] = {}  # key -> (expires_at, result, packet_tokens_est)
+_ANSWER_CACHE: dict[tuple[str, str], tuple[float, dict, int]] = {}
+# key=(normalized question, ingest watermark) -> (expires_at, result, packet_tokens_est)
 _ANSWER_CACHE_MAX = 500
+_ANSWER_CACHE_WATERMARK: str | None = None
+
+# Bounded deterministic grounding outcomes, also emitted on each query event.
+GROUNDING_COUNTS = {
+    "accepted": 0,
+    "filtered": 0,
+    "downgraded": 0,
+    "rejected": 0,
+    "abstained": 0,
+    "error": 0,
+}
 
 # --- Graphiti client (one per process; created in lifespan) ---
 _g = None
@@ -81,9 +93,31 @@ _g = None
 async def _get_graph():
     global _g
     if _g is None:
-        log.info("building Graphiti client (extraction LLM from env, OpenAI embedder, roomy pool)")
+        log.info("building Graphiti client (extraction LLM from env, OpenAI embedder, bounded pool)")
         _g = build_graphiti()
     return _g
+
+
+async def _graph_ingest_watermark() -> str | None:
+    """Latest explicit episode completion time for answer-cache freshness.
+
+    ``"none"`` is a stable cache version for an empty/legacy-only graph. Query
+    failures return None and disable caching rather than risk serving stale data.
+    """
+    try:
+        g = await _get_graph()
+        rows, _, _ = await g.driver.execute_query(
+            "MATCH (e:Episodic {group_id: $group_id}) "
+            "RETURN toString(max(e.dipink_completed_at)) AS watermark",
+            group_id=DEFAULT_GROUP_ID,
+            routing_="r",
+        )
+        if not rows or not rows[0].get("watermark"):
+            return "none"
+        return str(rows[0]["watermark"])
+    except Exception as error:  # noqa: BLE001
+        log.warning("graph_answer: ingest watermark unavailable: %s", type(error).__name__)
+        return None
 
 
 def _valid_at_window(edge) -> dict:
@@ -321,50 +355,143 @@ async def _distill(question: str, packet_json: str) -> dict | None:
     return None
 
 
+def _allowed_provenance(packet: dict) -> dict[str, str]:
+    """Return bounded packet provenance with strong/weak support classes."""
+    allowed: dict[str, str] = {}
+    for fact in packet.get("facts") or []:
+        slug = str(fact.get("source_slug") or "").strip()
+        if not slug:
+            continue
+        strength = "strong" if fact.get("current", True) else "weak"
+        if allowed.get(slug) != "strong":
+            allowed[slug] = strength
+    excerpt = packet.get("source_excerpt") or {}
+    excerpt_slug = str(excerpt.get("slug") or "").strip()
+    if excerpt_slug:
+        allowed[excerpt_slug] = "strong"
+    for hit in packet.get("semantic_notes") or []:
+        slug = str(hit.get("name") or "").strip()
+        if slug and slug not in allowed:
+            allowed[slug] = "weak"
+    return allowed
+
+
+def _count_grounding(action: str) -> None:
+    if action not in GROUNDING_COUNTS:
+        action = "error"
+    GROUNDING_COUNTS[action] += 1
+
+
+def _validate_distilled_answer(parsed: dict, packet: dict) -> tuple[dict, bool, str]:
+    """Apply deterministic provenance and confidence rules to model output."""
+    conf = str(parsed.get("confidence", "low")).strip().lower()
+    if conf not in ("high", "medium", "low", "not_found"):
+        conf = "low"
+    answer = parsed.get("answer")
+    answer = None if answer in (None, "", "null") else str(answer)[:2000]
+
+    if conf == "not_found" or answer is None:
+        result = {
+            "answer": None,
+            "confidence": "not_found",
+            "sources": [],
+            "escalate": True,
+        }
+        return result, True, "abstained"
+
+    raw_sources = parsed.get("sources") or []
+    if not isinstance(raw_sources, list):
+        raw_sources = [raw_sources]
+    allowed = _allowed_provenance(packet)
+    sources: list[str] = []
+    invented = False
+    for source in raw_sources:
+        slug = str(source or "").strip()
+        if not slug:
+            continue
+        if slug not in allowed:
+            invented = True
+            continue
+        if slug not in sources:
+            sources.append(slug)
+        if len(sources) >= 5:
+            break
+
+    # No non-null answer can survive without packet provenance.
+    if not sources:
+        return {
+            "answer": None,
+            "confidence": "not_found",
+            "sources": [],
+            "escalate": True,
+        }, False, "rejected"
+
+    action = "filtered" if invented else "accepted"
+    if conf == "high" and not any(allowed[source] == "strong" for source in sources):
+        conf = "medium"
+        action = "downgraded"
+
+    result = {
+        "answer": answer,
+        "confidence": conf,
+        "sources": sources,
+        "escalate": bool(parsed.get("escalate", False)),
+    }
+    note = parsed.get("superseded_note")
+    if note and str(note).strip().lower() not in ("none", "null", "n/a"):
+        result["superseded_note"] = str(note)[:500]
+    return result, True, action
+
+
 # --- MCP tools (registered on the shared core.mcp instance) ---
 
 
 async def _graph_answer_impl(question: str, is_test: bool = False) -> dict:
-    """Shared implementation for the MCP tool and the /api/answer route.
-    `is_test` tags the metrics event so smoke tests don't pollute the weekly
-    not_found rate / gap candidates."""
+    """Shared implementation with deterministic grounding and fresh caching."""
+    global _ANSWER_CACHE_WATERMARK
     t0 = time.time()
     q = (question or "").strip()
-    # normalize: lowercase, collapse whitespace, strip trailing punctuation
-    # ("...annotation" and "...Annotation?" must share a cache entry — observed miss on day one)
-    key = " ".join(q.lower().split()).rstrip("?!. ")
+    normalized = " ".join(q.lower().split()).rstrip("?!. ")
 
-    if ANSWER_CACHE_TTL > 0:
-        hit = _ANSWER_CACHE.get(key)
+    watermark = await _graph_ingest_watermark()
+    cache_key: tuple[str, str] | None = None
+    if ANSWER_CACHE_TTL > 0 and watermark is not None:
+        if _ANSWER_CACHE_WATERMARK != watermark:
+            _ANSWER_CACHE.clear()
+            _ANSWER_CACHE_WATERMARK = watermark
+        cache_key = (normalized, watermark)
+        hit = _ANSWER_CACHE.get(cache_key)
         if hit and hit[0] > time.time():
             result = dict(hit[1])
+            _count_grounding("accepted")
             event = {
                 "ts": time.time(), "at": _now_iso(), "source": "mcp", "tool": "graph_answer",
                 "question": q[:200], "confidence": result["confidence"],
                 "n_sources": len(result.get("sources") or []), "escalate": result["escalate"],
                 "answer_tokens_est": len(result.get("answer") or "") // 4,
                 "packet_tokens_est": hit[2], "assemble_ms": 0, "distill_ms": 0,
-                "cached": True,
+                "cached": True, "grounded": True, "grounding_action": "accepted",
             }
             if is_test:
                 event["test"] = True
             _record_query(event)
             return result
         if hit:
-            _ANSWER_CACHE.pop(key, None)  # expired
+            _ANSWER_CACHE.pop(cache_key, None)
 
     packet: dict | None = None
     try:
-        # Full-fat packet internally (k=8, untrimmed excerpt) — the trim in
-        # graph_search applies to the wire, not the distiller's input.
-        packet = await _assemble_packet(q, 8, excerpt_chars=2500, n_communities=3, community_chars=1000)
-    except Exception as e:  # noqa: BLE001
-        log.warning("graph_answer: packet assembly failed: %r", e)
+        packet = await _assemble_packet(
+            q, 8, excerpt_chars=2500, n_communities=3, community_chars=1000
+        )
+    except Exception as error:  # noqa: BLE001
+        log.warning("graph_answer: packet assembly failed: %r", error)
     assemble_ms = int((time.time() - t0) * 1000)
     t1 = time.time()
 
-    result: dict
     packet_tokens_est = 0
+    grounded = False
+    grounding_action = "error"
     if packet is None:
         result = {"answer": None, "confidence": "error", "sources": [], "escalate": True}
     else:
@@ -372,36 +499,28 @@ async def _graph_answer_impl(question: str, is_test: bool = False) -> dict:
         packet_tokens_est = len(packet_json) // 4
         parsed = await _distill(q, packet_json)
         if parsed is None:
-            # Distiller down/unparseable → degrade gracefully; agent falls
-            # back to graph_search. NEVER 500.
             result = {"answer": None, "confidence": "error", "sources": [], "escalate": True}
         else:
-            conf = str(parsed.get("confidence", "low")).strip().lower()
-            if conf not in ("high", "medium", "low", "not_found"):
-                conf = "low"
-            answer = parsed.get("answer")
-            answer = None if answer in (None, "", "null") else str(answer)[:2000]
-            if conf == "not_found":
-                answer = None
-            srcs = parsed.get("sources") or []
-            if not isinstance(srcs, list):
-                srcs = [srcs]
-            sources = [str(s).strip() for s in srcs if s and str(s).strip()][:5]
-            escalate = bool(parsed.get("escalate", False)) or conf == "not_found" or answer is None
-            result = {"answer": answer, "confidence": conf, "sources": sources, "escalate": escalate}
-            note = parsed.get("superseded_note")
-            if note and str(note).strip().lower() not in ("none", "null", "n/a"):
-                result["superseded_note"] = str(note)[:500]
-
+            result, grounded, grounding_action = _validate_distilled_answer(parsed, packet)
     distill_ms = int((time.time() - t1) * 1000)
+    _count_grounding(grounding_action)
 
-    # Cache real answers only (not_found/error always re-run — the memory may
-    # gain the answer, and errors are transient).
-    if ANSWER_CACHE_TTL > 0 and result.get("answer") and result["confidence"] in ("high", "medium", "low"):
+    # Cache only grounded, non-null answers and bind them to the explicit graph
+    # ingest watermark. Abstentions/errors always re-run.
+    if (
+        cache_key is not None
+        and grounded
+        and result.get("answer")
+        and result["confidence"] in ("high", "medium", "low")
+    ):
         if len(_ANSWER_CACHE) >= _ANSWER_CACHE_MAX:
-            oldest = min(_ANSWER_CACHE, key=lambda c: _ANSWER_CACHE[c][0])
+            oldest = min(_ANSWER_CACHE, key=lambda candidate: _ANSWER_CACHE[candidate][0])
             _ANSWER_CACHE.pop(oldest, None)
-        _ANSWER_CACHE[key] = (time.time() + ANSWER_CACHE_TTL, dict(result), packet_tokens_est)
+        _ANSWER_CACHE[cache_key] = (
+            time.time() + ANSWER_CACHE_TTL,
+            dict(result),
+            packet_tokens_est,
+        )
 
     event = {
         "ts": time.time(), "at": _now_iso(), "source": "mcp", "tool": "graph_answer",
@@ -411,6 +530,9 @@ async def _graph_answer_impl(question: str, is_test: bool = False) -> dict:
         "packet_tokens_est": packet_tokens_est,
         "assemble_ms": assemble_ms,
         "distill_ms": distill_ms,
+        "cached": False,
+        "grounded": grounded,
+        "grounding_action": grounding_action,
     }
     if is_test:
         event["test"] = True

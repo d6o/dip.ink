@@ -2,7 +2,7 @@
 
 ## Summary
 
-Lane A is in progress. Items 4, 9, 6, 8, and 7 are complete: lifecycle/ingest/cache correctness is hardened, archived retries stay idempotent, and all blocking plain-HTTP search/reindex/metrics work is off the event loop with bounded metrics storage.
+Lane A is in progress. Items 4, 9, 6, 8, 7, and 10 are complete: runtime and cache correctness is hardened, blocking HTTP work is isolated, and graph answers now require packet provenance with cache freshness tied to explicit ingest completion.
 
 ## Completed items
 
@@ -52,6 +52,15 @@ Lane A is in progress. Items 4, 9, 6, 8, and 7 are complete: lifecycle/ingest/ca
 - Query JSONL storage now rotates at a configurable bounded size (`MCP_METRICS_MAX_BYTES`, default 5 MiB) with a bounded backup count (`MCP_METRICS_BACKUPS`, default 2); reads cover only those bounded files and still return at most 5,000 events.
 - Added thread-identity tests for all three endpoints, an ASGI responsiveness test proving slow fake search/reindex/metrics work does not delay `/live`, and log rotation/order bounds tests.
 
+### Item 10 — graph_answer grounding + cache freshness
+
+- Allowed provenance is built deterministically from fact source slugs, the source excerpt, and semantic-note hits.
+- Invented sources are removed. A non-null answer with no allowed source is rejected to a `not_found` abstention; mixed valid/invented citations keep only the valid citations.
+- `high` confidence backed only by weak semantic/superseded provenance is deterministically downgraded to `medium`; directly supported answers remain unchanged.
+- Grounding outcomes are emitted on every graph-answer query event and counted in bounded in-process rejection/downgrade/acceptance buckets.
+- Answer-cache keys now include the latest scoped `dipink_completed_at` watermark. A watermark change clears the old cache immediately; watermark query failure disables caching rather than risking stale answers.
+- Added tests for invented-source rejection, citation filtering, confidence downgrade, valid-answer preservation, no-hallucination abstention, grounding counters, group-scoped watermark reads, cache hits, and new-ingest invalidation.
+
 ## Important decisions
 
 - `GROUP_ID` remains a Neo4j node/edge property partition. `NEO4J_DATABASE` (default `neo4j`) is the actual database selector.
@@ -62,6 +71,7 @@ Lane A is in progress. Items 4, 9, 6, 8, and 7 are complete: lifecycle/ingest/ca
 - Capture-hash lookup includes quarantined/deferred inbox locations for retry safety, even though blocked notes are excluded from Graphiti ingest.
 - Legacy embedding vectors are deliberately accepted once even though historical cache files cannot prove which old metadata produced them; once rewritten, all future metadata changes invalidate exactly.
 - The JSON `/api/metrics` compatibility endpoint remains unchanged; bounding is implemented underneath it rather than replacing its response schema.
+- `not_found` with a null answer is treated as a correctly grounded abstention; fabricated non-null answers rejected for missing provenance are marked not-grounded for observability.
 
 ## Tests run
 
@@ -72,6 +82,7 @@ Lane A is in progress. Items 4, 9, 6, 8, and 7 are complete: lifecycle/ingest/ca
 - `pytest tests/test_note_drop_resilience.py -q` after item 6 — 10 passed.
 - `pytest tests/test_degraded_startup.py -q -s` after item 8 — 7 passed.
 - `pytest tests/test_http_responsiveness.py -q -s` after item 7 — 5 passed, including three slow-handler `/live` responsiveness cases.
+- `pytest tests/test_graph_grounding.py -q -s` after item 10 — 8 passed.
 
 ## Dependencies / coordinator TODOs
 
