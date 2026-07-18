@@ -28,7 +28,7 @@ import anyio.to_thread
 import yaml
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, Response
 from starlette.routing import Mount, Route
 
 import core
@@ -39,13 +39,8 @@ import wiki
 STATUS_SLUG_TS_RE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})-(\d{2})(\d{2})(\d{2})-")
 STATUS_CACHE_TTL = max(0.0, float(os.environ.get("MEMORY_STATUS_CACHE_TTL", "15")))
 STATUS_BLOCKED_LIMIT = max(1, min(int(os.environ.get("MEMORY_STATUS_BLOCKED_LIMIT", "20")), 100))
-DIPINK_VERSION = os.environ.get("DIPINK_VERSION", "dev")
-DIPINK_BUILD = (
-    os.environ.get("DIPINK_BUILD")
-    or os.environ.get("GIT_SHA")
-    or os.environ.get("SOURCE_REVISION")
-    or "unknown"
-)
+DIPINK_VERSION = core.DIPINK_VERSION
+DIPINK_BUILD = core.DIPINK_BUILD
 
 _STATUS_CACHE: tuple[float, dict] | None = None
 _STATUS_CACHE_LOCK = threading.Lock()
@@ -449,6 +444,15 @@ async def memory_status() -> dict:
 async def http_status(_req: Request) -> JSONResponse:
     return JSONResponse(await get_status())
 
+
+async def prometheus_metrics(_req: Request) -> Response:
+    snapshot = await get_status()
+    return Response(
+        core.render_prometheus(snapshot),
+        headers={"Content-Type": core.CONTENT_TYPE_LATEST},
+    )
+
+
 async def health(_req: Request) -> JSONResponse:
     """Combined readiness. 200 when the wiki index is usable (full or
     degraded); the graph side reports its client state alongside."""
@@ -492,6 +496,7 @@ app = Starlette(
         Route("/health", health),
         Route("/api/metrics", metrics),
         Route("/api/status", http_status),
+        Route("/metrics", prometheus_metrics),
         *_wiki_routes,
         *graph.http_routes,
         Mount("/", app=mcp_app),   # /mcp lands here

@@ -1320,6 +1320,30 @@ def _wiki_note_drop_impl(
         return note_drop_result(folder_name, sha)
 
 
+def _wiki_note_drop_recorded(
+    slug: str,
+    note_md: str,
+    attachments: dict[str, str] | None,
+    binary_attachments: dict[str, str] | None,
+) -> dict:
+    started = time.monotonic()
+    result = _wiki_note_drop_impl(slug, note_md, attachments, binary_attachments)
+    outcome = (
+        "already_exists" if result.get("ok") and result.get("already_exists")
+        else "ok" if result.get("ok")
+        else "error"
+    )
+    _record_query({
+        "ts": time.time(),
+        "at": _now_iso(),
+        "source": "mcp",
+        "tool": "wiki_note_drop",
+        "outcome": outcome,
+        "duration_ms": int((time.monotonic() - started) * 1000),
+    })
+    return result
+
+
 @mcp.tool()
 async def wiki_note_drop(
     slug: str,
@@ -1358,7 +1382,13 @@ async def wiki_note_drop(
     the vault at /services/foo/API_TOKEN").
     """
     return await anyio.to_thread.run_sync(
-        functools.partial(_wiki_note_drop_impl, slug, note_md, attachments, binary_attachments)
+        functools.partial(
+            _wiki_note_drop_recorded,
+            slug,
+            note_md,
+            attachments,
+            binary_attachments,
+        )
     )
 
 

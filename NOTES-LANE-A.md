@@ -2,7 +2,7 @@
 
 ## Summary
 
-Lane A is in progress. Items 4, 9, 6, 8, 7, 10, 11, and 12 are complete: the server exposes bounded grounded status, and freshness alerts now follow actual pending note→episode lag so quiet periods remain healthy.
+Lane A implementation is complete for items 4, 9, 6, 8, 7, 10, 11, 12, and server-side 16. Lifecycle, ingest identity, idempotency, embedding cache correctness, event-loop safety, answer grounding, status, alert semantics, and bounded Prometheus instrumentation are implemented and validated.
 
 ## Completed items
 
@@ -81,6 +81,16 @@ Lane A is in progress. Items 4, 9, 6, 8, 7, 10, 11, and 12 are complete: the ser
 - The daily deep healthcheck description and explicit-completion query now match the new semantics.
 - Added focused quiet/old-pending/recent-pending/blocked/review/community/component/server tests; the real Neo4j integration test feeds a live graph/community status snapshot through the alert policy.
 
+### Item 16 (server) — Prometheus observability
+
+- Added a private Prometheus registry and `/metrics` text endpoint with every metric in the approved contract: build info; bounded tool/note-drop/graph-answer counters and duration histograms; and status-derived wiki/graph/queue/ingest/community gauges.
+- All label values are selected from bounded enums. Raw query text, page names, note slugs, blocked identifiers, and other private/unbounded values never become labels.
+- Zero-valued bounded series are initialized at process start so dashboards/rules see a stable schema before first use.
+- `record_query` projects existing events into tool metrics; graph-answer events carry confidence/cache/grounding and phase durations; note-drop records success/already-exists/failure without slug labels.
+- State gauges are updated from the same cached status snapshot returned by `memory_status`, ensuring API/Grafana count agreement. Missing communities expose `+Inf` age so stale-community rules fire rather than silently passing.
+- Added pinned `prometheus-client==0.22.1` and tests for the complete schema, exact label sets, private-label exclusion, status/gauge equality, separate JSON-vs-Prometheus endpoints, and missing-community semantics.
+- Observability primitives live in the already-owned/copied `core.py` and the route in `server.py`; this avoids changing the out-of-lane hard-coded Docker copy list.
+
 ## Important decisions
 
 - `GROUP_ID` remains a Neo4j node/edge property partition. `NEO4J_DATABASE` (default `neo4j`) is the actual database selector.
@@ -94,6 +104,7 @@ Lane A is in progress. Items 4, 9, 6, 8, 7, 10, 11, and 12 are complete: the ser
 - `not_found` with a null answer is treated as a correctly grounded abstention; fabricated non-null answers rejected for missing provenance are marked not-grounded for observability.
 - Status reports blocked identifiers/reasons only in a bounded list because those are explicitly operational; it never returns source-note or review-queue prose.
 - Alert thresholds apply directly to pending lag (no hidden 6× slack multiplier); the scheduler's configured grace is the policy.
+- Prometheus histograms necessarily add the standard bounded `le` bucket label; application labels remain exactly the plan contract.
 
 ## Tests run
 
@@ -110,6 +121,9 @@ Lane A is in progress. Items 4, 9, 6, 8, 7, 10, 11, and 12 are complete: the ser
 - `(cd agent-setup/pi/extensions/memory && npm install --package-lock=false --ignore-scripts && npm run typecheck)` — passed; temporary `node_modules/` removed.
 - `pytest tests/test_memory_alerts.py -q` after item 12 — 9 passed.
 - Real Neo4j 5.26.2 lifecycle/status/alert integration after item 12 — 1 passed.
+- `pytest tests/test_observability.py -q` — 5 passed.
+- Full server pytest suite after server-side item 16 — 59 passed, 1 skipped.
+- `docker build -f server/Dockerfile -t dipink-lane-a-server-test server` — passed; build-time unittest suite ran 60 tests, 1 skipped.
 
 ## Dependencies / coordinator TODOs
 

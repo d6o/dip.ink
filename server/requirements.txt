@@ -5,6 +5,7 @@ graphiti-core==0.29.2
 anyio>=4.0
 mcp[cli]>=1.2.0
 numpy>=2.0
+prometheus-client==0.22.1
 pyyaml>=6.0
 starlette>=0.41
 uvicorn[standard]>=0.32
