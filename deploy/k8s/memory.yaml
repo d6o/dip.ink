@@ -94,6 +94,8 @@ kind: Service
 metadata:
   name: memory
   namespace: dipink
+  labels:
+    app: memory
 spec:
   selector:
     app: memory
