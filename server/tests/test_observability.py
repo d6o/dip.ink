@@ -86,6 +86,7 @@ class ObservabilityContractTests(unittest.TestCase):
 
         for name in EXPECTED_METRICS:
             self.assertIn(f"# HELP {name} ", text, name)
+        self.assertNotIn("_created", text)
         gauge_expectations = {
             "dipink_wiki_index_ready": 1,
             "dipink_wiki_index_degraded": 1,

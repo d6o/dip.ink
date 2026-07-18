@@ -85,7 +85,7 @@ Lane A implementation is complete for items 4, 9, 6, 8, 7, 10, 11, 12, and serve
 
 - Added a private Prometheus registry and `/metrics` text endpoint with every metric in the approved contract: build info; bounded tool/note-drop/graph-answer counters and duration histograms; and status-derived wiki/graph/queue/ingest/community gauges.
 - All label values are selected from bounded enums. Raw query text, page names, note slugs, blocked identifiers, and other private/unbounded values never become labels.
-- Zero-valued bounded series are initialized at process start so dashboards/rules see a stable schema before first use.
+- Zero-valued bounded series are initialized at process start so dashboards/rules see a stable schema before first use; optional client-library `_created` series are disabled to keep the exported application contract exact.
 - `record_query` projects existing events into tool metrics; graph-answer events carry confidence/cache/grounding and phase durations; note-drop records success/already-exists/failure without slug labels.
 - State gauges are updated from the same cached status snapshot returned by `memory_status`, ensuring API/Grafana count agreement. Missing communities expose `+Inf` age so stale-community rules fire rather than silently passing.
 - Added pinned `prometheus-client==0.22.1` and tests for the complete schema, exact label sets, private-label exclusion, status/gauge equality, separate JSON-vs-Prometheus endpoints, and missing-community semantics.

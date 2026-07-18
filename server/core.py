@@ -16,7 +16,14 @@ from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
-from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram, generate_latest
+from prometheus_client import (
+    CollectorRegistry,
+    Counter,
+    Gauge,
+    Histogram,
+    disable_created_metrics,
+    generate_latest,
+)
 from prometheus_client.exposition import CONTENT_TYPE_LATEST
 
 HOST = os.environ.get("HOST", "0.0.0.0")
@@ -68,6 +75,7 @@ _metrics_lock = threading.Lock()
 # Private registry: deterministic in tests/import reloads and no unrelated
 # process metrics. Every label value is selected from a bounded enum except the
 # single build version carried by dipink_info.
+disable_created_metrics()
 PROMETHEUS_REGISTRY = CollectorRegistry(auto_describe=True)
 DIPINK_INFO = Gauge(
     "dipink_info", "dip.ink build information", ["version"], registry=PROMETHEUS_REGISTRY
