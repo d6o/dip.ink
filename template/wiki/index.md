@@ -22,4 +22,6 @@ Read this first when answering queries.
 
 ## Sources
 
-0 source pages, one per ingested document/note. Listed by month below; for the full list browse `wiki/sources/notes/` directly. For ingest narratives across batches see [[log]].
+1 source pages, one per ingested document/note. Listed by month below; for the full list browse `wiki/sources/notes/` directly. For ingest narratives across batches see [[log]].
+
+- **2026-01** — 1 sources
