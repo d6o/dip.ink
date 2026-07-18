@@ -14,7 +14,7 @@ notes/       # Transient inbox. One folder per note dropped by an agent
              # attachments. /processnotes drains this into
              # wiki/sources/notes/YYYY/MM/DD/<folder>/.
   .deferred/ # Supervisor-held folders outside the current oldest-first batch.
-  .blocked/  # Terminal quarantine for FLAGged or already-ingested folders.
+  .blocked/  # Terminal quarantine for FLAGged, malformed, or already-ingested folders.
              # Each complete original folder gets a machine-readable BLOCKED.md.
 wiki/        # Your output. Markdown pages — entities, concepts, summaries, syntheses.
   index.md   # Catalog of every wiki page. Auto-generated; don't edit by hand.
@@ -151,7 +151,7 @@ The live `wiki/log.md` keeps roughly the last 14 days. Older entries rotate into
 
 Agent sessions drop notes into `notes/` when they learn things (via the `wiki_note_drop` MCP tool — see `AGENTS.md` in the dip.ink repo). Each note is a **folder** named `YYYY-MM-DD-HHMMSS-<slug>/` containing `<folder>.md` (or legacy `NOTE.md`) plus any attachments. The `/processnotes` command drains this inbox — see `.pi/prompts/processnotes.md` for the full workflow (terminal exact-slug dedup, discuss-or-announce, write pages, validate, move note folders to `wiki/sources/notes/`, log, commit, push).
 
-`notes/.blocked/` is terminal and excluded from both live and deferred batching. FLAGged folders and exact already-ingested duplicates move there intact; no existing source-note or attachment bytes are changed. `scripts/processnotes-block-note.sh` adds only a bounded `BLOCKED.md` receipt with `slug`, safe `reason`, and `blocked-at` frontmatter.
+`notes/.blocked/` is terminal and excluded from both live and deferred batching. FLAGged folders, malformed frontmatter, and exact already-ingested duplicates move there intact; no existing source-note or attachment bytes are changed. `scripts/processnotes-block-note.sh` adds only a bounded `BLOCKED.md` receipt with `slug`, safe `reason`, and `blocked-at` frontmatter.
 
 **Credentials, tokens, and passwords must never be submitted in notes.** Agents record only the corresponding secret-manager path.
 
