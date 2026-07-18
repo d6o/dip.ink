@@ -13,14 +13,17 @@ notes/       # Transient inbox. One folder per note dropped by an agent
              # containing <folder>.md (or legacy NOTE.md) + optional
              # attachments. /processnotes drains this into
              # wiki/sources/notes/YYYY/MM/DD/<folder>/.
+  .deferred/ # Supervisor-held folders outside the current oldest-first batch.
+  .blocked/  # Terminal quarantine for FLAGged or already-ingested folders.
+             # Each complete original folder gets a machine-readable BLOCKED.md.
 wiki/        # Your output. Markdown pages — entities, concepts, summaries, syntheses.
   index.md   # Catalog of every wiki page. Auto-generated; don't edit by hand.
   log.md     # Append-only chronological record of ingests, queries, lint passes.
              # Entries >14d rotate to wiki/log/YYYY-Www.md archives.
   Curator review queue.md
              # Hand-pruned queue of auto-curator decisions that need the
-             # operator's eyes (substantial rewrites, contradictions, secrets
-             # to rotate). Newest-first; the operator deletes entries as they review.
+             # operator's eyes (substantial rewrites and contradictions).
+             # Newest-first; the operator deletes entries as they review.
   assets/    # Images downloaded from sources.
   sources/   # Source pages.
     notes/YYYY/MM/DD/<YYYY-MM-DD-HHMMSS-slug>/
@@ -33,6 +36,8 @@ scripts/     # Tooling that operates on the wiki.
   wikidistill.py # Weekly snapshot of changes.
   wikiutil.py    # Shared helpers (is_skipped, is_archive, read_frontmatter).
   processnotes-prepare-inbox.sh # Rebuilds oldest-first live N=4 batch.
+  processnotes-block-note.sh    # Moves a full folder to .blocked with a receipt.
+  processnotes-is-ingested.py   # Exact-slug lookup across live/archived logs.
   processnotes-supervisor.sh    # Runs fresh curator agent batches hourly.
 AGENTS.md    # This file. The schema. Co-evolves with the wiki.
 .pi/prompts/{processnotes,wikilint,wikidistill}.md   # Interactive prompts.
@@ -144,7 +149,11 @@ The live `wiki/log.md` keeps roughly the last 14 days. Older entries rotate into
 
 ### Process notes (`/processnotes`)
 
-Agent sessions drop notes into `notes/` when they learn things (via the `wiki_note_drop` MCP tool — see `AGENTS.md` in the dip.ink repo). Each note is a **folder** named `YYYY-MM-DD-HHMMSS-<slug>/` containing `<folder>.md` (or legacy `NOTE.md`) plus any attachments. The `/processnotes` command drains this inbox — see `.pi/prompts/processnotes.md` for the full workflow (dedup via log, secret scan with redact-and-reference, discuss-or-announce, write pages, validate, move note folders to `wiki/sources/notes/`, log, commit, push).
+Agent sessions drop notes into `notes/` when they learn things (via the `wiki_note_drop` MCP tool — see `AGENTS.md` in the dip.ink repo). Each note is a **folder** named `YYYY-MM-DD-HHMMSS-<slug>/` containing `<folder>.md` (or legacy `NOTE.md`) plus any attachments. The `/processnotes` command drains this inbox — see `.pi/prompts/processnotes.md` for the full workflow (terminal exact-slug dedup, discuss-or-announce, write pages, validate, move note folders to `wiki/sources/notes/`, log, commit, push).
+
+`notes/.blocked/` is terminal and excluded from both live and deferred batching. FLAGged folders and exact already-ingested duplicates move there intact; no existing source-note or attachment bytes are changed. `scripts/processnotes-block-note.sh` adds only a bounded `BLOCKED.md` receipt with `slug`, safe `reason`, and `blocked-at` frontmatter.
+
+**Credentials, tokens, and passwords must never be submitted in notes.** Agents record only the corresponding secret-manager path.
 
 ### Auto-curate (headless)
 
@@ -157,8 +166,8 @@ Differences from manual `/processnotes`:
 - **No human-in-the-loop discussion.** Decisions are made and committed.
 - **New pages OK.** New entity / concept / synthesis / decision pages can be created freely. New entity `category:` values and new status enum values still require manual judgment.
 - **Prefer superseding over rewriting.** Status changes and migrations always add a dated subsection; the prior prose stays. **Never delete a page or section.** A retired service stays with `status: retired` and a migration subsection; an obsolete claim gets a dated supersede note, not a removal.
-- **Secret scan is literal-prefix only.** No structural UUID / SHA / high-entropy regex (too many false positives). The literal prefixes (`sk-`, `ghp_`, `AKIA`, PEM headers, JWT prefixes, etc.) trigger redact-in-source + vault-path reference + a "rotate" entry in the review queue.
-- **Review queue, not flag-and-stop.** Most notes get processed. Decisions that genuinely need the operator's judgment land as one-line bullets in `wiki/Curator review queue.md` under three buckets: **Substantial rewrites**, **Contradictions to verify**, **Secrets routed to the vault**. Routine actions do NOT go on the queue.
+- **Narrow review queue.** Most notes get processed. Decisions that genuinely need the operator's judgment land as one-line bullets in `wiki/Curator review queue.md` under two buckets: **Substantial rewrites** and **Contradictions to verify**. Routine actions do NOT go on the queue.
+- **Blocked means terminal.** Corrupt/unparseable folders and exact already-ingested duplicates move intact to `notes/.blocked/`; they never remain live or return through `.deferred/`.
 - **Pages stay clean.** No inline `<!-- needs review -->` markers, no hedging prose. The queue is the only place that says "look at this."
 - **`auto-ingest` log entries.** Each sub-batch that read at least one note appends one compact entry to `wiki/log.md`.
 - **Synthesis pressure.** Each sub-batch does a one-synthesis-max check for repeated patterns. A separate weekly synthesis pass (`.pi/prompts/synthesis-auto.md`) can create/update up to three synthesis pages when patterns accumulate.
@@ -178,6 +187,8 @@ Exit codes: `0` clean / `1` errors / `2` warnings only.
 ## Working rules
 
 - **Never modify `raw/`.** It's the source of truth. Read-only.
+- **Never re-batch `notes/.blocked/`.** Preserve every pre-existing file byte in a blocked folder; only the standard receipt may be added.
+- **Never capture credentials, tokens, or passwords.** Reference their secret-manager paths instead.
 - **Prefer small edits to many pages** over one big rewrite. Spread the knowledge; keep pages focused.
 - **Always update `index.md` and `log.md` on every ingest.** Non-negotiable — they're what makes the wiki navigable.
 - **Wikilinks, not filesystem paths.** `[[Foo]]` not `wiki/foo.md`.

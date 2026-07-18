@@ -1,8 +1,8 @@
 name: reviewqueue
 
 # Daily pass over wiki/Curator review queue.md: resolves entries that can be
-# settled from already-available evidence; leaves secrets-to-rotate and
-# subjective calls for the operator.
+# settled from already-available evidence and leaves subjective calls for the
+# operator.
 
 on:
   schedule:
@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: reviewqueue
+  group: memory-repo-writer
   cancel-in-progress: false
 
 permissions:
@@ -21,7 +21,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     container:
-      image: ghcr.io/d6o/dip.ink/pi-runner:latest
+      image: ghcr.io/d6o/dip.ink/pi-runner:v0.1.0
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -34,6 +34,7 @@ jobs:
           PI_MODEL: ${{ vars.PI_MODEL || 'gpt-4.1-mini' }}
           PI_THINKING: medium
           PI_API_KEY: ${{ secrets.PI_API_KEY }}
+          PI_MODELS_JSON: ${{ vars.PI_MODELS_JSON || '' }}
           WIKI_REPO_TOKEN: x-access-token:${{ secrets.GITHUB_TOKEN }}
           COMMIT_MESSAGE: "update(auto): review queue pass"
           GIT_USER_NAME: "wiki-reviewqueue-bot"

@@ -12,11 +12,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && groupadd -g 1001 runner \
     && useradd -m -u 1001 -g 1001 -s /bin/bash runner
 
-ARG YQ_VERSION=v4.45.1
-RUN curl -fsSL "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64" \
-      -o /usr/local/bin/yq \
-    && chmod +x /usr/local/bin/yq \
-    && yq --version
+# yq was previously downloaded architecture-specifically here but is unused by
+# the runner or curator scripts (jq + python3-yaml cover YAML/JSON needs).
 
 ARG PI_VERSION=0.80.6
 RUN npm install -g --ignore-scripts "@earendil-works/pi-coding-agent@${PI_VERSION}" \

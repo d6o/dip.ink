@@ -19,7 +19,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: curator
+  group: memory-repo-writer
   cancel-in-progress: false
 
 permissions:
@@ -30,9 +30,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 59
     container:
-      # pi-runner image published from the dip.ink repo. Pin a digest/tag once
-      # you're settled — `latest` is fine to start.
-      image: ghcr.io/d6o/dip.ink/pi-runner:latest
+      # Immutable public release tag. Coordinator retags only after CI is green.
+      image: ghcr.io/d6o/dip.ink/pi-runner:v0.1.0
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -54,11 +53,17 @@ jobs:
           PI_MODEL: ${{ vars.PI_MODEL || 'gpt-4.1-mini' }}
           PI_THINKING: medium
           PI_API_KEY: ${{ secrets.PI_API_KEY }}
-          # The supervisor probes this OpenAI-compatible endpoint before every
-          # batch after the first, so a dead provider fails fast.
-          CURATOR_LLM_BASE_URL: ${{ vars.CURATOR_LLM_BASE_URL || 'https://api.openai.com/v1' }}
+          # Optional OpenAI-compatible endpoint for the optional preflight probe.
+          # Leave unset for native non-OpenAI providers (Anthropic, custom
+          # PI_MODELS_JSON, etc.); the supervisor skips the HTTP preflight then.
+          CURATOR_LLM_BASE_URL: ${{ vars.CURATOR_LLM_BASE_URL || '' }}
           CURATOR_LLM_MODEL: ${{ vars.CURATOR_LLM_MODEL || vars.PI_MODEL || 'gpt-4.1-mini' }}
           CURATOR_LLM_API_KEY: ${{ secrets.PI_API_KEY }}
+          # Optional: skip preflight entirely ("0"), force it ("1"), or leave
+          # unset for provider-aware defaults.
+          CURATOR_PREFLIGHT: ${{ vars.CURATOR_PREFLIGHT || '' }}
+          # Supported custom-provider config for native Pi providers.
+          PI_MODELS_JSON: ${{ vars.PI_MODELS_JSON || '' }}
           WIKI_REPO_TOKEN: x-access-token:${{ secrets.GITHUB_TOKEN }}
           COMMIT_MESSAGE: "ingest(auto): notes batch"
           GIT_USER_NAME: "wiki-auto-curator"

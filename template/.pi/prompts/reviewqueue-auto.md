@@ -1,5 +1,5 @@
 ---
-description: Daily CI-mode pass over [[Curator review queue]]. Resolve deterministic entries, leave subjective or secret-handling work for the operator.
+description: Daily CI-mode pass over [[Curator review queue]]. Resolve deterministic entries and leave subjective work for the operator.
 ---
 
 # Daily review-queue auto-pass
@@ -14,14 +14,13 @@ Safe to resolve:
 
 - A contradiction where later wiki/source evidence already proves which side is current.
 - A stale queue bullet whose affected page already contains the needed clarification.
-- A repo/path/status mismatch that can be verified from existing source notes, wiki pages, or non-secret public metadata.
+- A repo/path/status mismatch that can be verified from existing source notes, wiki pages, or public metadata.
 - A wording cleanup where the queue bullet asks whether to migrate framing, and later canonical repo/live evidence already established the new framing.
 
 Do not auto-resolve:
 
-- **Secrets routed to the vault**. Leave these for the operator because they require uploading/rotating a live credential.
 - Anything that asks for taste, business strategy, product positioning without clear newer evidence, or preference.
-- Anything requiring credential access, private production mutation, force-push, deleting pages, or removing historical context.
+- Anything requiring private production mutation, force-push, deleting pages, or removing historical context.
 - Any contradiction where the evidence is ambiguous or only one side is represented.
 
 ## Workflow
@@ -45,7 +44,7 @@ Do not auto-resolve:
 ## [YYYY-MM-DD HH:MM UTC] note | review queue auto pass — N resolved, M left
 
 Resolved: [[Page A]] — short reason; [[Page B]] — short reason.
-Left in queue: M entries, if any. Secrets-to-rotate and subjective calls are intentionally left for the operator.
+Left in queue: M entries, if any. Subjective calls are intentionally left for the operator.
 
 Validation: wikilint clean (0 errors, 0 warnings); index regenerated; logrotate <result>; distill <result>.
 ```

@@ -4,9 +4,10 @@ set -euo pipefail
 NOTES_DIR="${NOTES_DIR:-notes}"
 N="${INBOX_BATCH_SIZE:-4}"
 DEFER="$NOTES_DIR/.deferred"
+BLOCKED="$NOTES_DIR/.blocked"
 
 [[ "$N" =~ ^[1-9][0-9]*$ ]] || { echo "invalid INBOX_BATCH_SIZE: $N" >&2; exit 2; }
-mkdir -p "$DEFER"
+mkdir -p "$DEFER" "$BLOCKED"
 
 # Normalize occasional bare note files so the directory-only curator sees them.
 for file in "$NOTES_DIR"/*.md; do
@@ -23,7 +24,9 @@ trap 'rm -f "$pool_file"' EXIT
 {
   for path in "$NOTES_DIR"/*; do
     [[ -d "$path" ]] || continue
-    [[ "$(basename "$path")" == ".deferred" ]] && continue
+    case "$(basename "$path")" in
+      .deferred|.blocked) continue ;;
+    esac
     basename "$path"
   done
   for path in "$DEFER"/*; do
@@ -50,12 +53,19 @@ live=0
 held=0
 for path in "$NOTES_DIR"/*; do
   [[ -d "$path" ]] || continue
-  [[ "$(basename "$path")" == ".deferred" ]] && continue
+  case "$(basename "$path")" in
+    .deferred|.blocked) continue ;;
+  esac
   live=$((live + 1))
 done
 for path in "$DEFER"/*; do
   [[ -d "$path" ]] || continue
   held=$((held + 1))
 done
+blocked=0
+for path in "$BLOCKED"/*; do
+  [[ -d "$path" ]] || continue
+  blocked=$((blocked + 1))
+done
 
-echo "inbox pool=$total live=$live held=$held cap=$N"
+echo "inbox pool=$total live=$live held=$held blocked=$blocked cap=$N"
