@@ -115,33 +115,59 @@ class Neo4jLifecycleIntegrationTests(unittest.TestCase):
                 )
                 self.assertEqual(memory_healthcheck.failures, [])
 
-                # One real ingest status call, including discovery and scoped reads.
+                # A real status call must stay read-only even for a legacy
+                # edge-bearing episode. Explicit metadata migration happens only
+                # in bounded ingest ticks, never on status/Prometheus reads.
                 with tempfile.TemporaryDirectory() as td:
                     root = Path(td)
                     folder = root / slug
                     folder.mkdir()
-                    (folder / f"{slug}.md").write_text("fixture", encoding="utf-8")
+                    source = folder / f"{slug}.md"
+                    source.write_text("fixture", encoding="utf-8")
                     old_root, old_inbox = ingest.NOTES_ROOT, ingest.INBOX_ROOTS
                     ingest.NOTES_ROOT, ingest.INBOX_ROOTS = root, []
                     try:
                         with contextlib.redirect_stdout(io.StringIO()):
                             await ingest.status()
+
+                        verify = ingest.build_graphiti_on_group(group_id)
+                        rows, _, _ = await verify.driver.execute_query(
+                            "MATCH (e:Episodic {name: $slug, group_id: $group_id}) "
+                            "RETURN e.dipink_ingest_complete AS complete, "
+                            "e.dipink_content_hash AS content_hash, "
+                            "e.dipink_completed_at AS completed_at",
+                            slug=slug,
+                            group_id=group_id,
+                        )
+                        self.assertIsNone(rows[0]["complete"])
+                        self.assertIsNone(rows[0]["content_hash"])
+                        self.assertIsNone(rows[0]["completed_at"])
+
+                        state = await ingest.collect_ingest_status(
+                            verify,
+                            [(now, slug, source)],
+                            group_id=group_id,
+                            upgrade_legacy=True,
+                            legacy_upgrade_limit=1,
+                        )
+                        self.assertEqual(state["legacy_upgraded"], 1)
+                        rows, _, _ = await verify.driver.execute_query(
+                            "MATCH (e:Episodic {name: $slug, group_id: $group_id}) "
+                            "RETURN e.dipink_ingest_complete AS complete, "
+                            "e.dipink_content_hash AS content_hash, "
+                            "e.dipink_completed_at AS completed_at",
+                            slug=slug,
+                            group_id=group_id,
+                        )
+                        self.assertTrue(rows[0]["complete"])
+                        self.assertEqual(
+                            rows[0]["content_hash"],
+                            ingest.episode_content_hash("fixture"),
+                        )
+                        self.assertIsNotNone(rows[0]["completed_at"])
+                        await verify.close()
                     finally:
                         ingest.NOTES_ROOT, ingest.INBOX_ROOTS = old_root, old_inbox
-
-                verify = ingest.build_graphiti_on_group(group_id)
-                rows, _, _ = await verify.driver.execute_query(
-                    "MATCH (e:Episodic {name: $slug, group_id: $group_id}) "
-                    "RETURN e.dipink_ingest_complete AS complete, "
-                    "e.dipink_content_hash AS content_hash, "
-                    "e.dipink_completed_at AS completed_at",
-                    slug=slug,
-                    group_id=group_id,
-                )
-                self.assertTrue(rows[0]["complete"])
-                self.assertEqual(rows[0]["content_hash"], ingest.episode_content_hash("fixture"))
-                self.assertIsNotNone(rows[0]["completed_at"])
-                await verify.close()
 
                 cleanup = ingest.build_graphiti_on_group(group_id)
                 await cleanup.driver.execute_query(
