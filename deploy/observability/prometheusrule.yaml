@@ -1,0 +1,142 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: dipink-memory
+  namespace: dipink
+  labels:
+    release: monitoring
+spec:
+  groups:
+    - name: dipink-memory.rules
+      rules:
+        - alert: DipinkMemoryServerDown
+          expr: |
+            absent(up{namespace="dipink", service="memory"})
+            or
+            max(up{namespace="dipink", service="memory"}) == 0
+          for: 5m
+          labels:
+            severity: critical
+            service: dipink
+          annotations:
+            summary: dip.ink memory server is not scrapeable
+            description: Prometheus has no healthy target for the dipink/memory Service for five minutes.
+
+        - alert: DipinkWikiIndexUnready
+          expr: max(dipink_wiki_index_ready) == 0
+          for: 10m
+          labels:
+            severity: critical
+            service: dipink
+          annotations:
+            summary: dip.ink wiki index is unready
+            description: The memory server reports that its wiki index is not usable.
+
+        - alert: DipinkWikiIndexDegraded
+          expr: max(dipink_wiki_index_degraded) == 1
+          for: 15m
+          labels:
+            severity: warning
+            service: dipink
+          annotations:
+            summary: dip.ink wiki index is degraded
+            description: The wiki index has remained in degraded mode for fifteen minutes.
+
+        - alert: DipinkWikiIndexStale
+          expr: max(dipink_wiki_index_age_seconds) > 900
+          for: 10m
+          labels:
+            severity: warning
+            service: dipink
+          annotations:
+            summary: dip.ink wiki index is stale
+            description: The wiki index snapshot is more than fifteen minutes old.
+
+        - alert: DipinkGraphNotReady
+          expr: max(dipink_graph_ready) == 0
+          for: 10m
+          labels:
+            severity: critical
+            service: dipink
+          annotations:
+            summary: dip.ink graph is not ready
+            description: The memory server cannot serve the Graphiti-backed interfaces.
+
+        - alert: DipinkIngestLagHigh
+          expr: |
+            max(dipink_ingest_pending_notes) > 0
+            and
+            max(dipink_ingest_lag_seconds) > 7200
+          for: 15m
+          labels:
+            severity: critical
+            service: dipink
+          annotations:
+            summary: dip.ink note ingest is more than two hours behind
+            description: At least one note is pending and the oldest pending ingest lag exceeds two hours.
+
+        - alert: DipinkBlockedNotesSustained
+          expr: max(dipink_blocked_notes) > 0
+          for: 24h
+          labels:
+            severity: warning
+            service: dipink
+          annotations:
+            summary: dip.ink has blocked notes awaiting review
+            description: One or more blocked notes have remained present for a full day.
+
+        - alert: DipinkCuratorBacklogHigh
+          expr: |
+            max(dipink_inbox_notes)
+            + max(dipink_deferred_notes)
+            + max(dipink_review_queue_open) > 100
+          for: 6h
+          labels:
+            severity: warning
+            service: dipink
+          annotations:
+            summary: dip.ink curator backlog is high
+            description: The combined inbox, deferred, and review queue backlog has exceeded one hundred items for six hours.
+
+        - alert: DipinkGraphAnswerQualityDegraded
+          expr: |
+            (
+              (
+                sum(rate(dipink_graph_answer_total{confidence="error"}[10m]))
+                +
+                sum(rate(dipink_graph_answer_total{confidence!="error", grounded="false"}[10m]))
+              )
+              /
+              clamp_min(sum(rate(dipink_graph_answer_total[10m])), 0.001)
+              > 0.05
+            )
+            and
+            (sum(increase(dipink_graph_answer_total[10m])) >= 20)
+          for: 10m
+          labels:
+            severity: warning
+            service: dipink
+          annotations:
+            summary: dip.ink graph_answer error or grounding rate is high
+            description: More than five percent of graph_answer calls are errors or ungrounded, with at least twenty calls in the evaluation window.
+
+        - alert: DipinkNoteDropFailures
+          expr: |
+            sum(increase(dipink_note_drop_total{outcome!~"success|ok|already_exists"}[10m])) > 0
+          for: 5m
+          labels:
+            severity: critical
+            service: dipink
+          annotations:
+            summary: dip.ink note-drop failures detected
+            description: At least one wiki_note_drop call reported a non-success outcome in the last ten minutes.
+
+        - alert: DipinkCommunitiesStale
+          expr: max(dipink_community_age_seconds) > 691200
+          for: 30m
+          labels:
+            severity: warning
+            service: dipink
+          annotations:
+            summary: dip.ink communities are stale
+            description: The latest graph community build is more than eight days old.

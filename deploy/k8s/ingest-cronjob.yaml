@@ -23,10 +23,13 @@ spec:
               args:
                 - |
                   set -e
-                  git clone --depth 1 \
+                  git clone --depth 1 --branch "$WIKI_BRANCH" --single-branch \
                     "$(echo "$WIKI_REPO_URL" | sed "s#https://#https://${WIKI_REPO_USER}:${WIKI_REPO_TOKEN}@#")" \
                     /notes
                   echo "[init] cloned $(find /notes -name '*.md' | wc -l) md files"
+              envFrom:
+                - configMapRef:
+                    name: dipink-config
               env:
                 - {name: GIT_TERMINAL_PROMPT, value: "0"}
                 - name: WIKI_REPO_URL
@@ -39,7 +42,10 @@ spec:
                 - {name: notes, mountPath: /notes}
           containers:
             - name: ingest
-              image: ghcr.io/d6o/dip.ink/memory:latest
+              image: ghcr.io/d6o/dip.ink/memory:v0.1.0
+              envFrom:
+                - configMapRef:
+                    name: dipink-config
               env:
                 - {name: INGEST_MODE, value: cron}
                 - {name: BATCH_SIZE, value: "15"}
@@ -47,7 +53,7 @@ spec:
                 # invalidations (graphiti's read-modify-write is non-atomic).
                 - {name: CONCURRENCY, value: "1"}
                 - {name: CIRCUIT_BREAKER_THRESHOLD, value: "3"}
-                - {name: GROUP_ID, value: main}
+                - {name: ADD_EPISODE_RETRIES, value: "4"}
                 - {name: NOTES_ROOT, value: /notes/wiki/sources/notes}
                 - {name: INBOX_ROOTS, value: /notes/notes}
                 - {name: NEO4J_URI, value: bolt://neo4j:7687}
@@ -57,10 +63,9 @@ spec:
                 - name: OPENAI_API_KEY
                   valueFrom: {secretKeyRef: {name: dipink-secrets, key: OPENAI_API_KEY}}
                 - name: LLM_BASE_URL
-                  valueFrom: {secretKeyRef: {name: dipink-secrets, key: LLM_BASE_URL}}
+                  valueFrom: {secretKeyRef: {name: dipink-secrets, key: LLM_BASE_URL, optional: true}}
                 - name: LLM_API_KEY
-                  valueFrom: {secretKeyRef: {name: dipink-secrets, key: LLM_API_KEY}}
-                - {name: LLM_MODEL, value: gpt-4.1-mini}
+                  valueFrom: {secretKeyRef: {name: dipink-secrets, key: LLM_API_KEY, optional: true}}
               volumeMounts:
                 - {name: notes, mountPath: /notes, readOnly: true}
               resources:

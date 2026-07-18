@@ -1,16 +1,17 @@
 # dip.ink — the whole memory stack on one docker host.
 #
 #   cp .env.example .env   # fill in keys + your private wiki repo
-#   docker compose up -d --build
+#   docker compose up -d         # pulls the immutable v0.1.0 runtime
 #
 # Services:
-#   neo4j         graph database (Graphiti's backend)
-#   memory        THE MCP server (wiki_* + graph_* tools) → http://localhost:8080/mcp
-#   ingest        every 15 min: clone the wiki repo, ingest new notes into the graph
-#   communities   weekly: entity resolution + community rebuild
-#   healthcheck   daily: deep end-to-end pipeline verification
-#   gaps          weekly: mine the query log for memory gaps, file a report note
-#   alerts        every 30 min: dead-man checks (ingest freshness, server health)
+#   neo4j                  graph database (Graphiti's backend)
+#   memory                 THE MCP server (wiki_* + graph_* tools) → http://localhost:8080/mcp
+#   ingest                 every 15 min: clone the wiki repo, ingest new notes into the graph
+#   communities            weekly: entity resolution + community rebuild
+#   gaps                    weekly: mine the query log for memory gaps, file a report note
+#   alerts                  every 30 min: memory server, ingest, and community checks
+#   healthcheck             daily: deep end-to-end pipeline verification
+#   contradiction-janitor  monthly: report-only contradiction analysis by default
 #
 # The CURATOR (the agent that promotes inbox notes into wiki pages) runs in CI
 # on the wiki repo itself — see curator/README.md. Everything else is here.
@@ -19,11 +20,34 @@ x-graph-env: &graph-env
   NEO4J_URI: bolt://neo4j:7687
   NEO4J_USER: neo4j
   NEO4J_PASSWORD: ${NEO4J_PASSWORD:?set in .env}
+  NEO4J_MAX_POOL: ${NEO4J_MAX_POOL:-50}
+  NEO4J_ACQ_TIMEOUT: ${NEO4J_ACQ_TIMEOUT:-120}
   OPENAI_API_KEY: ${OPENAI_API_KEY:?set in .env}
   LLM_BASE_URL: ${LLM_BASE_URL:-}
   LLM_API_KEY: ${LLM_API_KEY:-}
   LLM_MODEL: ${LLM_MODEL:-gpt-4.1-mini}
+  # Empty ladders inherit the corresponding single-model value in server code.
+  LLM_MODEL_LADDER: ${LLM_MODEL_LADDER:-}
+  DISTILL_BASE_URL: ${DISTILL_BASE_URL:-}
+  DISTILL_API_KEY: ${DISTILL_API_KEY:-}
+  DISTILL_MODEL: ${DISTILL_MODEL:-}
+  DISTILL_MODEL_LADDER: ${DISTILL_MODEL_LADDER:-}
   GROUP_ID: ${GROUP_ID:-main}
+
+x-server-env: &server-env
+  <<: *graph-env
+  GRAPH_FUSION: ${GRAPH_FUSION:-1}
+  ANSWER_CACHE_TTL: ${ANSWER_CACHE_TTL:-3600}
+  WIKI_MCP_EMBED_PROVIDER: ${WIKI_MCP_EMBED_PROVIDER:-openai}
+  WIKI_MCP_OPENAI_MODEL: ${WIKI_MCP_OPENAI_MODEL:-text-embedding-3-small}
+  WIKI_MCP_FASTEMBED_MODEL: ${WIKI_MCP_FASTEMBED_MODEL:-BAAI/bge-small-en-v1.5}
+  WIKI_MCP_REINDEX_SEC: ${WIKI_MCP_REINDEX_SEC:-300}
+  WIKI_MCP_RETRY_INITIAL_SEC: ${WIKI_MCP_RETRY_INITIAL_SEC:-5}
+  WIKI_MCP_RETRY_MAX_SEC: ${WIKI_MCP_RETRY_MAX_SEC:-300}
+  WIKI_MCP_BACKGROUND_REINDEX: ${WIKI_MCP_BACKGROUND_REINDEX:-1}
+  WIKI_MCP_MAX_EMBED_CHARS: ${WIKI_MCP_MAX_EMBED_CHARS:-}
+  FASTEMBED_CACHE_DIR: /var/lib/memory/fastembed
+  MCP_METRICS_PATH: ${MCP_METRICS_PATH:-auto}
 
 services:
   neo4j:
@@ -46,13 +70,13 @@ services:
       retries: 10
 
   memory:
-    build: ./server
+    image: ghcr.io/d6o/dip.ink/memory:v0.1.0
     restart: unless-stopped
     depends_on:
       neo4j:
         condition: service_healthy
     environment:
-      <<: *graph-env
+      <<: *server-env
       WIKI_REPO_URL: ${WIKI_REPO_URL:?set in .env}
       WIKI_REPO_TOKEN: ${WIKI_REPO_TOKEN:-}
       WIKI_REPO_USER: ${WIKI_REPO_USER:-token}
@@ -62,14 +86,13 @@ services:
       MCP_ALLOWED_HOSTS: ${MCP_ALLOWED_HOSTS:-localhost,127.0.0.1,memory}
       WIKI_GIT_USER_NAME: ${WIKI_GIT_USER_NAME:-wiki-mcp}
       WIKI_GIT_USER_EMAIL: ${WIKI_GIT_USER_EMAIL:-wiki-mcp@localhost}
-      DISTILL_MODEL: ${DISTILL_MODEL:-${LLM_MODEL:-gpt-4.1-mini}}
     volumes:
       - memory-data:/var/lib/memory
     ports:
       - "8080:8080"
 
   ingest:
-    build: ./server
+    image: ghcr.io/d6o/dip.ink/memory:v0.1.0
     restart: unless-stopped
     entrypoint: ["/bin/sh", "-c"]
     # Clone-fresh + resumable batch every INGEST_INTERVAL seconds. The graph
@@ -79,7 +102,8 @@ services:
       - |
         while true; do
           rm -rf /notes && \
-          git clone --depth 1 "$(echo "$$WIKI_REPO_URL" | sed "s#https://#https://$$WIKI_REPO_USER:$$WIKI_REPO_TOKEN@#")" /notes \
+          git clone --depth 1 --branch "$${WIKI_BRANCH:-main}" --single-branch \
+            "$(echo "$$WIKI_REPO_URL" | sed "s#https://#https://$$WIKI_REPO_USER:$$WIKI_REPO_TOKEN@#")" /notes \
             && INGEST_MODE=cron python /app/ingest.py \
             || echo "[ingest-loop] tick failed; retrying next interval"
           sleep "$${INGEST_INTERVAL:-900}"
@@ -89,19 +113,23 @@ services:
         condition: service_healthy
     environment:
       <<: *graph-env
-      WIKI_REPO_URL: ${WIKI_REPO_URL}
+      WIKI_REPO_URL: ${WIKI_REPO_URL:?set in .env}
       WIKI_REPO_TOKEN: ${WIKI_REPO_TOKEN:-}
       WIKI_REPO_USER: ${WIKI_REPO_USER:-token}
+      WIKI_BRANCH: ${WIKI_BRANCH:-main}
       NOTES_ROOT: /notes/wiki/sources/notes
       INBOX_ROOTS: /notes/notes
       BATCH_SIZE: ${INGEST_BATCH_SIZE:-15}
       INGEST_INTERVAL: ${INGEST_INTERVAL:-900}
+      CONCURRENCY: "1"
+      CIRCUIT_BREAKER_THRESHOLD: ${CIRCUIT_BREAKER_THRESHOLD:-3}
+      ADD_EPISODE_RETRIES: ${ADD_EPISODE_RETRIES:-4}
 
   communities:
-    build: ./server
+    image: ghcr.io/d6o/dip.ink/memory:v0.1.0
     restart: unless-stopped
     entrypoint: ["/bin/sh", "-c"]
-    # Weekly community rebuild (entity resolution runs first, inside the job).
+    # Weekly community rebuild; entity resolution runs first in the same job.
     command:
       - |
         while true; do
@@ -114,11 +142,29 @@ services:
         condition: service_healthy
     environment:
       <<: *graph-env
-      MAX_CLUSTER: "200"
-      COMMUNITY_CONC: "4"
+      COMMUNITIES_INTERVAL: ${COMMUNITIES_INTERVAL:-604800}
+      ENTITY_RESOLUTION: ${ENTITY_RESOLUTION:-1}
+      MAX_CLUSTER: ${MAX_CLUSTER:-200}
+      COMMUNITY_CONC: ${COMMUNITY_CONC:-4}
+
+  gaps:
+    image: ghcr.io/d6o/dip.ink/memory:v0.1.0
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        while true; do
+          sleep "$${GAPS_INTERVAL:-604800}"
+          python /app/loops/memory_gaps.py || echo "[gaps] weekly report failed"
+        done
+    environment:
+      MCP_BASE: http://memory:8080
+      GAPS_INTERVAL: ${GAPS_INTERVAL:-604800}
+      DAYS: ${GAPS_DAYS:-7}
+      DRY_RUN: ${GAPS_DRY_RUN:-0}
 
   alerts:
-    build: ./server
+    image: ghcr.io/d6o/dip.ink/memory:v0.1.0
     restart: unless-stopped
     entrypoint: ["/bin/sh", "-c"]
     command:
@@ -133,9 +179,12 @@ services:
     environment:
       <<: *graph-env
       MCP_BASE: http://memory:8080
+      ALERTS_INTERVAL: ${ALERTS_INTERVAL:-1800}
+      MAX_PENDING_AGE_HOURS: ${MAX_PENDING_AGE_HOURS:-2}
+      MAX_COMMUNITY_AGE_DAYS: ${MAX_COMMUNITY_AGE_DAYS:-8}
 
   healthcheck:
-    build: ./server
+    image: ghcr.io/d6o/dip.ink/memory:v0.1.0
     restart: unless-stopped
     entrypoint: ["/bin/sh", "-c"]
     command:
@@ -143,7 +192,8 @@ services:
         while true; do
           sleep "$${HEALTHCHECK_INTERVAL:-86400}"
           rm -rf /notes && \
-          git clone --shallow-since="5 days ago" "$(echo "$$WIKI_REPO_URL" | sed "s#https://#https://$$WIKI_REPO_USER:$$WIKI_REPO_TOKEN@#")" /notes \
+          git clone --branch "$${WIKI_BRANCH:-main}" --single-branch --shallow-since="5 days ago" \
+            "$(echo "$$WIKI_REPO_URL" | sed "s#https://#https://$$WIKI_REPO_USER:$$WIKI_REPO_TOKEN@#")" /notes \
             && python /app/loops/memory_healthcheck.py \
             || echo "[healthcheck] FAILED (see above)"
         done
@@ -152,25 +202,43 @@ services:
         condition: service_healthy
     environment:
       <<: *graph-env
-      WIKI_REPO_URL: ${WIKI_REPO_URL}
+      WIKI_REPO_URL: ${WIKI_REPO_URL:?set in .env}
       WIKI_REPO_TOKEN: ${WIKI_REPO_TOKEN:-}
       WIKI_REPO_USER: ${WIKI_REPO_USER:-token}
+      WIKI_BRANCH: ${WIKI_BRANCH:-main}
       NOTES_DIR: /notes
       MCP_BASE: http://memory:8080
+      MCP_INTERNAL: http://memory:8080
       ANSWER_PROBE: ${ANSWER_PROBE:-what is this memory system's note inbox called}
+      HEALTHCHECK_INTERVAL: ${HEALTHCHECK_INTERVAL:-86400}
+      FRESH_WRITE_HOURS: ${FRESH_WRITE_HOURS:-48}
+      INGEST_GRACE_HOURS: ${INGEST_GRACE_HOURS:-2}
+      CURATION_MAX_AGE_HOURS: ${CURATION_MAX_AGE_HOURS:-24}
+      CURATION_STALL_DAYS: ${CURATION_STALL_DAYS:-3}
+      CURATION_LAG_MAX_DAYS: ${CURATION_LAG_MAX_DAYS:-7}
+      DEFERRED_WARN: ${DEFERRED_WARN:-200}
+      INDEX_GRACE_HOURS: ${INDEX_GRACE_HOURS:-6}
 
-  gaps:
-    build: ./server
+  contradiction-janitor:
+    image: ghcr.io/d6o/dip.ink/memory:v0.1.0
     restart: unless-stopped
     entrypoint: ["/bin/sh", "-c"]
+    # Report-only by default. Set JANITOR_DRY_RUN=0 only after reviewing output.
     command:
       - |
         while true; do
-          sleep "$${GAPS_INTERVAL:-604800}"
-          python /app/loops/memory_gaps.py || echo "[gaps] weekly report failed"
+          sleep "$${JANITOR_INTERVAL:-2592000}"
+          python /app/loops/contradiction_janitor.py \
+            || echo "[contradiction-janitor] report failed; retrying next interval"
         done
+    depends_on:
+      neo4j:
+        condition: service_healthy
     environment:
-      MCP_BASE: http://memory:8080
+      <<: *graph-env
+      JANITOR_INTERVAL: ${JANITOR_INTERVAL:-2592000}
+      TOP_N: ${JANITOR_TOP_N:-50}
+      DRY_RUN: ${JANITOR_DRY_RUN:-1}
 
 volumes:
   neo4j-data:
