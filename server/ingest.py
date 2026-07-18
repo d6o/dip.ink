@@ -31,6 +31,7 @@ from pydantic import BaseModel
 from chat_fallback import OrderedModelFallback, parse_model_ladder
 
 from graphiti_core import Graphiti
+from graphiti_core.driver.neo4j_driver import Neo4jDriver
 from graphiti_core.llm_client import LLMConfig
 from graphiti_core.llm_client.client import get_extraction_language_instruction
 # OpenAIGenericClient is not re-exported from the llm_client package __init__
@@ -63,11 +64,9 @@ def patch_community_clustering() -> None:
     async def fast_get_community_clusters(driver, group_ids):
         """Bulk-query the whole RELATES_TO adjacency in ONE cypher, then cluster."""
         if group_ids is None:
-            rows, _, _ = await driver.execute_query(
-                "MATCH (n:Entity) WHERE n.group_id IS NOT NULL "
-                "RETURN collect(DISTINCT n.group_id) AS gids"
-            )
-            group_ids = rows[0]["gids"] if rows else []
+            # dip.ink is single-group today. Never discover/operate on every
+            # group in a shared Neo4j database by accident.
+            group_ids = [os.environ.get("GROUP_ID", "main")]
 
         all_clusters: list[list] = []
         for gid in group_ids:
@@ -339,6 +338,9 @@ class CompactSchemaClient(OpenAIGenericClient):
 NEO4J_URI = os.environ.get("NEO4J_URI", "bolt://neo4j:7687")
 NEO4J_USER = os.environ.get("NEO4J_USER", "neo4j")
 NEO4J_PASSWORD = os.environ["NEO4J_PASSWORD"]
+NEO4J_DATABASE = os.environ.get("NEO4J_DATABASE", "neo4j")
+NEO4J_MAX_POOL = max(1, int(os.environ.get("NEO4J_MAX_POOL", "40")))
+NEO4J_ACQ_TIMEOUT = max(1, int(os.environ.get("NEO4J_ACQ_TIMEOUT", "30")))
 
 # Extraction LLM: any OpenAI-compatible chat endpoint. Leave LLM_BASE_URL
 # unset to use OpenAI directly (OPENAI_API_KEY + LLM_MODEL, e.g. gpt-4.1-mini);
@@ -405,26 +407,60 @@ async def add_episode_with_retry(g, **kw):
     raise last  # unreachable
 
 
-def _with_roomy_pool(g: Graphiti) -> Graphiti:
-    """Replace graphiti's neo4j driver with one carrying a larger connection pool.
+class DipInkNeo4jDriver(Neo4jDriver):
+    """Neo4jDriver with an explicit bounded pool and no constructor task.
 
-    The default `max_connection_pool_size=100` (acquisition timeout 60s) gets
-    exhausted by graphiti's concurrent gathers on the full corpus —
-    ConnectionAcquisitionTimeoutError mid-build_communities. graphiti's
-    Neo4jDriver creates its client with no pool config, so we swap in a driver
-    with a 500-connection pool + 120s acquisition timeout.
+    graphiti-core 0.29.2's ``Neo4jDriver.__init__`` creates the async driver and
+    immediately schedules ``build_indices_and_constraints()`` when called from
+    a running loop. Short-lived read-only jobs can then close the driver while
+    that untracked task is still using it. The upstream constructor also does
+    not expose Neo4j pool kwargs. Keep the upstream operations implementation,
+    but construct its client explicitly so callers decide when schema setup is
+    awaited (ingest/setup paths only).
     """
-    from neo4j import AsyncGraphDatabase
-    drv = AsyncGraphDatabase.driver(
-        NEO4J_URI,
-        auth=(NEO4J_USER, NEO4J_PASSWORD),
-        max_connection_pool_size=int(os.environ.get("NEO4J_MAX_POOL", "500")),
-        connection_acquisition_timeout=int(os.environ.get("NEO4J_ACQ_TIMEOUT", "120")),
-    )
-    g.driver.client = drv
-    if getattr(g, "clients", None) is not None:
-        g.clients.driver = g.driver  # keep the (graphiti) GraphDriver wrapper, swap its neo4j client
-    return g
+
+    def __init__(
+        self,
+        uri: str,
+        user: str | None,
+        password: str | None,
+        *,
+        database: str = "neo4j",
+        max_connection_pool_size: int = 40,
+        connection_acquisition_timeout: int = 30,
+    ) -> None:
+        from neo4j import AsyncGraphDatabase
+        from graphiti_core.driver.neo4j.operations.community_edge_ops import Neo4jCommunityEdgeOperations
+        from graphiti_core.driver.neo4j.operations.community_node_ops import Neo4jCommunityNodeOperations
+        from graphiti_core.driver.neo4j.operations.entity_edge_ops import Neo4jEntityEdgeOperations
+        from graphiti_core.driver.neo4j.operations.entity_node_ops import Neo4jEntityNodeOperations
+        from graphiti_core.driver.neo4j.operations.episode_node_ops import Neo4jEpisodeNodeOperations
+        from graphiti_core.driver.neo4j.operations.episodic_edge_ops import Neo4jEpisodicEdgeOperations
+        from graphiti_core.driver.neo4j.operations.graph_ops import Neo4jGraphMaintenanceOperations
+        from graphiti_core.driver.neo4j.operations.has_episode_edge_ops import Neo4jHasEpisodeEdgeOperations
+        from graphiti_core.driver.neo4j.operations.next_episode_edge_ops import Neo4jNextEpisodeEdgeOperations
+        from graphiti_core.driver.neo4j.operations.saga_node_ops import Neo4jSagaNodeOperations
+        from graphiti_core.driver.neo4j.operations.search_ops import Neo4jSearchOperations
+
+        self.client = AsyncGraphDatabase.driver(
+            uri=uri,
+            auth=(user or "", password or ""),
+            max_connection_pool_size=max_connection_pool_size,
+            connection_acquisition_timeout=connection_acquisition_timeout,
+        )
+        self._database = database
+        self._entity_node_ops = Neo4jEntityNodeOperations()
+        self._episode_node_ops = Neo4jEpisodeNodeOperations()
+        self._community_node_ops = Neo4jCommunityNodeOperations()
+        self._saga_node_ops = Neo4jSagaNodeOperations()
+        self._entity_edge_ops = Neo4jEntityEdgeOperations()
+        self._episodic_edge_ops = Neo4jEpisodicEdgeOperations()
+        self._community_edge_ops = Neo4jCommunityEdgeOperations()
+        self._has_episode_edge_ops = Neo4jHasEpisodeEdgeOperations()
+        self._next_episode_edge_ops = Neo4jNextEpisodeEdgeOperations()
+        self._search_ops = Neo4jSearchOperations()
+        self._graph_ops = Neo4jGraphMaintenanceOperations()
+        self.aoss_client = None
 
 
 def build_graphiti() -> Graphiti:
@@ -450,31 +486,36 @@ def build_graphiti() -> Graphiti:
         from graphiti_core.llm_client import OpenAIClient
         llm_client = OpenAIClient(config=LLMConfig(api_key=LLM_API_KEY, model=LLM_MODEL))
     # embedder=None -> graphiti defaults to OpenAIEmbedder, which reads
-    # OPENAI_API_KEY from env.
-    g = Graphiti(
-        uri=NEO4J_URI,
-        user=NEO4J_USER,
-        password=NEO4J_PASSWORD,
+    # OPENAI_API_KEY from env. Pass the fully configured driver up front: never
+    # swap Graphiti's client after construction.
+    graph_driver = DipInkNeo4jDriver(
+        NEO4J_URI,
+        NEO4J_USER,
+        NEO4J_PASSWORD,
+        database=NEO4J_DATABASE,
+        max_connection_pool_size=NEO4J_MAX_POOL,
+        connection_acquisition_timeout=NEO4J_ACQ_TIMEOUT,
+    )
+    return Graphiti(
+        graph_driver=graph_driver,
         llm_client=llm_client,
         embedder=None,
     )
-    return _with_roomy_pool(g)
 
 
 DEFAULT_GROUP_ID = os.environ.get("GROUP_ID", "main")
 
 
 def build_graphiti_on_group(group_id: str = DEFAULT_GROUP_ID) -> Graphiti:
-    """Same as build_graphiti but with the driver cloned to the group's database.
+    """Build a client for callers that scope graph data by ``group_id``.
 
-    Notes are ingested with group_id set (so communities can form and queries
-    scope). Any read-side caller — search, build_communities, eval — must point
-    at the same database or it sees an empty graph.
+    ``group_id`` is a property-level partition in Neo4j, not a database name.
+    The argument is retained for call-site clarity and backward compatibility;
+    every query still has to pass/filter it explicitly.
     """
-    g = build_graphiti()
-    g.driver = g.driver.clone(database=group_id)
-    g.clients.driver = g.driver
-    return _with_roomy_pool(g)  # clone rebuilt the neo4j client with default pool
+    if not group_id:
+        raise ValueError("group_id must be non-empty")
+    return build_graphiti()
 
 
 def discover_notes() -> list[tuple[datetime, str, Path]]:
@@ -524,16 +565,9 @@ async def ingest() -> None:
     )
 
     g = build_graphiti()
-    # When ingesting with a group_id, add_episode clones the driver to a
-    # database named after the group. Build indices on THAT database by cloning
-    # up front — otherwise build_indices_and_constraints runs on the default db
-    # and the group db has none (queries return nothing / communities can't form
-    # because get_community_clusters needs indexed RELATES_TO edges + group_id).
     GROUP_ID = DEFAULT_GROUP_ID
-    g.driver = g.driver.clone(database=GROUP_ID)
-    g.clients.driver = g.driver
     try:
-        print(f"[ingest] building indices and constraints on db '{GROUP_ID}'...")
+        print(f"[ingest] building indices and constraints on Neo4j database '{NEO4J_DATABASE}'...")
         await g.build_indices_and_constraints()
 
         sem = asyncio.Semaphore(CONCURRENCY)
@@ -569,23 +603,26 @@ async def ingest() -> None:
         await g.close()
 
 
-async def _get_done_slugs(driver) -> set[str]:
+async def _get_done_slugs(driver, group_id: str = DEFAULT_GROUP_ID) -> set[str]:
     """Slugs of episodes that are fully ingested: episode node exists AND has
     >=1 entity edge (so it's not a half-written crash victim)."""
     rows, _, _ = await driver.execute_query(
-        "MATCH (e:Episodic)-[:MENTIONS|RELATES_TO]->(:Entity) "
-        "WHERE e.group_id IS NOT NULL OR e.group_id IS NULL "  # match all
-        "RETURN collect(DISTINCT e.name) AS done"
+        "MATCH (e:Episodic {group_id: $group_id})-[:MENTIONS]->"
+        "(:Entity {group_id: $group_id}) "
+        "RETURN collect(DISTINCT e.name) AS done",
+        group_id=group_id,
     )
     return set(rows[0]["done"]) if rows else set()
 
 
-async def _get_partial_slugs(driver) -> set[str]:
+async def _get_partial_slugs(driver, group_id: str = DEFAULT_GROUP_ID) -> set[str]:
     """Episode nodes with ZERO entity edges — a previous crash mid-add_episode.
     Cleaned before each batch so they re-ingest cleanly."""
     rows, _, _ = await driver.execute_query(
-        "MATCH (e:Episodic) WHERE NOT (e)-[:MENTIONS|RELATES_TO]->(:Entity) "
-        "RETURN collect(DISTINCT e.name) AS partials"
+        "MATCH (e:Episodic {group_id: $group_id}) "
+        "WHERE NOT (e)-[:MENTIONS]->(:Entity {group_id: $group_id}) "
+        "RETURN collect(DISTINCT e.name) AS partials",
+        group_id=group_id,
     )
     return set(rows[0]["partials"]) if rows else set()
 
@@ -597,8 +634,8 @@ async def status() -> None:
     all_slugs = {s for _, s, _ in notes}
     g = build_graphiti_on_group(GROUP_ID)
     try:
-        done = await _get_done_slugs(g.driver)
-        partials = await _get_partial_slugs(g.driver)
+        done = await _get_done_slugs(g.driver, GROUP_ID)
+        partials = await _get_partial_slugs(g.driver, GROUP_ID)
     finally:
         await g.close()
     pending = all_slugs - done
@@ -639,16 +676,18 @@ async def cron() -> None:
         # 1. Build indices (idempotent; safe even if already present).
         await g.build_indices_and_constraints()
         # 2. Clean partial episodes (previous crash victims) before re-ingest.
-        partials = await _get_partial_slugs(g.driver)
+        partials = await _get_partial_slugs(g.driver, GROUP_ID)
         if partials:
             for slug in partials:
                 await g.driver.execute_query(
-                    "MATCH (e:Episodic {name: $name}) DETACH DELETE e", name=slug
+                    "MATCH (e:Episodic {name: $name, group_id: $group_id}) DETACH DELETE e",
+                    name=slug,
+                    group_id=GROUP_ID,
                 )
             print(f"[cron] cleaned {len(partials)} partial episodes: "
                   f"{sorted(partials)[:5]}")
         # 3. Compute pending (sorted oldest-first for stable backfill order).
-        done = await _get_done_slugs(g.driver)
+        done = await _get_done_slugs(g.driver, GROUP_ID)
         pending = sorted(all_slugs - done)
         print(f"[cron] done={len(done & all_slugs)}/{len(all_slugs)} "
               f"pending={len(pending)}")
@@ -714,7 +753,7 @@ async def query() -> None:
             "What conventions does the operator follow for storing secrets?",
         ):
             print(f"\n=== query: {q}")
-            results = await g.search(q, num_results=5)
+            results = await g.search(q, group_ids=[GROUP_ID], num_results=5)
             if not results:
                 print("  (no results)")
             for r in results:

@@ -256,12 +256,16 @@ async def check_ingestion(inbox, deferred, curated) -> None:
     if not recent:
         print("[B] ingestion: no notes past grace in window — nothing to verify")
         return
-    from ingest import build_graphiti
+    from ingest import DEFAULT_GROUP_ID, build_graphiti
     g = build_graphiti()
     try:
         slugs = [s for s, _ in recent]
         rows, _, _ = await g.driver.execute_query(
-            "MATCH (e:Episodic) WHERE e.name IN $slugs RETURN e.name AS name", slugs=slugs)
+            "MATCH (e:Episodic {group_id: $group_id}) WHERE e.name IN $slugs "
+            "RETURN e.name AS name",
+            slugs=slugs,
+            group_id=DEFAULT_GROUP_ID,
+        )
         have = {r["name"] for r in rows}
         missing = [(s, ts) for s, ts in recent if s not in have]
         if missing:

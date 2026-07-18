@@ -39,12 +39,14 @@ def check_health(name: str, base: str) -> None:
 
 
 async def check_graph() -> None:
-    from ingest import build_graphiti
+    from ingest import DEFAULT_GROUP_ID, build_graphiti
     g = build_graphiti()
     try:
         # 1. ingest freshness — compare newest episode's slug-timestamp with now.
         rows, _, _ = await g.driver.execute_query(
-            "MATCH (e:Episodic) RETURN max(e.name) AS newest")
+            "MATCH (e:Episodic {group_id: $group_id}) RETURN max(e.name) AS newest",
+            group_id=DEFAULT_GROUP_ID,
+        )
         newest = rows[0]["newest"] if rows else None
         if newest and len(newest) >= 17:
             try:
@@ -58,7 +60,10 @@ async def check_graph() -> None:
                 pass
         # 2. community age
         rows, _, _ = await g.driver.execute_query(
-            "MATCH (c:Community) RETURN max(c.created_at) AS newest, count(c) AS n")
+            "MATCH (c:Community {group_id: $group_id}) "
+            "RETURN max(c.created_at) AS newest, count(c) AS n",
+            group_id=DEFAULT_GROUP_ID,
+        )
         if rows and rows[0]["n"]:
             newest_c = rows[0]["newest"]
             if newest_c is not None:
