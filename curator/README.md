@@ -8,15 +8,19 @@ It runs **on the memory repo itself** (the one you created from `template/`),
 as CI workflows — not in docker-compose — because it needs to commit and push
 to that repo. Everything it needs ships inside the template:
 
-| Piece | Where (in your memory repo) |
+| Piece | Where |
 |---|---|
-| Hourly curation workflow | `.github/workflows/curator.yml` |
-| Weekly synthesis workflow | `.github/workflows/synthesis.yml` |
-| Daily review-queue workflow | `.github/workflows/reviewqueue.yml` |
-| Supervisor (batching, budget, probes) | `scripts/processnotes-supervisor.sh` |
-| Inbox batcher (oldest-4 live, rest deferred; `.blocked/` excluded) | `scripts/processnotes-prepare-inbox.sh` |
-| The curator prompt | `.pi/prompts/processnotes-auto.md` |
-| Validators | `scripts/wikilint.py` + `wikiindex.py` + `logrotate.py` + `wikidistill.py` |
+| Hourly curation workflow | memory repo: `.github/workflows/curator.yml` |
+| Weekly synthesis workflow | memory repo: `.github/workflows/synthesis.yml` |
+| Daily review-queue workflow | memory repo: `.github/workflows/reviewqueue.yml` |
+| Supervisor (batching, budget, probes) | image: `/opt/dip.ink/scripts/processnotes-supervisor.sh` (source: `curator/scripts/`) |
+| Inbox batcher (oldest-4 live, rest deferred; `.blocked/` excluded) | image: `/opt/dip.ink/scripts/processnotes-prepare-inbox.sh` |
+| The curator prompt | image: `/opt/dip.ink/prompts/processnotes-auto.md` (source: `curator/prompts/`) |
+| Validators | image: `/opt/dip.ink/scripts/wikilint.py` + `wikiindex.py` + `logrotate.py` + `wikidistill.py` |
+
+The memory repo itself is **data-only**: notes, wiki pages, and thin workflow
+config pinning an immutable `pi-runner` tag. All curator code ships in the
+image and upgrades via a dip.ink release, not repo-by-repo copies.
 
 All three workflows share one concurrency group:
 
@@ -27,7 +31,7 @@ concurrency:
 ```
 
 so they never race on `wiki/log.md` or other shared pages. Public images are
-pinned to `ghcr.io/d6o/dip.ink/pi-runner:v0.1.5`.
+pinned to `ghcr.io/d6o/dip.ink/pi-runner:v0.1.6`.
 
 ## pi-runner (this directory)
 
@@ -65,7 +69,7 @@ Nothing in the pipeline is Pi-specific except the runner. To use another
 headless agent (Claude Code, Codex CLI, ...):
 
 - keep the supervisor and set `CURATOR_RUNNER_BIN` to your own entrypoint that
-  (a) runs the agent with `.pi/prompts/processnotes-auto.md` as the task,
+  (a) runs the agent with `/opt/dip.ink/prompts/processnotes-auto.md` as the task,
   (b) validates, commits, rebases, pushes on success — the supervisor only
   cares that HEAD advances on success and the exit code is 0;
 - or replace the workflow's run step entirely and keep the prompt + validators.
@@ -96,10 +100,10 @@ headless agent (Claude Code, Codex CLI, ...):
 
 ## Testing
 
-`template/scripts/test-processnotes-supervisor.sh` covers the supervisor's
+`curator/scripts/test-processnotes-supervisor.sh` covers the supervisor's
 batching, budget, probe-failure, blocked/malformed exclusion, and no-op semantics with
-fakes — run it from the template (or your memory repo) root:
+fakes — run it from the dip.ink repo root:
 
 ```sh
-bash scripts/test-processnotes-supervisor.sh
+bash curator/scripts/test-processnotes-supervisor.sh
 ```

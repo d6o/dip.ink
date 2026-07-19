@@ -21,7 +21,7 @@ if [[ $(id -u) -eq 0 ]]; then
   exec gosu "$RUNNER_UID:$RUNNER_GID" /bin/bash "$0" "$@"
 fi
 
-: "${PROMPT_PATH:?PROMPT_PATH is required (path relative to the repository root)}"
+: "${PROMPT_PATH:?PROMPT_PATH is required (absolute, e.g. /opt/dip.ink/prompts/..., or repo-relative)}"
 
 : "${PI_API_KEY:?PI_API_KEY is required}"
 export PI_API_KEY
@@ -100,7 +100,7 @@ Conventions for this run:
 - Update task state files so a later run does not repeat completed work.
 - If there is nothing to do, exit cleanly without writing files; a zero diff is a successful no-op.
 - Do not run git commit, git push, or create/switch branches. The runner owns version control.
-- Use only repository-local files and the built-in read, bash, edit, and write tools. No external MCP services are configured.
+- Use only repository-local files, the shared curator toolchain under /opt/dip.ink/, and the built-in read, bash, edit, and write tools. No external MCP services are configured.
 
 Below is the task prompt.
 

@@ -26,10 +26,10 @@ Use only that output as the batch. Never read, list, search, or modify `notes/.d
 
 ## 2. Dedup
 
-For every folder, run `python3 scripts/processnotes-is-ingested.py <slug>`. If it reports an exact match in an `ingest |` or `auto-ingest |` entry, immediately run:
+For every folder, run `python3 /opt/dip.ink/scripts/processnotes-is-ingested.py <slug>`. If it reports an exact match in an `ingest |` or `auto-ingest |` entry, immediately run:
 
 ```sh
-bash scripts/processnotes-block-note.sh <slug> already-ingested
+bash /opt/dip.ink/scripts/processnotes-block-note.sh <slug> already-ingested
 ```
 
 This is a terminal dedup action: do not read or process the folder, and never leave it live to poison a later oldest-first batch. The helper moves the complete folder without changing existing note or attachment bytes and adds a bounded `BLOCKED.md` receipt. If every folder is terminally deduped, make no wiki/log heartbeat and finish; the runner still commits the blocked moves.
@@ -43,7 +43,7 @@ Credentials, tokens, and passwords must never be submitted in notes or written t
 - **PROCESS** is the default for actionable content, including newer information that changes prior truth.
 - **DROP thin** only when there is no durable actionable claim. Remove the incoming folder and state why in the log.
 - **DROP duplicate** only after a targeted `rg` search and page read proves the content is already covered. Remove the folder and cite the existing page in the log.
-- **FLAG** only for corrupt or unparseable input. Run `bash scripts/processnotes-block-note.sh <slug> <reason-code>` with `corrupt-input`, `unparseable-input`, or `malformed-note`, then log the safe reason code. Never edit the note or attachments before blocking.
+- **FLAG** only for corrupt or unparseable input. Run `bash /opt/dip.ink/scripts/processnotes-block-note.sh <slug> <reason-code>` with `corrupt-input`, `unparseable-input`, or `malformed-note`, then log the safe reason code. Never edit the note or attachments before blocking.
 
 Do not drop information merely because it is stale or contradictory. Process the newer note optimistically and queue a contradiction when needed.
 

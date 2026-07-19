@@ -31,7 +31,7 @@ jobs:
     timeout-minutes: 59
     container:
       # Immutable public release tag. Coordinator retags only after CI is green.
-      image: ghcr.io/d6o/dip.ink/pi-runner:v0.1.5
+      image: ghcr.io/d6o/dip.ink/pi-runner:v0.1.6
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -48,7 +48,7 @@ jobs:
       - name: Run curator supervisor
         shell: bash
         env:
-          PROMPT_PATH: .pi/prompts/processnotes-auto.md
+          PROMPT_PATH: /opt/dip.ink/prompts/processnotes-auto.md
           PI_PROVIDER: ${{ vars.PI_PROVIDER || 'openai' }}
           PI_MODEL: ${{ vars.PI_MODEL || 'gpt-4.1-mini' }}
           PI_THINKING: medium
@@ -68,11 +68,11 @@ jobs:
           COMMIT_MESSAGE: "ingest(auto): notes batch"
           GIT_USER_NAME: "wiki-auto-curator"
           GIT_USER_EMAIL: "curator@users.noreply.github.com"
-          VALIDATOR: "python3 scripts/wikilint.py && python3 scripts/wikiindex.py && python3 scripts/logrotate.py && python3 scripts/wikidistill.py --if-stale"
+          VALIDATOR: "python3 /opt/dip.ink/scripts/wikilint.py && python3 /opt/dip.ink/scripts/wikiindex.py && python3 /opt/dip.ink/scripts/logrotate.py && python3 /opt/dip.ink/scripts/wikidistill.py --if-stale"
           INBOX_BATCH_SIZE: "4"
           SUPERVISOR_BUDGET_SECONDS: "3480"
           SUPERVISOR_MIN_REMAINING_SECONDS: "1200"
-        run: bash scripts/processnotes-supervisor.sh
+        run: bash /opt/dip.ink/scripts/processnotes-supervisor.sh
 
       - name: Verify supervisor activity
         shell: bash

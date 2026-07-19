@@ -34,10 +34,10 @@ Do not auto-resolve:
 7. Leave unresolved bullets exactly in place unless a tiny wording clarification helps the operator understand what remains.
 8. Update `updated:` frontmatter on pages you materially edit.
 9. Run the wiki validation chain:
-   - `python3 scripts/wikilint.py`
-   - `python3 scripts/wikiindex.py`
-   - `python3 scripts/logrotate.py`
-   - `python3 scripts/wikidistill.py --if-stale`
+   - `python3 /opt/dip.ink/scripts/wikilint.py`
+   - `python3 /opt/dip.ink/scripts/wikiindex.py`
+   - `python3 /opt/dip.ink/scripts/logrotate.py`
+   - `python3 /opt/dip.ink/scripts/wikidistill.py --if-stale`
 10. If you changed any files, append a top-of-log entry to `wiki/log.md`:
 
 ```markdown

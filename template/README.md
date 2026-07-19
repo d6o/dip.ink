@@ -6,8 +6,7 @@ Private memory repo for a [dip.ink](https://github.com/d6o/dip.ink) deployment.
 - `wiki/` — the curated wiki the hourly curator maintains (markdown pages + source archive under `wiki/sources/notes/`).
 - `raw/` — immutable source documents for manual ingestion.
 - `AGENTS.md` — the schema + curation contract every maintaining agent follows (Pi / AGENTS.md convention).
-- `scripts/` — linter, index generator, log rotation, weekly distill, curator supervisor.
-- `.github/workflows/` — the curator (hourly), synthesis (weekly), review-queue (daily) agents. All three share concurrency group `memory-repo-writer` and run `ghcr.io/d6o/dip.ink/pi-runner:v0.1.5`.
+- `.github/workflows/` — the curator (hourly), synthesis (weekly), review-queue (daily) agents. All three share concurrency group `memory-repo-writer` and run `ghcr.io/d6o/dip.ink/pi-runner:v0.1.6`, which bakes the curator scripts and prompts at `/opt/dip.ink/`. This repo carries no code — tooling upgrades arrive by bumping the pinned image tag.
 
 A fresh copy includes a small bootstrap source note so a new deployment has
 something for Graphiti to ingest and for the default healthcheck `ANSWER_PROBE`

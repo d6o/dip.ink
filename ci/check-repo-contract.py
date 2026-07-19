@@ -10,7 +10,7 @@ from pathlib import Path
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
-PINNED_RELEASE = "v0.1.5"
+PINNED_RELEASE = "v0.1.6"
 
 
 def load_yaml(path: Path) -> dict:
@@ -162,9 +162,12 @@ def check_release(errors: list[str]) -> None:
     required_paths = (
         "server/requirements.txt",
         "server/tests",
-        "template/scripts/test-processnotes-supervisor.sh",
-        "template/scripts/wikilint.py",
-        "template/scripts/wikiindex.py",
+        "curator/scripts/test-processnotes-supervisor.sh",
+        "curator/scripts/wikilint.py",
+        "curator/scripts/wikiindex.py",
+        "curator/prompts/processnotes-auto.md",
+        "curator/prompts/reviewqueue-auto.md",
+        "curator/prompts/synthesis-auto.md",
         "agent-setup/pi/extensions/memory/index.ts",
         "agent-setup/pi/extensions/recordnotes.ts",
         "server/Dockerfile",

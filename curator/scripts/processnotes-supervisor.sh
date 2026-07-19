@@ -19,7 +19,10 @@ BUDGET_SECONDS="${SUPERVISOR_BUDGET_SECONDS:-3480}"
 MIN_REMAINING="${SUPERVISOR_MIN_REMAINING_SECONDS:-1200}"
 START_EPOCH="${SUPERVISOR_START_EPOCH:-$(date +%s)}"
 RUNNER_BIN="${CURATOR_RUNNER_BIN:-/opt/pi-runner/entrypoint.sh}"
-PREPARE_BIN="${INBOX_PREPARE_BIN:-scripts/processnotes-prepare-inbox.sh}"
+# Default to the sibling script so the supervisor works both baked into the
+# pi-runner image (/opt/dip.ink/scripts) and from a dip.ink checkout.
+SUPERVISOR_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+PREPARE_BIN="${INBOX_PREPARE_BIN:-$SUPERVISOR_DIR/processnotes-prepare-inbox.sh}"
 PROBE_BIN="${CURATOR_PROBE_BIN:-}"
 NOW_BIN="${SUPERVISOR_NOW_BIN:-}"
 GITHUB_ENV_FILE="${GITHUB_ENV:-/dev/null}"

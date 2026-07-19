@@ -35,10 +35,10 @@ Find places where the wiki has accumulated many source notes and entity/concept 
    - 3-7 bullets or short sections explaining the pattern;
    - `## Sources` listing the linked source notes and high-level pages.
 5. Run:
-   - `python3 scripts/wikilint.py`
-   - `python3 scripts/wikiindex.py`
-   - `python3 scripts/logrotate.py`
-   - `python3 scripts/wikidistill.py --if-stale`
+   - `python3 /opt/dip.ink/scripts/wikilint.py`
+   - `python3 /opt/dip.ink/scripts/wikiindex.py`
+   - `python3 /opt/dip.ink/scripts/logrotate.py`
+   - `python3 /opt/dip.ink/scripts/wikidistill.py --if-stale`
 6. If anything changed, append a compact `note` entry near the top of `wiki/log.md`:
 
 ```markdown

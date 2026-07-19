@@ -32,11 +32,17 @@ from wikiutil import WIKI_ROOT, is_skipped, read_frontmatter as _shared_read_fro
 
 INDEX_PATH = WIKI_ROOT / "index.md"
 
-# Hardcoded ordering for entity categories. Add new ones here when invented.
-# Order of entity-category sections in index.md. Adjust to taste — the
-# curator prompts tell the agent to pick from this list and to propose new
+# Order of entity-category sections in index.md. Defaults below; a wiki repo
+# can override with its own list in `wiki/.wikiindex.yml`:
+#
+#   entity-category-order:
+#     - Infrastructure
+#     - Services on the cluster — infra
+#     - ...
+#
+# The curator prompts tell the agent to pick from this list and to propose new
 # categories rather than invent them silently.
-ENTITY_CATEGORY_ORDER = [
+DEFAULT_ENTITY_CATEGORY_ORDER = [
     "Infrastructure",
     "Services",
     "Projects",
@@ -46,6 +52,22 @@ ENTITY_CATEGORY_ORDER = [
     "People",
     "Legacy / orphaned",
 ]
+
+
+def load_entity_category_order() -> list[str]:
+    config_path = WIKI_ROOT / ".wikiindex.yml"
+    if not config_path.is_file():
+        return DEFAULT_ENTITY_CATEGORY_ORDER
+    data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        sys.exit(f"error: {config_path} must be a YAML mapping")
+    order = data.get("entity-category-order", DEFAULT_ENTITY_CATEGORY_ORDER)
+    if not isinstance(order, list) or not all(isinstance(c, str) and c.strip() for c in order):
+        sys.exit(f"error: {config_path} entity-category-order must be a list of non-empty strings")
+    return order
+
+
+ENTITY_CATEGORY_ORDER = load_entity_category_order()
 
 
 read_frontmatter = _shared_read_frontmatter

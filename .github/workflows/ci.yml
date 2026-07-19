@@ -99,7 +99,7 @@ jobs:
       - name: Install validator dependency
         run: python -m pip install 'PyYAML>=6.0,<7'
       - name: Run curator supervisor shell tests
-        run: bash template/scripts/test-processnotes-supervisor.sh
+        run: bash curator/scripts/test-processnotes-supervisor.sh
       - name: Validate a fresh template repository
         shell: bash
         run: |
@@ -108,8 +108,8 @@ jobs:
           mkdir -p "$target"
           cp -a template/. "$target/"
           cd "$target"
-          python3 scripts/wikilint.py
-          python3 scripts/wikiindex.py --check
+          python3 "$GITHUB_WORKSPACE/curator/scripts/wikilint.py"
+          python3 "$GITHUB_WORKSPACE/curator/scripts/wikiindex.py" --check
       - name: Check template workflow and bootstrap contracts
         run: python ci/check-repo-contract.py --template
 
@@ -188,8 +188,10 @@ jobs:
         include:
           - name: memory
             context: ./server
+            dockerfile: ./server/Dockerfile
           - name: pi-runner
-            context: ./curator/pi-runner
+            context: ./curator
+            dockerfile: ./curator/pi-runner/Dockerfile
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
@@ -197,6 +199,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
           push: false
           tags: dipink/${{ matrix.name }}:ci
           cache-from: type=gha,scope=ci-${{ matrix.name }}

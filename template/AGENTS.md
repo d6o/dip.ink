@@ -11,7 +11,7 @@ raw/         # Immutable source documents. Read these; never modify.
 notes/       # Transient inbox. One folder per note dropped by an agent
              # session (usually via the wiki_note_drop MCP tool), each
              # containing <folder>.md (or legacy NOTE.md) + optional
-             # attachments. /processnotes drains this into
+             # attachments. The hourly curator drains this into
              # wiki/sources/notes/YYYY/MM/DD/<folder>/.
   .deferred/ # Supervisor-held folders outside the current oldest-first batch.
   .blocked/  # Terminal quarantine for FLAGged, malformed, or already-ingested folders.
@@ -29,20 +29,16 @@ wiki/        # Your output. Markdown pages — entities, concepts, summaries, sy
     notes/YYYY/MM/DD/<YYYY-MM-DD-HHMMSS-slug>/
              # Permanent source-note folder. The canonical source page is
              # <YYYY-MM-DD-HHMMSS-slug>.md; attachments live beside it.
-scripts/     # Tooling that operates on the wiki.
-  wikilint.py    # Schema + convention linter.
-  wikiindex.py   # Regenerates wiki/index.md from page frontmatter.
-  logrotate.py   # Moves log entries >14d into wiki/log/YYYY-Www.md.
-  wikidistill.py # Weekly snapshot of changes.
-  wikiutil.py    # Shared helpers (is_skipped, is_archive, read_frontmatter).
-  processnotes-prepare-inbox.sh # Rebuilds oldest-first live N=4 batch.
-  processnotes-block-note.sh    # Moves a full folder to .blocked with a receipt.
-  processnotes-is-ingested.py   # Exact-slug lookup across live/archived logs.
-  processnotes-supervisor.sh    # Runs fresh curator agent batches hourly.
 AGENTS.md    # This file. The schema. Co-evolves with the wiki.
-.pi/prompts/{processnotes,wikilint,wikidistill}.md   # Interactive prompts.
-.pi/prompts/processnotes-auto.md # Lean headless curator prompt.
 ```
+
+This repo is **data-only**. The curator toolchain (wikilint.py, wikiindex.py,
+logrotate.py, wikidistill.py, the processnotes-* scripts, and the headless
+curator prompts) ships inside the `pi-runner` image at `/opt/dip.ink/scripts/`
+and `/opt/dip.ink/prompts/`, versioned and released from the dip.ink repo.
+Workflow files under `.github/workflows/` pin an immutable pi-runner tag and
+are pure configuration. An optional `wiki/.wikiindex.yml` can override the
+entity-category ordering used by the index generator (`entity-category-order:`).
 
 ## Link style
 
@@ -75,14 +71,14 @@ length-exempt: true   # optional escape hatch when page is intentionally over th
 ---
 ```
 
-### Frontmatter rules (enforced by `scripts/wikilint.py`)
+### Frontmatter rules (enforced by `wikilint.py`)
 
 - **`type`** ∈ `{entity, concept, source, synthesis, decision, log, index}`. No other values.
 - **`tags`** must be a YAML list of strings, each **lowercase + hyphenated** (no spaces, no camelcase).
 - **`created` / `updated`** must be `YYYY-MM-DD` (no times, no timezones).
 - **`sources`** must be a YAML list of quoted wikilink strings. Never shorthand like `sources: [[Foo]], [[Bar]]`. For non-source pages, the frontmatter `sources` list and the bottom-of-page **Sources** section should contain the same pages. Source pages themselves do **not** get a `sources:` field.
 - **`status`** is required on **entity** and **decision** pages. Other page types should not carry one (the linter flags it as info if they do).
-- **`category`** is required on **entity** pages — it drives the section grouping in `index.md`. Pick from the list in `scripts/wikiindex.py` (`ENTITY_CATEGORY_ORDER`); add a new one only if no existing category fits, and update the script's order list at the same time.
+- **`category`** is required on **entity** pages — it drives the section grouping in `index.md`. Pick from the wiki's category list (`wiki/.wikiindex.yml` `entity-category-order:`, or the defaults in `wikiindex.py`); add a new one only if no existing category fits, and update the order list at the same time.
 - **`index-description`** is optional but encouraged. The index generator falls back to the page's first paragraph if missing — fine for most pages, but explicit one-liners read better. Keep ≤220 chars.
 
 ### Status enums
@@ -119,7 +115,7 @@ At the bottom of every non-source page, include a **Sources** section listing th
 
 ## index.md (auto-generated)
 
-`wiki/index.md` is regenerated from page frontmatter by `scripts/wikiindex.py`. **Don't hand-edit it.** Instead, change the source page's `category:` (entities only) or `index-description:` and re-run the generator. The generator runs automatically as part of `/wikilint` after every `/processnotes`.
+`wiki/index.md` is regenerated from page frontmatter by `wikiindex.py`. **Don't hand-edit it.** Instead, change the source page's `category:` (entities only) or `index-description:` and re-run the generator. The generator runs automatically in the validator chain after every curator batch.
 
 The Sources section of the index is intentionally a count-by-month, not a per-page list. Browse `wiki/sources/notes/` directly (date-partitioned folders) or grep `wiki/log.md` for ingest narratives.
 
@@ -127,7 +123,7 @@ The Sources section of the index is intentionally a count-by-month, not a per-pa
 
 Append-only. Every entry starts with `## [YYYY-MM-DD] <action> | <short title>` or `## [YYYY-MM-DD HH:MM UTC] <action> | <short title>` so it's greppable. Actions: `ingest`, `auto-ingest`, `query`, `lint`, `note`. Body is compact revision history: notes processed, pages touched, source notes linked, any follow-ups. Do not re-narrate the source note or entity-page prose in the log.
 
-The live `wiki/log.md` keeps roughly the last 14 days. Older entries rotate into `wiki/log/YYYY-Www.md` weekly archives via `scripts/logrotate.py` (run automatically via `/wikilint`). Archives are themselves append-only — rotation only adds, never reorders or removes.
+The live `wiki/log.md` keeps roughly the last 14 days. Older entries rotate into `wiki/log/YYYY-Www.md` weekly archives via `logrotate.py` (run automatically in the validator chain). Archives are themselves append-only — rotation only adds, never reorders or removes.
 
 ## Operations
 
@@ -137,7 +133,7 @@ The live `wiki/log.md` keeps roughly the last 14 days. Older entries rotate into
 3. **Discuss key takeaways with the operator first** before writing. One or two sentences per takeaway. Ask if emphasis is right.
 4. Write a source page under the source-note shape when applicable (`wiki/sources/notes/YYYY/MM/DD/<slug>/<slug>.md`).
 5. Update or create entity/concept pages touched by the source. A single source commonly touches 5–15 wiki pages; don't be shy about fanning out.
-6. Update `wiki/index.md` — regenerate via `scripts/wikiindex.py`.
+6. Update `wiki/index.md` — regenerate via `wikiindex.py`.
 7. Append an `ingest` entry to `log.md`.
 
 ### Query
@@ -147,21 +143,19 @@ The live `wiki/log.md` keeps roughly the last 14 days. Older entries rotate into
 4. **If the answer is non-trivial, offer to file it back as a synthesis page.** Comparisons, analyses, and new connections are valuable — don't let them die in chat.
 5. Append a `query` entry to `log.md`.
 
-### Process notes (`/processnotes`)
+### Process notes (auto-curate)
 
-Agent sessions drop notes into `notes/` when they learn things (via the `wiki_note_drop` MCP tool — see `AGENTS.md` in the dip.ink repo). Each note is a **folder** named `YYYY-MM-DD-HHMMSS-<slug>/` containing `<folder>.md` (or legacy `NOTE.md`) plus any attachments. The `/processnotes` command drains this inbox — see `.pi/prompts/processnotes.md` for the full workflow (terminal exact-slug dedup, discuss-or-announce, write pages, validate, move note folders to `wiki/sources/notes/`, log, commit, push).
+Agent sessions drop notes into `notes/` when they learn things (via the `wiki_note_drop` MCP tool — see `AGENTS.md` in the dip.ink repo). Each note is a **folder** named `YYYY-MM-DD-HHMMSS-<slug>/` containing `<folder>.md` (or legacy `NOTE.md`) plus any attachments. The hourly headless curator drains this inbox.
 
-`notes/.blocked/` is terminal and excluded from both live and deferred batching. FLAGged folders, malformed frontmatter, and exact already-ingested duplicates move there intact; no existing source-note or attachment bytes are changed. `scripts/processnotes-block-note.sh` adds only a bounded `BLOCKED.md` receipt with `slug`, safe `reason`, and `blocked-at` frontmatter.
+`notes/.blocked/` is terminal and excluded from both live and deferred batching. FLAGged folders, malformed frontmatter, and exact already-ingested duplicates move there intact; no existing source-note or attachment bytes are changed. `processnotes-block-note.sh` adds only a bounded `BLOCKED.md` receipt with `slug`, safe `reason`, and `blocked-at` frontmatter.
 
 **Credentials, tokens, and passwords must never be submitted in notes.** Agents record only the corresponding secret-manager path.
 
-### Auto-curate (headless)
-
-Headless variant of `/processnotes` driven by an hourly scheduled supervisor (`scripts/processnotes-supervisor.sh`). The supervisor repeatedly exposes the oldest N=4 notes and launches an independent fresh agent session from `.pi/prompts/processnotes-auto.md`. Each successful sub-batch validates, commits, rebases, and pushes before another begins; it stops on no HEAD advance, an empty inbox, or when its time budget runs low.
+The hourly scheduled supervisor (`/opt/dip.ink/scripts/processnotes-supervisor.sh` in the pi-runner image) repeatedly exposes the oldest N=4 notes and launches an independent fresh agent session from `/opt/dip.ink/prompts/processnotes-auto.md`. Each successful sub-batch validates, commits, rebases, and pushes before another begins; it stops on no HEAD advance, an empty inbox, or when its time budget runs low.
 
 **Stance: optimistic with receipts.** The auto-curator processes notes aggressively without asking — creates new pages, edits existing ones, changes statuses, writes migrations. Every change is reversible via git; the operator is the only consumer; the cost of unprocessed notes piling up is worse than the cost of an imperfect edit fixed later.
 
-Differences from manual `/processnotes`:
+Curator conventions:
 
 - **No human-in-the-loop discussion.** Decisions are made and committed.
 - **New pages OK.** New entity / concept / synthesis / decision pages can be created freely. New entity `category:` values and new status enum values still require manual judgment.
@@ -170,11 +164,11 @@ Differences from manual `/processnotes`:
 - **Blocked means terminal.** Corrupt/unparseable folders and exact already-ingested duplicates move intact to `notes/.blocked/`; they never remain live or return through `.deferred/`.
 - **Pages stay clean.** No inline `<!-- needs review -->` markers, no hedging prose. The queue is the only place that says "look at this."
 - **`auto-ingest` log entries.** Each sub-batch that read at least one note appends one compact entry to `wiki/log.md`.
-- **Synthesis pressure.** Each sub-batch does a one-synthesis-max check for repeated patterns. A separate weekly synthesis pass (`.pi/prompts/synthesis-auto.md`) can create/update up to three synthesis pages when patterns accumulate.
+- **Synthesis pressure.** Each sub-batch does a one-synthesis-max check for repeated patterns. A separate weekly synthesis pass (`/opt/dip.ink/prompts/synthesis-auto.md`) can create/update up to three synthesis pages when patterns accumulate.
 
-### Lint + index + rotate + distill (`/wikilint`)
+### Lint + index + rotate + distill (validator chain)
 
-`/wikilint` chains four scripts: `wikilint.py` (schema), `wikiindex.py` (regenerate index.md), `logrotate.py` (rotate old log entries), and `wikidistill.py --if-stale` (weekly distill if stale). Runs automatically as part of `/processnotes`; can also be invoked standalone.
+The validator chain runs four scripts: `wikilint.py` (schema), `wikiindex.py` (regenerate index.md), `logrotate.py` (rotate old log entries), and `wikidistill.py --if-stale` (weekly distill if stale). The runner executes it automatically after every curator batch; it can also be invoked standalone from `/opt/dip.ink/scripts/` (or a dip.ink checkout).
 
 Linter output severity:
 
@@ -193,7 +187,7 @@ Exit codes: `0` clean / `1` errors / `2` warnings only.
 - **Always update `index.md` and `log.md` on every ingest.** Non-negotiable — they're what makes the wiki navigable.
 - **Wikilinks, not filesystem paths.** `[[Foo]]` not `wiki/foo.md`.
 - **Commit after each ingest or significant update.** Short message: `ingest: <source title>` or `update: <what changed>`.
-- **Push after every `/processnotes`.** The remote copy is the canonical backup, not an optional mirror.
+- **Push after every curation pass.** The remote copy is the canonical backup, not an optional mirror.
 - **Ask before inventing categories.** If a new top-level category in `index.md` seems warranted, propose it first — tag sprawl is the failure mode.
 
 ## Scope
