@@ -298,12 +298,26 @@ def source_note_markdown(folder_name: str, note_md: str, capture_hash: str | Non
     if "source-note" not in clean_tags:
         clean_tags.insert(0, "source-note")
 
-    session = fm.get("session") or ""
-    topic = fm.get("topic") or ""
+    # Capture metadata is REQUIRED by the curator's malformed-note validator
+    # (captured/session/topic non-empty). Capturing agents sometimes omit them
+    # or use capture-* aliases; this endpoint is the last place that can
+    # guarantee the note is batchable, so backfill deterministically.
+    session = fm.get("session") or fm.get("capture-session") or ""
+    topic = fm.get("topic") or fm.get("capture-topic") or ""
     desc = fm.get("index-description") or session or topic or f"Captured source note {folder_name}."
     desc = str(desc).strip()
     if desc and not desc.endswith("."):
         desc += "."
+
+    captured = fm.get("captured") or fm.get("capture-captured") or ""
+    if not str(captured).strip():
+        m = re.match(r"^(\d{4}-\d{2}-\d{2})-(\d{2})(\d{2})(\d{2})-", folder_name)
+        captured = f"{m.group(1)}T{m.group(2)}:{m.group(3)}:{m.group(4)}Z" if m else date
+    if not str(session).strip():
+        session = f"unattributed capture session (backfilled by wiki_note_drop for {folder_name})"
+    if not str(topic).strip():
+        slug_part = folder_name[18:] if len(folder_name) > 18 else folder_name
+        topic = slug_part.replace("-", " ").strip() or folder_name
 
     new_fm = {
         "type": "source",
@@ -314,11 +328,11 @@ def source_note_markdown(folder_name: str, note_md: str, capture_hash: str | Non
     }
     if capture_hash:
         new_fm["capture-hash"] = capture_hash
-    for key in ("captured", "session", "topic"):
-        if key in fm:
-            new_fm[key] = fm[key]
+    new_fm["captured"] = captured
+    new_fm["session"] = session
+    new_fm["topic"] = topic
     for key, value in fm.items():
-        if key not in new_fm:
+        if key not in new_fm and key not in ("capture-session", "capture-topic", "capture-captured"):
             new_fm[key] = value
 
     body = body.lstrip()

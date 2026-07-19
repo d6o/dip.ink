@@ -197,5 +197,71 @@ class EventLoopSafetyTests(unittest.TestCase):
         self.assertNotEqual(impl_thread[0], loop_thread)
 
 
+class SourceNoteMarkdownBackfillTests(unittest.TestCase):
+    """The curator terminally quarantines notes whose frontmatter is missing a
+    non-empty captured/session/topic. wiki_note_drop is the last writer that
+    can guarantee those fields, so it must backfill them deterministically."""
+
+    FOLDER = "2026-07-18-230139-thunderstormwatch-domain-registered"
+
+    def parse(self, rendered: str) -> dict:
+        fm, _body = wiki.read_frontmatter_and_body(rendered)
+        return fm
+
+    def assert_batchable(self, fm: dict):
+        for key in ("captured", "session", "topic"):
+            self.assertIn(key, fm)
+            self.assertTrue(str(fm[key]).strip(), f"empty {key}")
+
+    def test_note_without_frontmatter_gets_all_three_backfilled(self):
+        fm = self.parse(wiki.source_note_markdown(self.FOLDER, "# Title\n\nbody\n"))
+        self.assert_batchable(fm)
+        self.assertEqual(fm["captured"], "2026-07-18T23:01:39Z")
+        self.assertEqual(fm["topic"], "thunderstormwatch domain registered")
+
+    def test_capture_alias_keys_are_promoted(self):
+        note = (
+            "---\n"
+            "capture-session: contentmachine daily content run\n"
+            "capture-topic: kotlin comparacoes gap map\n"
+            "---\n\nbody\n"
+        )
+        fm = self.parse(wiki.source_note_markdown(self.FOLDER, note))
+        self.assert_batchable(fm)
+        self.assertEqual(fm["session"], "contentmachine daily content run")
+        self.assertEqual(fm["topic"], "kotlin comparacoes gap map")
+        self.assertNotIn("capture-session", fm)
+        self.assertNotIn("capture-topic", fm)
+
+    def test_missing_captured_only_is_backfilled_and_rest_preserved(self):
+        note = (
+            "---\n"
+            "session: contentmachine daily growth run\n"
+            "topic: repousocuidador guia-escala refresh\n"
+            "---\n\nbody\n"
+        )
+        fm = self.parse(wiki.source_note_markdown(self.FOLDER, note))
+        self.assert_batchable(fm)
+        self.assertEqual(fm["session"], "contentmachine daily growth run")
+        self.assertEqual(fm["topic"], "repousocuidador guia-escala refresh")
+        self.assertEqual(fm["captured"], "2026-07-18T23:01:39Z")
+
+    def test_complete_frontmatter_passes_through_unchanged(self):
+        note = (
+            "---\n"
+            "captured: 2026-07-18 20:00:00-03:00\n"
+            "session: session A\n"
+            "topic: some topic\n"
+            "extra: kept\n"
+            "---\n\nbody\n"
+        )
+        fm = self.parse(wiki.source_note_markdown(self.FOLDER, note))
+        self.assert_batchable(fm)
+        self.assertEqual(str(fm["captured"]), "2026-07-18 20:00:00-03:00")
+        self.assertEqual(fm["session"], "session A")
+        self.assertEqual(fm["topic"], "some topic")
+        self.assertEqual(fm["extra"], "kept")
+
+
 if __name__ == "__main__":
     unittest.main()
