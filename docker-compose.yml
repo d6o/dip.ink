@@ -1,7 +1,7 @@
 # dip.ink — the whole memory stack on one docker host.
 #
 #   cp .env.example .env   # fill in keys + your private wiki repo
-#   docker compose up -d         # pulls the immutable v0.1.6 runtime
+#   docker compose up -d         # pulls the immutable v0.1.7 runtime
 #
 # Services:
 #   neo4j                  graph database (Graphiti's backend)
@@ -71,7 +71,7 @@ services:
       retries: 10
 
   memory:
-    image: ghcr.io/d6o/dip.ink/memory:v0.1.6
+    image: ghcr.io/d6o/dip.ink/memory:v0.1.7
     restart: unless-stopped
     depends_on:
       neo4j:
@@ -93,7 +93,7 @@ services:
       - "8080:8080"
 
   ingest:
-    image: ghcr.io/d6o/dip.ink/memory:v0.1.6
+    image: ghcr.io/d6o/dip.ink/memory:v0.1.7
     restart: unless-stopped
     entrypoint: ["/bin/sh", "-c"]
     # Clone-fresh + resumable batch every INGEST_INTERVAL seconds. The graph
@@ -127,7 +127,7 @@ services:
       ADD_EPISODE_RETRIES: ${ADD_EPISODE_RETRIES:-4}
 
   communities:
-    image: ghcr.io/d6o/dip.ink/memory:v0.1.6
+    image: ghcr.io/d6o/dip.ink/memory:v0.1.7
     restart: unless-stopped
     entrypoint: ["/bin/sh", "-c"]
     # Weekly community rebuild; entity resolution runs first in the same job.
@@ -149,7 +149,7 @@ services:
       COMMUNITY_CONC: ${COMMUNITY_CONC:-4}
 
   gaps:
-    image: ghcr.io/d6o/dip.ink/memory:v0.1.6
+    image: ghcr.io/d6o/dip.ink/memory:v0.1.7
     restart: unless-stopped
     entrypoint: ["/bin/sh", "-c"]
     command:
@@ -165,7 +165,7 @@ services:
       DRY_RUN: ${GAPS_DRY_RUN:-0}
 
   alerts:
-    image: ghcr.io/d6o/dip.ink/memory:v0.1.6
+    image: ghcr.io/d6o/dip.ink/memory:v0.1.7
     restart: unless-stopped
     entrypoint: ["/bin/sh", "-c"]
     command:
@@ -185,7 +185,7 @@ services:
       MAX_COMMUNITY_AGE_DAYS: ${MAX_COMMUNITY_AGE_DAYS:-8}
 
   healthcheck:
-    image: ghcr.io/d6o/dip.ink/memory:v0.1.6
+    image: ghcr.io/d6o/dip.ink/memory:v0.1.7
     restart: unless-stopped
     entrypoint: ["/bin/sh", "-c"]
     command:
@@ -221,7 +221,7 @@ services:
       INDEX_GRACE_HOURS: ${INDEX_GRACE_HOURS:-6}
 
   contradiction-janitor:
-    image: ghcr.io/d6o/dip.ink/memory:v0.1.6
+    image: ghcr.io/d6o/dip.ink/memory:v0.1.7
     restart: unless-stopped
     entrypoint: ["/bin/sh", "-c"]
     # Report-only by default. Set JANITOR_DRY_RUN=0 only after reviewing output.

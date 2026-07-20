@@ -30,7 +30,7 @@ spec:
           restartPolicy: Never
           containers:
             - name: build
-              image: ghcr.io/d6o/dip.ink/memory:v0.1.6
+              image: ghcr.io/d6o/dip.ink/memory:v0.1.7
               command: ["python", "/app/loops/build_communities.py"]
               envFrom:
                 - configMapRef:
@@ -73,7 +73,7 @@ spec:
           restartPolicy: Never
           containers:
             - name: gaps
-              image: ghcr.io/d6o/dip.ink/memory:v0.1.6
+              image: ghcr.io/d6o/dip.ink/memory:v0.1.7
               command: ["python", "/app/loops/memory_gaps.py"]
               envFrom:
                 - configMapRef:
@@ -105,7 +105,7 @@ spec:
           restartPolicy: Never
           containers:
             - name: janitor
-              image: ghcr.io/d6o/dip.ink/memory:v0.1.6
+              image: ghcr.io/d6o/dip.ink/memory:v0.1.7
               command: ["python", "/app/loops/contradiction_janitor.py"]
               envFrom:
                 - configMapRef:
@@ -147,7 +147,7 @@ spec:
           restartPolicy: Never
           containers:
             - name: alerts
-              image: ghcr.io/d6o/dip.ink/memory:v0.1.6
+              image: ghcr.io/d6o/dip.ink/memory:v0.1.7
               command: ["python", "/app/loops/memory_alerts.py"]
               envFrom:
                 - configMapRef:
@@ -214,7 +214,7 @@ spec:
                 - {name: notes, mountPath: /notes}
           containers:
             - name: healthcheck
-              image: ghcr.io/d6o/dip.ink/memory:v0.1.6
+              image: ghcr.io/d6o/dip.ink/memory:v0.1.7
               command: ["python", "/app/loops/memory_healthcheck.py"]
               envFrom:
                 - configMapRef:
