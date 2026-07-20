@@ -59,6 +59,11 @@ jobs:
           CURATOR_LLM_BASE_URL: ${{ vars.CURATOR_LLM_BASE_URL || '' }}
           CURATOR_LLM_MODEL: ${{ vars.CURATOR_LLM_MODEL || vars.PI_MODEL || 'gpt-4.1-mini' }}
           CURATOR_LLM_API_KEY: ${{ secrets.PI_API_KEY }}
+          # Optional comma-separated fallback models (preference order). When
+          # the primary model's preflight fails (quota/outage), the supervisor
+          # probes these and switches PI_MODEL for the batch. Every candidate
+          # must exist in the runner's model config.
+          CURATOR_MODEL_FALLBACKS: ${{ vars.CURATOR_MODEL_FALLBACKS || '' }}
           # Optional: skip preflight entirely ("0"), force it ("1"), or leave
           # unset for provider-aware defaults.
           CURATOR_PREFLIGHT: ${{ vars.CURATOR_PREFLIGHT || '' }}

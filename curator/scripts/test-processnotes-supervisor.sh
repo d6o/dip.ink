@@ -32,9 +32,15 @@ cat > "$TMP/fake-probe" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
 [[ "$CURATOR_PROBE_URL" == "https://llm.example.com/v1" ]]
-[[ "$CURATOR_PROBE_MODEL" == "test-model" ]]
 count=$(cat "$FAKE_PROBE_COUNT" 2>/dev/null || echo 0)
 echo $((count + 1)) > "$FAKE_PROBE_COUNT"
+# Per-model availability: FAKE_PROBE_AVAILABLE_MODEL, when set, is the only
+# model that probes as available. Otherwise FAKE_PROBE_MODE drives all models.
+if [[ -n "${FAKE_PROBE_AVAILABLE_MODEL:-}" ]]; then
+  [[ "$CURATOR_PROBE_MODEL" == "$FAKE_PROBE_AVAILABLE_MODEL" ]] || exit 2
+  exit 0
+fi
+[[ "$CURATOR_PROBE_MODEL" == "test-model" ]]
 [[ "${FAKE_PROBE_MODE:-available}" == "available" ]] || exit 2
 SH
 
@@ -363,3 +369,60 @@ run_supervisor "$REPO" "$ENV_FILE" FAKE_SUCCESS_LIMIT=9 FAKE_NOW_VALUES="$TMP/bu
 grep -q '^BATCHES_COMPLETED=1$' "$ENV_FILE"
 grep -q '^SUPERVISOR_STOP_REASON=time_budget$' "$ENV_FILE"
 echo 'time-budget stop test OK'
+
+# Model fallback: primary probe fails, fallback probes available, batch runs
+# with PI_MODEL switched to the fallback.
+rm -f "$TMP/runner-count" "$TMP/probe-count" "$TMP/now-index"
+REPO="$TMP/fallback"; ENV_FILE="$TMP/fallback-env"; make_repo "$REPO" 4
+printf '0\n600\n' > "$TMP/fallback-times"
+cat > "$TMP/model-recorder" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+echo "$PI_MODEL" >> "$MODEL_LOG"
+exec "$REAL_RUNNER"
+SH
+chmod +x "$TMP/model-recorder"
+rm -f "$TMP/model-log"
+(
+  cd "$REPO"
+  env \
+    CURATOR_PREFLIGHT=1 CURATOR_PREFLIGHT_OK=0 \
+    CURATOR_LLM_BASE_URL=https://llm.example.com/v1 CURATOR_LLM_MODEL=test-model \
+    CURATOR_MODEL_FALLBACKS="fallback-model" \
+    FAKE_PROBE_AVAILABLE_MODEL=fallback-model \
+    GITHUB_ENV="$ENV_FILE" SUPERVISOR_START_EPOCH=0 \
+    CURATOR_RUNNER_BIN="$TMP/model-recorder" \
+    REAL_RUNNER="$TMP/fake-runner" MODEL_LOG="$TMP/model-log" \
+    INBOX_PREPARE_BIN="$ROOT/scripts/processnotes-prepare-inbox.sh" \
+    CURATOR_PROBE_BIN="$TMP/fake-probe" SUPERVISOR_NOW_BIN="$TMP/fake-now" \
+    BLOCK_NOTE_BIN="$ROOT/scripts/processnotes-block-note.sh" \
+    IS_INGESTED_BIN="$ROOT/scripts/processnotes-is-ingested.py" \
+    FAKE_RUNNER_COUNT="$TMP/runner-count" FAKE_PROBE_COUNT="$TMP/probe-count" \
+    FAKE_NOW_INDEX="$TMP/now-index" \
+    FAKE_SUCCESS_LIMIT=9 FAKE_NOW_VALUES="$TMP/fallback-times" \
+    "$ROOT/scripts/processnotes-supervisor.sh"
+)
+grep -q '^BATCHES_COMPLETED=1$' "$ENV_FILE"
+grep -q '^SUPERVISOR_STOP_REASON=empty_inbox$' "$ENV_FILE"
+grep -Fqx 'fallback-model' "$TMP/model-log"
+# Primary + fallback probed on batch 1.
+[[ "$(cat "$TMP/probe-count")" -ge 2 ]]
+echo 'model fallback test OK'
+
+# Model fallback exhausted: all candidates fail, run exits 2 with no batches.
+rm -f "$TMP/runner-count" "$TMP/probe-count" "$TMP/now-index"
+REPO="$TMP/fallback-exhausted"; ENV_FILE="$TMP/fallback-exhausted-env"; make_repo "$REPO" 4
+printf '0\n' > "$TMP/fallback-exhausted-times"
+set +e
+run_supervisor "$REPO" "$ENV_FILE" \
+  CURATOR_PREFLIGHT=1 CURATOR_PREFLIGHT_OK=0 \
+  CURATOR_MODEL_FALLBACKS="other-model" FAKE_PROBE_MODE=error \
+  FAKE_SUCCESS_LIMIT=9 FAKE_NOW_VALUES="$TMP/fallback-exhausted-times"
+exhausted_status=$?
+set -e
+[[ "$exhausted_status" -eq 2 ]]
+# Batch-1 preflight failure exits before any runner invocation.
+[[ ! -f "$TMP/runner-count" ]]
+# Primary + fallback were both probed.
+[[ "$(cat "$TMP/probe-count")" -eq 2 ]]
+echo 'model fallback exhausted test OK'

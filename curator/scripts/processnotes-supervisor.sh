@@ -31,6 +31,12 @@ GITHUB_ENV_FILE="${GITHUB_ENV:-/dev/null}"
 CURATOR_LLM_BASE_URL="${CURATOR_LLM_BASE_URL:-}"
 CURATOR_LLM_MODEL="${CURATOR_LLM_MODEL:-gpt-4.1-mini}"
 CURATOR_LLM_API_KEY="${CURATOR_LLM_API_KEY:-}"
+# Optional comma-separated fallback models probed in order when the primary
+# model's preflight fails (e.g. quota exhaustion on one provider family).
+# Every candidate must exist in the runner's model config (PI_MODELS_JSON).
+# Only meaningful when preflight is enabled; with preflight off the primary
+# model is used unconditionally.
+CURATOR_MODEL_FALLBACKS="${CURATOR_MODEL_FALLBACKS:-}"
 PI_PROVIDER="${PI_PROVIDER:-openai}"
 # CURATOR_PREFLIGHT: unset = provider-aware default, 0/false/no = off, 1/true/yes = on.
 CURATOR_PREFLIGHT="${CURATOR_PREFLIGHT:-}"
@@ -46,6 +52,9 @@ git rev-parse --is-inside-work-tree >/dev/null
 batches_completed=0
 stop_reason="unknown"
 probes_run=0
+# The configured primary model; CURATOR_LLM_MODEL tracks the currently
+# selected candidate and may point at a fallback after a failed probe.
+PRIMARY_LLM_MODEL="$CURATOR_LLM_MODEL"
 
 write_summary() {
   {
@@ -101,11 +110,11 @@ preflight_enabled() {
   esac
 }
 
-probe_llm() {
-  local status base
+probe_one_model() {
+  local model=$1 status base
   probes_run=$((probes_run + 1))
   if [[ -n "$PROBE_BIN" ]]; then
-    CURATOR_PROBE_URL="${CURATOR_LLM_BASE_URL:-}" CURATOR_PROBE_MODEL="$CURATOR_LLM_MODEL" "$PROBE_BIN"
+    CURATOR_PROBE_URL="${CURATOR_LLM_BASE_URL:-}" CURATOR_PROBE_MODEL="$model" "$PROBE_BIN"
     return $?
   fi
   base="${CURATOR_LLM_BASE_URL:-https://api.openai.com/v1}"
@@ -117,14 +126,40 @@ probe_llm() {
     "$base/chat/completions" \
     -H "Content-Type: application/json" \
     "${auth_args[@]}" \
-    -d "{\"model\":\"$CURATOR_LLM_MODEL\",\"max_tokens\":1,\"messages\":[{\"role\":\"user\",\"content\":\".\"}]}"); then
-    log "error: LLM endpoint probe failed at the network/curl layer"
+    -d "{\"model\":\"$model\",\"max_tokens\":1,\"messages\":[{\"role\":\"user\",\"content\":\".\"}]}"); then
+    log "error: LLM model=$model endpoint probe failed at the network/curl layer"
     return 2
   fi
   case "$status" in
-    2[0-9][0-9]) log "LLM model=$CURATOR_LLM_MODEL available (HTTP $status)"; return 0 ;;
-    *) log "error: LLM model=$CURATOR_LLM_MODEL probe returned HTTP $status"; return 2 ;;
+    2[0-9][0-9]) log "LLM model=$model available (HTTP $status)"; return 0 ;;
+    *) log "error: LLM model=$model probe returned HTTP $status"; return 2 ;;
   esac
+}
+
+# Probe the primary model, then each fallback, in order. On success the
+# selected model is exported as PI_MODEL + CURATOR_LLM_MODEL so the runner
+# uses it for this and later batches (a recovered primary is re-preferred on
+# the next batch because candidates always start from the configured primary).
+probe_llm() {
+  local candidate
+  local candidates="$PRIMARY_LLM_MODEL"
+  if [[ -n "$CURATOR_MODEL_FALLBACKS" ]]; then
+    candidates="$candidates,$CURATOR_MODEL_FALLBACKS"
+  fi
+  IFS=',' read -ra candidate_list <<< "$candidates"
+  for candidate in "${candidate_list[@]}"; do
+    candidate=$(printf '%s' "$candidate" | tr -d '[:space:]')
+    [[ -n "$candidate" ]] || continue
+    if probe_one_model "$candidate"; then
+      if [[ "$candidate" != "$CURATOR_LLM_MODEL" ]]; then
+        log "switching curator model: $CURATOR_LLM_MODEL -> $candidate"
+      fi
+      CURATOR_LLM_MODEL="$candidate"
+      export PI_MODEL="$candidate"
+      return 0
+    fi
+  done
+  return 2
 }
 
 maybe_probe() {
