@@ -108,5 +108,27 @@ class CommunityClusterHydrationTest(unittest.TestCase):
         self.assertGreaterEqual(ingest.HYDRATE_CONC, 1)
 
 
+class DegenerateFallbackTest(unittest.TestCase):
+    """Phase 1 must not carry a timeout when the fallback is identical to it.
+
+    The live CronJob sets MAX_CLUSTER == BOUNDED_MAX_CLUSTER and
+    COMMUNITY_CONC == BOUNDED_CONC. Timing out then restarts the same work with
+    no timeout, so the job spends BUILD_TIMEOUT and still needs a full build,
+    and activeDeadlineSeconds kills it before communities are ever persisted.
+    """
+
+    @staticmethod
+    def _is_degenerate(start_max, bounded_max, start_conc, bounded_conc):
+        return start_max == bounded_max and start_conc == bounded_conc
+
+    def test_identical_phases_are_degenerate(self):
+        self.assertTrue(self._is_degenerate(200, 200, 4, 4))
+
+    def test_distinct_phases_keep_the_timeout(self):
+        self.assertFalse(self._is_degenerate(None, 200, 4, 4))  # unbounded -> bounded
+        self.assertFalse(self._is_degenerate(500, 200, 4, 4))   # looser cap
+        self.assertFalse(self._is_degenerate(200, 200, 8, 4))   # higher concurrency
+
+
 if __name__ == "__main__":
     unittest.main()

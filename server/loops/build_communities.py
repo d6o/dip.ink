@@ -8,8 +8,14 @@ starts clean. NOTE: communities are persisted only after the whole build
 completes (built in memory first), so restarting before completion loses only
 cheap in-memory work.
 
+If the configured fallback is identical to phase 1 (same cap AND same
+concurrency), phase 1 runs WITHOUT a timeout: retrying the same work cannot
+help, and spending BUILD_TIMEOUT first only guarantees the job dies on
+activeDeadlineSeconds with nothing saved.
+
 Env:
-  BUILD_TIMEOUT         seconds for the phase-1 attempt (default 14400 = 4h)
+  BUILD_TIMEOUT         seconds for the phase-1 attempt (default 14400 = 4h);
+                        ignored when the fallback is identical to phase 1
   COMMUNITY_CONC        phase-1 concurrency (default 4)
   MAX_CLUSTER           if set, phase-1 ALSO caps clusters (empty = unbounded)
   BOUNDED_CONC          fallback concurrency (default 4)
@@ -195,16 +201,30 @@ async def main() -> None:
                     print(f"[communities] WARN entity resolution skipped: {e!r}", flush=True)
             _apply_patch(start_conc, start_max)
             label = "UNBOUNDED" if start_max is None else f"INITIAL(cap={start_max})"
-            print(f"[communities] starting {label} build (conc={start_conc}, timeout={build_timeout}s)...", flush=True)
-            try:
-                nodes, edges = await asyncio.wait_for(g.build_communities(), timeout=build_timeout)
-                print(f"[communities] {label} OK: {len(nodes)} communities, {len(edges)} edges", flush=True)
-            except asyncio.TimeoutError:
-                print(f"[communities] {label} timed out -> falling back to BOUNDED build", flush=True)
-                _apply_patch(bounded_conc, bounded_max)
+            # The fallback only helps if it is actually CHEAPER than phase 1.
+            # When MAX_CLUSTER/COMMUNITY_CONC already equal the bounded values,
+            # timing out just restarts identical work with no timeout, so the
+            # job burns BUILD_TIMEOUT and then still needs a full build — it gets
+            # killed by activeDeadlineSeconds having persisted nothing (state is
+            # only written once the whole build completes). Run phase 1 without a
+            # deadline instead and let activeDeadlineSeconds be the single bound.
+            degenerate_fallback = (start_max == bounded_max and start_conc == bounded_conc)
+            if degenerate_fallback:
+                print(f"[communities] starting {label} build (conc={start_conc}, no phase-1 "
+                      f"timeout: bounded fallback is identical, so retrying cannot help)...", flush=True)
                 nodes, edges = await g.build_communities()
-                print(f"[communities] BOUNDED OK: {len(nodes)} communities, {len(edges)} edges "
-                      f"(clusters capped at {bounded_max} members, conc={bounded_conc})", flush=True)
+                print(f"[communities] {label} OK: {len(nodes)} communities, {len(edges)} edges", flush=True)
+            else:
+                print(f"[communities] starting {label} build (conc={start_conc}, timeout={build_timeout}s)...", flush=True)
+                try:
+                    nodes, edges = await asyncio.wait_for(g.build_communities(), timeout=build_timeout)
+                    print(f"[communities] {label} OK: {len(nodes)} communities, {len(edges)} edges", flush=True)
+                except asyncio.TimeoutError:
+                    print(f"[communities] {label} timed out -> falling back to BOUNDED build", flush=True)
+                    _apply_patch(bounded_conc, bounded_max)
+                    nodes, edges = await g.build_communities()
+                    print(f"[communities] BOUNDED OK: {len(nodes)} communities, {len(edges)} edges "
+                          f"(clusters capped at {bounded_max} members, conc={bounded_conc})", flush=True)
         finally:
             await g.close()
     finally:
