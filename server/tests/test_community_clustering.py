@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import unittest
+from unittest import mock
 
 os.environ.setdefault("NEO4J_PASSWORD", "test-password")
 os.environ.setdefault("OPENAI_API_KEY", "test-only")
@@ -11,6 +12,7 @@ os.environ.setdefault("WIKI_MCP_BACKGROUND_REINDEX", "0")
 os.environ.setdefault("WIKI_ROOT", "/tmp/wiki-mcp-test-community-root")
 
 import ingest  # noqa: E402
+from loops import build_communities as community_builder  # noqa: E402
 
 from graphiti_core.utils.maintenance import community_operations as co  # noqa: E402
 
@@ -106,6 +108,27 @@ class CommunityClusterHydrationTest(unittest.TestCase):
     def test_hydration_concurrency_defaults_below_pool_size(self):
         self.assertLess(ingest.HYDRATE_CONC, ingest.NEO4J_MAX_POOL)
         self.assertGreaterEqual(ingest.HYDRATE_CONC, 1)
+
+
+class DestructiveRebuildGateTest(unittest.TestCase):
+    def test_rebuild_is_denied_by_default(self):
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("ALLOW_DESTRUCTIVE_COMMUNITY_REBUILD", None)
+            self.assertFalse(community_builder._destructive_rebuild_allowed())
+
+    def test_rebuild_requires_explicit_truthy_opt_in(self):
+        for value in ("1", "true", "TRUE", "yes", " Yes "):
+            with self.subTest(value=value), mock.patch.dict(
+                os.environ, {"ALLOW_DESTRUCTIVE_COMMUNITY_REBUILD": value}
+            ):
+                self.assertTrue(community_builder._destructive_rebuild_allowed())
+
+    def test_ambiguous_values_remain_denied(self):
+        for value in ("", "0", "false", "on", "approved"):
+            with self.subTest(value=value), mock.patch.dict(
+                os.environ, {"ALLOW_DESTRUCTIVE_COMMUNITY_REBUILD": value}
+            ):
+                self.assertFalse(community_builder._destructive_rebuild_allowed())
 
 
 class DegenerateFallbackTest(unittest.TestCase):

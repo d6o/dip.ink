@@ -14,6 +14,10 @@ help, and spending BUILD_TIMEOUT first only guarantees the job dies on
 activeDeadlineSeconds with nothing saved.
 
 Env:
+  ALLOW_DESTRUCTIVE_COMMUNITY_REBUILD
+                        REQUIRED explicit opt-in (1/true/yes). Graphiti deletes
+                        every existing Community node before it computes or
+                        saves replacements, so this job is fail-closed by default.
   BUILD_TIMEOUT         seconds for the phase-1 attempt (default 14400 = 4h);
                         ignored when the fallback is identical to phase 1
   COMMUNITY_CONC        phase-1 concurrency (default 4)
@@ -176,7 +180,22 @@ def _patch_ingest_suspend(suspend: bool) -> None:
               f"(running concurrently)", flush=True)
 
 
+def _destructive_rebuild_allowed() -> bool:
+    return os.environ.get("ALLOW_DESTRUCTIVE_COMMUNITY_REBUILD", "").strip().lower() in (
+        "1", "true", "yes",
+    )
+
+
 async def main() -> None:
+    if not _destructive_rebuild_allowed():
+        print(
+            "[communities] REFUSING rebuild: graphiti deletes all existing communities "
+            "before replacements are computed. Set "
+            "ALLOW_DESTRUCTIVE_COMMUNITY_REBUILD=1 only for an explicitly approved run.",
+            flush=True,
+        )
+        raise SystemExit(2)
+
     build_timeout = int(os.environ.get("BUILD_TIMEOUT", "14400"))
     start_conc = int(os.environ.get("COMMUNITY_CONC", "4"))
     max_cluster_env = os.environ.get("MAX_CLUSTER", "")

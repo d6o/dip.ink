@@ -18,6 +18,11 @@ metadata:
   namespace: dipink
 spec:
   schedule: "0 4 * * 0"
+  # Community rebuilds are expensive (multi-hour + thousands of LLM calls) and
+  # graphiti clears the current Community layer BEFORE computing replacements.
+  # Keep disabled. An approved operator run must both unsuspend this CronJob and
+  # add ALLOW_DESTRUCTIVE_COMMUNITY_REBUILD=1 to the job environment.
+  suspend: true
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 2
   failedJobsHistoryLimit: 3
