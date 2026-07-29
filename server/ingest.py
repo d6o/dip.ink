@@ -60,6 +60,7 @@ def patch_community_clustering() -> None:
     Graphiti.build_communities() picks them up. Idempotent.
     """
     from collections import defaultdict
+    from graphiti_core.helpers import semaphore_gather
     from graphiti_core.utils.maintenance import community_operations as co
     from graphiti_core.utils.maintenance.community_operations import Neighbor
 
@@ -90,9 +91,16 @@ def patch_community_clustering() -> None:
                 projection.setdefault(uuid, [])
 
             cluster_uuids = co.label_propagation(dict(projection))  # capped below
-            # hydrate clusters to EntityNode objects (matches original semantics)
-            hydrated = await asyncio.gather(
-                *[co.EntityNode.get_by_uuids(driver, c) for c in cluster_uuids]
+            # Hydrate clusters to EntityNode objects (matches original semantics).
+            # Bounded: one query per cluster, and this graph produces thousands of
+            # clusters (every edgeless entity is its own singleton). An unbounded
+            # gather opens more concurrent sessions than the driver pool has
+            # connections, so every hydration blocks until
+            # ConnectionAcquisitionTimeoutError and the whole build dies AFTER
+            # remove_communities() already wiped the previous set.
+            hydrated = await semaphore_gather(
+                *[co.EntityNode.get_by_uuids(driver, c) for c in cluster_uuids],
+                max_coroutines=HYDRATE_CONC,
             )
             all_clusters.extend(hydrated)
         return all_clusters
@@ -343,6 +351,11 @@ NEO4J_PASSWORD = os.environ["NEO4J_PASSWORD"]
 NEO4J_DATABASE = os.environ.get("NEO4J_DATABASE", "neo4j")
 NEO4J_MAX_POOL = max(1, int(os.environ.get("NEO4J_MAX_POOL", "40")))
 NEO4J_ACQ_TIMEOUT = max(1, int(os.environ.get("NEO4J_ACQ_TIMEOUT", "30")))
+# Cluster-hydration fan-out during community builds. Must stay BELOW the pool
+# size: each concurrent hydration holds one connection, so a fan-out at or above
+# NEO4J_MAX_POOL starves the pool and every query times out. Default to half the
+# pool so ingest/serving traffic still has headroom during a build.
+HYDRATE_CONC = max(1, int(os.environ.get("HYDRATE_CONC", str(max(1, NEO4J_MAX_POOL // 2)))))
 
 # Extraction LLM: any OpenAI-compatible chat endpoint. Leave LLM_BASE_URL
 # unset to use OpenAI directly (OPENAI_API_KEY + LLM_MODEL, e.g. gpt-4.1-mini);
