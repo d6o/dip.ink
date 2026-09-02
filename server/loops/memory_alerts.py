@@ -19,6 +19,7 @@ sys.path.insert(0, "/app")
 MCP_BASE = os.environ.get("MCP_BASE", os.environ.get("WIKI_MCP_BASE", "http://memory:8080")).rstrip("/")
 MAX_PENDING_AGE_H = float(os.environ.get("MAX_PENDING_AGE_HOURS", "2"))
 MAX_COMMUNITY_AGE_D = float(os.environ.get("MAX_COMMUNITY_AGE_DAYS", "8"))
+ALLOW_MISSING_COMMUNITIES = os.environ.get("ALLOW_MISSING_COMMUNITIES", "0") == "1"
 
 failures: list[str] = []
 warnings: list[str] = []
@@ -47,7 +48,11 @@ def evaluate_status(snapshot: dict) -> None:
     community_count = int(communities.get("count") or 0)
     community_age = communities.get("age_seconds")
     if community_count == 0:
-        failures.append("communities: none in graph")
+        message = "communities: none in graph"
+        if ALLOW_MISSING_COMMUNITIES:
+            warnings.append(f"{message} (allowed by ALLOW_MISSING_COMMUNITIES=1)")
+        else:
+            failures.append(message)
     elif community_age is not None and float(community_age) > MAX_COMMUNITY_AGE_D * 86400:
         failures.append(
             f"communities stale: newest is {float(community_age) / 86400:.1f}d old "

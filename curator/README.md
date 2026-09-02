@@ -42,8 +42,11 @@ pinned to `ghcr.io/d6o/dip.ink/pi-runner:v0.1.10`.
 2. runs Pi headless (`--no-session --mode json`) with the prompt from
    `PROMPT_PATH`, prefixed by a CI preamble (no git ops, no questions),
 3. renders Pi's JSON event stream as concise CI telemetry,
-4. on changes: runs `VALIDATOR`, then commits, fetches, rebases, and pushes
-   with bounded retries.
+4. on changes: runs `VALIDATOR`, then starts one repair-only Pi invocation after a validation failure,
+5. runs the validator one final time, then commits, fetches, rebases, and pushes with bounded retries.
+
+The repair invocation receives bounded validator diagnostics. It cannot add paths outside the failed batch.
+Its prompt prohibits new note processing. Provider, Git, and other failures do not start a repair invocation.
 
 The image is published as `ghcr.io/d6o/dip.ink/pi-runner` by this repo's CI
 (semver + SHA tags; no mutable `latest`).
@@ -58,6 +61,7 @@ The image is published as `ghcr.io/d6o/dip.ink/pi-runner` by this repo's CI
 | `PI_MODELS_JSON` | — | ephemeral custom provider config (OpenAI-compatible endpoints). Set as a repo Actions variable; the runner writes it to Pi's models config. |
 | `WIKI_REPO_TOKEN` | (required to push) | HTTPS token; in GitHub Actions use `x-access-token:${{ secrets.GITHUB_TOKEN }}` |
 | `VALIDATOR` | `true` | shell command that must pass before commit |
+| `VALIDATOR_DIAGNOSTIC_BYTES` | `12000` | maximum validator output bytes included in the one repair prompt |
 | `COMMIT_MESSAGE`, `GIT_USER_NAME`, `GIT_USER_EMAIL`, `GIT_BRANCH` | sensible defaults | |
 
 `PI_MODELS_JSON` is **curator/Pi-runner configuration only**. It is not a
@@ -93,10 +97,10 @@ headless agent (Claude Code, Codex CLI, ...):
   private repo and gated network are the perimeter. The curator does not scan
   or redact secrets and does not claim to make a committed secret safe.
 - **The validator owns correctness.** The agent never runs lint/index/rotate
-  itself; the runner runs the full chain and refuses to commit on failure.
+  itself. The runner permits one repair-only Pi invocation after a validation
+  failure. It runs the validator once more and refuses to commit on failure.
   Staged diff checks still reject trailing spaces and space-before-tab, but
-  tolerate harmless extra blank lines at EOF so valid Markdown batches are not
-  discarded for formatting-only drift.
+  tolerate harmless extra blank lines at EOF.
 
 ## Testing
 

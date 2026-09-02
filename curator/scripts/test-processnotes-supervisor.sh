@@ -426,3 +426,125 @@ set -e
 # Primary + fallback were both probed.
 [[ "$(cat "$TMP/probe-count")" -eq 2 ]]
 echo 'model fallback exhausted test OK'
+
+# The pi-runner gets one repair-only invocation after a validator failure.
+cat > "$TMP/fake-pi" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+count=$(cat "$FAKE_PI_COUNT" 2>/dev/null || echo 0)
+count=$((count + 1))
+echo "$count" > "$FAKE_PI_COUNT"
+prompt=${!#}
+printf '%s' "$prompt" > "$FAKE_PROMPT_DIR/$count"
+if [[ "$count" -eq 1 ]]; then
+  if [[ "$FAKE_PI_MODE" == "initial-success" ]]; then
+    printf 'repaired\n' > wiki/page.md
+  else
+    printf 'invalid\n' > wiki/page.md
+  fi
+else
+  grep -Fq 'one repair-only Pi invocation' <<<"$prompt"
+  grep -Fq 'Do not process any additional notes.' <<<"$prompt"
+  grep -Fq 'VALIDATOR-LATE-MARKER' <<<"$prompt"
+  ! grep -Fq 'VALIDATOR-EARLY-MARKER' <<<"$prompt"
+  if [[ "$FAKE_PI_MODE" == "repair-success" ]]; then
+    printf 'repaired\n' > wiki/page.md
+  else
+    printf 'still-invalid\n' > wiki/page.md
+  fi
+fi
+printf '{}\n'
+SH
+
+cat > "$TMP/fake-event-logger" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+cat
+SH
+
+cat > "$TMP/fake-validator" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+count=$(cat "$FAKE_VALIDATOR_COUNT" 2>/dev/null || echo 0)
+echo $((count + 1)) > "$FAKE_VALIDATOR_COUNT"
+if grep -Fqx 'repaired' wiki/page.md; then
+  exit 0
+fi
+echo 'VALIDATOR-EARLY-MARKER' >&2
+python3 - <<'PY' >&2
+print("x" * 200)
+PY
+echo 'VALIDATOR-LATE-MARKER' >&2
+exit 1
+SH
+chmod +x "$TMP/fake-pi" "$TMP/fake-event-logger" "$TMP/fake-validator"
+
+make_runner_repo() {
+  local name=$1
+  local origin="$TMP/$name-origin"
+  local repo="$TMP/$name"
+  git init -q --bare "$origin"
+  git clone -q "$origin" "$repo"
+  git -C "$repo" switch -q -c main
+  git -C "$repo" config user.name test
+  git -C "$repo" config user.email test@example.com
+  mkdir -p "$repo/wiki" "$repo/notes/2026-01-01-000000-untouched"
+  printf 'original\n' > "$repo/wiki/page.md"
+  printf 'task\n' > "$repo/task.md"
+  printf 'untouched\n' > "$repo/notes/2026-01-01-000000-untouched/NOTE.md"
+  git -C "$repo" add .
+  git -C "$repo" commit -q -m seed
+  git -C "$repo" push -q -u origin main
+  git -C "$origin" symbolic-ref HEAD refs/heads/main
+}
+
+run_pi_runner_fixture() {
+  local name=$1 mode=$2 expected_status=$3
+  local repo="$TMP/$name"
+  local home="$TMP/$name-home"
+  mkdir -p "$home" "$TMP/$name-prompts"
+  rm -f "$TMP/$name-pi-count" "$TMP/$name-validator-count"
+  set +e
+  (
+    cd "$repo"
+    env -u PI_CODING_AGENT_DIR \
+      HOME="$home" PROMPT_PATH="$repo/task.md" PI_API_KEY=test-only \
+      PI_BIN="$TMP/fake-pi" PI_EVENT_LOGGER="$TMP/fake-event-logger" \
+      VALIDATOR="$TMP/fake-validator" VALIDATOR_DIAGNOSTIC_BYTES=80 \
+      WIKI_REPO_TOKEN=test-only COMMIT_MESSAGE="test: $name" \
+      FAKE_PI_MODE="$mode" FAKE_PI_COUNT="$TMP/$name-pi-count" \
+      FAKE_VALIDATOR_COUNT="$TMP/$name-validator-count" \
+      FAKE_PROMPT_DIR="$TMP/$name-prompts" \
+      "$ROOT/pi-runner/src/entrypoint.sh"
+  ) >"$TMP/$name-output" 2>&1
+  local status=$?
+  set -e
+  [[ "$status" -eq "$expected_status" ]]
+}
+
+make_runner_repo runner-repair-success
+untouched_before=$(git -C "$TMP/runner-repair-success" hash-object notes/2026-01-01-000000-untouched/NOTE.md)
+run_pi_runner_fixture runner-repair-success repair-success 0
+[[ $(cat "$TMP/runner-repair-success-pi-count") -eq 2 ]]
+[[ $(cat "$TMP/runner-repair-success-validator-count") -eq 2 ]]
+[[ $(git -C "$TMP/runner-repair-success" rev-list --count HEAD) -eq 2 ]]
+grep -Fqx 'repaired' "$TMP/runner-repair-success/wiki/page.md"
+[[ "$untouched_before" == "$(git -C "$TMP/runner-repair-success" hash-object notes/2026-01-01-000000-untouched/NOTE.md)" ]]
+echo 'pi-runner validator repair and commit test OK'
+
+make_runner_repo runner-repair-fails
+run_pi_runner_fixture runner-repair-fails repair-fail 3
+[[ $(cat "$TMP/runner-repair-fails-pi-count") -eq 2 ]]
+[[ $(cat "$TMP/runner-repair-fails-validator-count") -eq 2 ]]
+[[ $(git -C "$TMP/runner-repair-fails" rev-list --count HEAD) -eq 1 ]]
+[[ $(git --git-dir="$TMP/runner-repair-fails-origin" rev-list --count main) -eq 1 ]]
+grep -Fq 'validator failed after one repair attempt' "$TMP/runner-repair-fails-output"
+echo 'pi-runner second validator failure abort test OK'
+
+make_runner_repo runner-validation-success
+run_pi_runner_fixture runner-validation-success initial-success 0
+[[ $(cat "$TMP/runner-validation-success-pi-count") -eq 1 ]]
+[[ $(cat "$TMP/runner-validation-success-validator-count") -eq 1 ]]
+[[ ! -e "$TMP/runner-validation-success-prompts/2" ]]
+[[ $(git -C "$TMP/runner-validation-success" rev-list --count HEAD) -eq 2 ]]
+echo 'pi-runner initial validator success skips repair test OK'

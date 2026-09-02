@@ -161,6 +161,10 @@ spec:
                 - {name: MCP_BASE, value: "http://memory.dipink.svc.cluster.local"}
                 - {name: MAX_PENDING_AGE_HOURS, value: "2"}
                 - {name: MAX_COMMUNITY_AGE_DAYS, value: "8"}
+                # The rebuild CronJob above is intentionally suspended. Keep
+                # zero communities visible without making every alert job fail.
+                # Stale nonzero communities remain a hard failure.
+                - {name: ALLOW_MISSING_COMMUNITIES, value: "1"}
                 - {name: NEO4J_URI, value: bolt://neo4j:7687}
                 - {name: NEO4J_USER, value: neo4j}
                 - name: NEO4J_PASSWORD

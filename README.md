@@ -201,6 +201,7 @@ See [`.env.example`](./.env.example) for the full commented list. High-level gro
 | Wiki embeddings | `WIKI_MCP_EMBED_PROVIDER`, `WIKI_MCP_OPENAI_MODEL`, `WIKI_MCP_FASTEMBED_MODEL`, reindex/retry knobs | `openai` (default) or local `fastembed` |
 | Cache / metrics | `CACHE_DIR`, `MCP_METRICS_PATH`, `ANSWER_CACHE_TTL`, `GRAPH_FUSION` | Feed status + gaps + Prometheus gauges |
 | Graph pool | `GROUP_ID`, `NEO4J_MAX_POOL`, `NEO4J_ACQ_TIMEOUT` | `GROUP_ID` is a Graphiti property partition, **not** a Neo4j database |
+| Alerts | `MAX_PENDING_AGE_HOURS`, `MAX_COMMUNITY_AGE_DAYS`, `ALLOW_MISSING_COMMUNITIES` | Missing communities fail by default. Set the last variable to `1` for a visible warning instead. |
 | Curator (memory repo CI) | `PI_API_KEY`, `PI_PROVIDER`, `PI_MODEL`, `PI_MODELS_JSON` | Set in the private memory repo's Actions secrets/variables |
 
 ## Repo map
@@ -271,6 +272,8 @@ That pack is intentionally **not** part of `deploy/k8s` so the public quickstart
 - **ServiceMonitor** (`release: monitoring`) scraping the memory Service's `/metrics` endpoint
 - **PrometheusRule** alerts for server down, wiki/graph readiness, ingest lag, blocked notes, curator backlog, graph_answer grounding errors, note-drop failures, and stale communities
 - **Grafana dashboard ConfigMap** in `monitoring` labeled `grafana_dashboard: "1"` for the dashboard sidecar
+
+The community age metric uses `+Inf` when no communities exist. The stale-community rule ignores this sentinel and alerts for finite ages above eight days.
 
 After apply, **verify the Prometheus target is ACTIVE**. A known kube-prometheus-stack sharding/relabel gotcha can drop cross-namespace ServiceMonitors even when the object exists — do not assume presence means scrape success. `memory_status` / `/api/status` and the Grafana panels should agree on core counts (inbox, blocked, ingest lag, readiness).
 

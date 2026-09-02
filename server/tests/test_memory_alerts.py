@@ -64,21 +64,37 @@ class MemoryAlertPolicyTests(unittest.TestCase):
         self.assertEqual(memory_alerts.failures, [])
         self.assertEqual(len(memory_alerts.warnings), 2)
 
-    def test_community_staleness_still_fires(self):
+    def test_stale_nonzero_communities_still_fail_when_missing_are_allowed(self):
         snapshot = healthy_status()
         snapshot["communities"] = {
             "count": 2,
             "age_seconds": 9 * 86400,
         }
-        with mock.patch.object(memory_alerts, "MAX_COMMUNITY_AGE_D", 8):
+        with (
+            mock.patch.object(memory_alerts, "MAX_COMMUNITY_AGE_D", 8),
+            mock.patch.object(memory_alerts, "ALLOW_MISSING_COMMUNITIES", True),
+        ):
             memory_alerts.evaluate_status(snapshot)
         self.assertTrue(any("communities stale" in failure for failure in memory_alerts.failures))
 
-    def test_missing_communities_still_fires(self):
+    def test_missing_communities_fail_under_default_strict_policy(self):
         snapshot = healthy_status()
         snapshot["communities"] = {"count": 0, "age_seconds": None}
-        memory_alerts.evaluate_status(snapshot)
+        with mock.patch.object(memory_alerts, "ALLOW_MISSING_COMMUNITIES", False):
+            memory_alerts.evaluate_status(snapshot)
         self.assertIn("communities: none in graph", memory_alerts.failures)
+        self.assertEqual(memory_alerts.warnings, [])
+
+    def test_missing_communities_warn_under_explicit_optional_policy(self):
+        snapshot = healthy_status()
+        snapshot["communities"] = {"count": 0, "age_seconds": None}
+        with mock.patch.object(memory_alerts, "ALLOW_MISSING_COMMUNITIES", True):
+            memory_alerts.evaluate_status(snapshot)
+        self.assertEqual(memory_alerts.failures, [])
+        self.assertEqual(
+            memory_alerts.warnings,
+            ["communities: none in graph (allowed by ALLOW_MISSING_COMMUNITIES=1)"],
+        )
 
     def test_ingest_status_error_fires_instead_of_false_quiet_health(self):
         snapshot = healthy_status()

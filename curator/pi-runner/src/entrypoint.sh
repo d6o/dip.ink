@@ -32,6 +32,7 @@ PI_MODEL="${PI_MODEL:-gpt-4.1-mini}"
 # without spending the extra latency of high thinking on routine automation.
 PI_THINKING="${PI_THINKING:-medium}"
 VALIDATOR="${VALIDATOR:-true}"
+VALIDATOR_DIAGNOSTIC_BYTES="${VALIDATOR_DIAGNOSTIC_BYTES:-12000}"
 COMMIT_MESSAGE="${COMMIT_MESSAGE:-chore(agent): update from $(basename "$PROMPT_PATH" .md)}"
 GIT_USER_NAME="${GIT_USER_NAME:-pi-runner[bot]}"
 GIT_USER_EMAIL="${GIT_USER_EMAIL:-pi-runner@localhost}"
@@ -52,6 +53,10 @@ if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
 fi
 if [[ ! -x "$PI_EVENT_LOGGER" ]]; then
   log "error: event logger is not executable: $PI_EVENT_LOGGER"
+  exit 2
+fi
+if [[ ! "$VALIDATOR_DIAGNOSTIC_BYTES" =~ ^[1-9][0-9]*$ ]]; then
+  log "error: VALIDATOR_DIAGNOSTIC_BYTES must be a positive integer"
   exit 2
 fi
 
@@ -75,7 +80,10 @@ if [[ -n "${PI_MODELS_JSON:-}" ]]; then
   chmod 600 "$PI_CODING_AGENT_DIR/models.json"
 fi
 
+VALIDATOR_LOG=$(mktemp)
+REPAIR_SCOPE=$(mktemp)
 cleanup() {
+  rm -f "$VALIDATOR_LOG" "$REPAIR_SCOPE"
   if [[ "$PI_CONFIG_IS_TEMP" -eq 1 ]]; then
     rm -rf "$PI_CODING_AGENT_DIR"
   fi
@@ -109,31 +117,50 @@ EOF
 )
 FULL_PROMPT="$PREAMBLE"$'\n'"$(cat "$PROMPT_PATH")"
 
-log "running pi provider=$PI_PROVIDER model=$PI_MODEL thinking=$PI_THINKING prompt=$PROMPT_PATH"
-set +e
-"$PI_BIN" \
-  --provider "$PI_PROVIDER" \
-  --model "$PI_MODEL" \
-  --thinking "$PI_THINKING" \
-  --no-session \
-  --mode json \
-  --approve \
-  "$FULL_PROMPT" \
-  2> >("$PI_EVENT_LOGGER" --stderr) \
-  | "$PI_EVENT_LOGGER"
-PIPE_CODES=("${PIPESTATUS[@]}")
-set -e
-PI_EXIT=${PIPE_CODES[0]}
-LOGGER_EXIT=${PIPE_CODES[1]}
+run_pi() {
+  local phase=$1 prompt=$2
+  local -a pipe_codes
+  local pi_exit logger_exit
+  log "running pi phase=$phase provider=$PI_PROVIDER model=$PI_MODEL thinking=$PI_THINKING prompt=$PROMPT_PATH"
+  set +e
+  "$PI_BIN" \
+    --provider "$PI_PROVIDER" \
+    --model "$PI_MODEL" \
+    --thinking "$PI_THINKING" \
+    --no-session \
+    --mode json \
+    --approve \
+    "$prompt" \
+    2> >("$PI_EVENT_LOGGER" --stderr) \
+    | "$PI_EVENT_LOGGER"
+  pipe_codes=("${PIPESTATUS[@]}")
+  set -e
+  pi_exit=${pipe_codes[0]}
+  logger_exit=${pipe_codes[1]}
 
-if [[ $PI_EXIT -ne 0 ]]; then
-  log "error: pi exited with code $PI_EXIT"
-  exit "$PI_EXIT"
-fi
-if [[ $LOGGER_EXIT -ne 0 ]]; then
-  log "error: event logger exited with code $LOGGER_EXIT"
-  exit 8
-fi
+  if [[ $pi_exit -ne 0 ]]; then
+    log "error: pi phase=$phase exited with code $pi_exit"
+    return "$pi_exit"
+  fi
+  if [[ $logger_exit -ne 0 ]]; then
+    log "error: event logger phase=$phase exited with code $logger_exit"
+    return 8
+  fi
+}
+
+run_validator() {
+  local phase=$1
+  local validator_exit
+  log "running validator phase=$phase: $VALIDATOR"
+  set +e
+  eval "$VALIDATOR" >"$VALIDATOR_LOG" 2>&1
+  validator_exit=$?
+  set -e
+  cat "$VALIDATOR_LOG" >&2
+  return "$validator_exit"
+}
+
+run_pi initial "$FULL_PROMPT"
 
 FINAL_STATUS=$(git status --porcelain)
 if [[ -z "$FINAL_STATUS" ]]; then
@@ -144,10 +171,35 @@ fi
 log "pi produced changes:"
 git status --short >&2
 
-log "running validator: $VALIDATOR"
-if ! eval "$VALIDATOR"; then
-  log "error: validator failed; aborting commit"
-  exit 3
+if ! run_validator initial; then
+  git status --porcelain | cut -c4- | LC_ALL=C sort -u >"$REPAIR_SCOPE"
+  REPAIR_PROMPT=$(cat <<EOF
+You are running one repair-only Pi invocation in CI.
+
+The validator rejected the existing failed batch. Repair only the current worktree diff.
+Do not process any additional notes. Do not start a new batch.
+Do not read, move, edit, delete, or create a path under notes/ unless that path is already changed.
+Do not modify a path outside the existing worktree diff.
+Do not run git commit, git push, or create or switch branches.
+Use the bounded validator diagnostics below to make the smallest required repair.
+Exit after the repair. The runner will run the validator one final time.
+
+--- validator diagnostics (last $VALIDATOR_DIAGNOSTIC_BYTES bytes) ---
+$(tail -c "$VALIDATOR_DIAGNOSTIC_BYTES" "$VALIDATOR_LOG")
+--- end validator diagnostics ---
+EOF
+)
+  run_pi validator-repair "$REPAIR_PROMPT"
+  NEW_REPAIR_PATHS=$(comm -13 "$REPAIR_SCOPE" <(git status --porcelain | cut -c4- | LC_ALL=C sort -u))
+  if [[ -n "$NEW_REPAIR_PATHS" ]]; then
+    log "error: validator repair changed paths outside the failed batch:"
+    printf '%s\n' "$NEW_REPAIR_PATHS" >&2
+    exit 3
+  fi
+  if ! run_validator repair; then
+    log "error: validator failed after one repair attempt; aborting commit"
+    exit 3
+  fi
 fi
 
 # Stage after validation so validator-generated files are included, then check

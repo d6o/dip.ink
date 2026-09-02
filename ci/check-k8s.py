@@ -11,6 +11,10 @@ import yaml
 
 PINNED_MEMORY = "ghcr.io/d6o/dip.ink/memory:v0.1.10"
 APP_NAMESPACE = "dipink"
+COMMUNITY_STALE_EXPR = (
+    "max(dipink_community_age_seconds) > 691200 "
+    "and max(dipink_community_age_seconds) < +Inf"
+)
 
 
 def load_documents(path: Path) -> list[dict[str, Any]]:
@@ -188,6 +192,18 @@ def validate_prometheus_rule(resource: dict[str, Any]) -> None:
     if missing:
         raise ValueError(
             f"PrometheusRule alert names do not expose planned families: {', '.join(missing)}"
+        )
+
+    community_rules = [rule for rule in rules if rule.get("alert") == "DipinkCommunitiesStale"]
+    if len(community_rules) != 1:
+        raise ValueError(
+            "PrometheusRule must contain exactly one DipinkCommunitiesStale alert"
+        )
+    community_expr = " ".join(str(community_rules[0].get("expr", "")).split())
+    if community_expr != COMMUNITY_STALE_EXPR:
+        raise ValueError(
+            "DipinkCommunitiesStale must alert for finite ages above 691200 seconds "
+            "and exclude the +Inf zero-community sentinel"
         )
 
 
