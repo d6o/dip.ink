@@ -1,4 +1,5 @@
 """Read-only vector adapter and explicit index-management contracts."""
+import inspect
 import os
 import unittest
 from types import SimpleNamespace
@@ -6,10 +7,11 @@ from unittest.mock import AsyncMock, patch
 
 from graphiti_core.driver.neo4j.operations.search_ops import Neo4jSearchOperations
 from graphiti_core.search.search_filters import SearchFilters
+from graphiti_core.search import search_utils
 
 from vector_indexes import discover_dimensions, manage
 from vector_search import (
-    EDGE_INDEX, NODE_INDEX, IndexedReadSearch, index_problem, install_read_search,
+    EDGE_INDEX, NODE_INDEX, IndexedReadSearch, IndexedReadSearchInterface, index_problem, install_read_search,
 )
 
 
@@ -43,19 +45,68 @@ class IndexValidationTests(unittest.TestCase):
             self.assertEqual(index_problem(row, spec), "similarity")
 
     def test_install_is_explicit_and_rollback_keeps_legacy(self):
-        driver = SimpleNamespace(_search_ops=Neo4jSearchOperations())
+        driver = SimpleNamespace(_search_ops=Neo4jSearchOperations(), search_interface=None)
         with patch.dict(os.environ, {"GRAPH_VECTOR_SEARCH": "0"}):
             install_read_search(driver)
         self.assertIs(type(driver._search_ops), Neo4jSearchOperations)
+        self.assertIsNone(driver.search_interface)
         with patch.dict(os.environ, {"GRAPH_VECTOR_SEARCH": "1", "GRAPH_VECTOR_DIMENSIONS": "1024"}):
             install_read_search(driver)
-        self.assertIsInstance(driver._search_ops, IndexedReadSearch)
+        self.assertIsInstance(driver.search_interface, IndexedReadSearchInterface)
+        self.assertIs(driver._search_ops, driver.search_interface.operations)
         self.assertEqual(driver._search_ops.dimensions, 1024)
         self.assertIs(IndexedReadSearch.edge_fulltext_search, Neo4jSearchOperations.edge_fulltext_search)
         self.assertIs(IndexedReadSearch.node_fulltext_search, Neo4jSearchOperations.node_fulltext_search)
 
 
 class VectorSearchTests(unittest.IsolatedAsyncioTestCase):
+    async def test_upstream_search_utils_routes_through_per_instance_interface(self):
+        driver = SimpleNamespace(_search_ops=Neo4jSearchOperations(), search_interface=None)
+        with patch.dict(os.environ, {"GRAPH_VECTOR_SEARCH": "1"}):
+            install_read_search(driver)
+        filters, groups, vector = SearchFilters(), ["fixture"], [1., 0.]
+        cases = {
+            "node_similarity_search": (vector, filters, groups, 3, .6),
+            "edge_similarity_search": (vector, "source", "target", filters, groups, 3, .6),
+            "node_fulltext_search": ("fixture", filters, groups, 3),
+            "edge_fulltext_search": ("fixture", filters, groups, 3),
+            "episode_fulltext_search": ("fixture", filters, groups, 3),
+        }
+        for name, args in cases.items():
+            with self.subTest(method=name):
+                method = getattr(driver.search_interface, name)
+                inspect.signature(method).bind(driver, *args)
+                with patch.object(driver._search_ops, name, AsyncMock(return_value=[])) as called:
+                    self.assertEqual(await getattr(search_utils, name)(driver, *args), [])
+                    called.assert_awaited_once_with(driver, *args)
+
+    async def test_optional_interface_methods_keep_legacy_fallback_contracts(self):
+        from graphiti_core.driver.driver import GraphProvider
+        filters, groups = SearchFilters(), ["fixture"]
+        cases = {
+            "node_bfs_search": (["origin"], filters, 2, groups, 3),
+            "edge_bfs_search": (["origin"], 2, filters, groups, 3),
+            "community_fulltext_search": ("fixture", groups, 3),
+            "community_similarity_search": ([1., 0.], groups, 3, .6),
+            "get_embeddings_for_communities": ([],),
+            "node_distance_reranker": (["other"], "center", 0),
+            "episode_mentions_reranker": ([["other"]], 0),
+        }
+        for name, args in cases.items():
+            with self.subTest(method=name):
+                driver = SimpleNamespace(provider=GraphProvider.NEO4J, search_interface=None,
+                                         fulltext_syntax="", execute_query=AsyncMock(return_value=result([])))
+                upstream = getattr(search_utils, name)
+                expected = await upstream(driver, *args)
+                legacy_calls = driver.execute_query.call_args_list[:]
+                driver.execute_query.reset_mock()
+                with patch.dict(os.environ, {"GRAPH_VECTOR_SEARCH": "1"}):
+                    install_read_search(driver)
+                with self.assertRaises(NotImplementedError):
+                    await getattr(driver.search_interface, name)(driver, *args)
+                self.assertEqual(await upstream(driver, *args), expected)
+                self.assertEqual(driver.execute_query.call_args_list, legacy_calls)
+
     async def test_ann_queries_and_upstream_projections(self):
         for spec in (NODE_INDEX, EDGE_INDEX):
             executor = SimpleNamespace(execute_query=AsyncMock(side_effect=[result([metadata(spec, 2)]), result([{}])]))

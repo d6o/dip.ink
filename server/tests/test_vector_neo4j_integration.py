@@ -17,7 +17,7 @@ from graphiti_core.search.search_filters import SearchFilters, DateFilter, Compa
 
 from vector_indexes import Executor, connection, manage
 from vector_eval import MeasuredExecutor, evaluate
-from vector_search import NODE_INDEX, EDGE_INDEX, IndexedReadSearch, index_metadata
+from vector_search import NODE_INDEX, EDGE_INDEX, IndexedReadSearch, IndexedReadSearchInterface, index_metadata
 
 
 def vector(x, y, z=0):
@@ -32,6 +32,95 @@ class VectorNeo4jIntegrationTests(unittest.IsolatedAsyncioTestCase):
     def assert_records_equal(self, left, right):
         self.assertEqual([item.model_dump() for item in left], [item.model_dump() for item in right])
 
+    async def assert_graphiti_search_routing(self, group, query_vector):
+        import graph
+        import ingest
+        from graphiti_core.embedder.client import EmbedderClient
+        from graphiti_core.search import search_utils
+        from graphiti_core.search.search_config_recipes import COMBINED_HYBRID_SEARCH_RRF
+
+        class FixtureEmbedder(EmbedderClient):
+            async def create(self, input_data):
+                return query_vector
+
+        def entity_exact(queries):
+            return [query for query in queries if "db.index.vector.query" not in query
+                    and ("vector.similarity.cosine(e.fact_embedding" in query
+                         or "vector.similarity.cosine(n.name_embedding" in query)]
+
+        snapshots = {}
+        for enabled in ("0", "1"):
+            with patch.dict(os.environ, {"GRAPH_VECTOR_SEARCH": enabled}), patch.object(graph, "_g", None):
+                client = await graph._get_graph()
+                try:
+                    self.assertIs(client.clients.driver, client.driver)
+                    if enabled == "1":
+                        self.assertIsInstance(client.driver.search_interface, IndexedReadSearchInterface)
+                    else:
+                        self.assertIsNone(client.driver.search_interface)
+                    self.assertIsNone(ingest.DipInkNeo4jDriver.search_interface)
+                    client.embedder = client.clients.embedder = FixtureEmbedder()
+                    await client.build_indices_and_constraints()
+                    queries = []
+                    execute = client.driver.execute_query
+
+                    async def trace(cypher, **params):
+                        queries.append(str(cypher))
+                        return await execute(cypher, **params)
+
+                    with patch.object(client.driver, "execute_query", side_effect=trace):
+                        for limit in (3, 8):
+                            config = COMBINED_HYBRID_SEARCH_RRF.model_copy(deep=True)
+                            config.limit = limit
+                            queries.clear()
+                            result = await client.search_("private", config, [group])
+                            if enabled == "1":
+                                for procedure in ("queryNodes", "queryRelationships"):
+                                    self.assertTrue(any("db.index.vector." + procedure in q for q in queries))
+                                self.assertEqual(entity_exact(queries), [], "Enabled search must not scan all entity embeddings")
+                                self.assertEqual(result.model_dump(), snapshots[limit])
+                            else:
+                                self.assertFalse(any("db.index.vector.query" in q for q in queries))
+                                self.assertEqual(len(entity_exact(queries)), 2)
+                                snapshots[limit] = result.model_dump()
+                            self.assertTrue(any("db.index.fulltext.queryNodes" in q for q in queries))
+                            self.assertTrue(any("db.index.fulltext.queryRelationships" in q for q in queries))
+                            self.assertTrue(result.edges and result.nodes and result.episodes and result.communities)
+                            self.assertTrue(any(edge.invalid_at is not None for edge in result.edges))
+                            self.assertTrue(all(edge.episodes == [group + "-episode"] for edge in result.edges))
+                            self.assertTrue(all(item.group_id == group for items in
+                                                (result.edges, result.nodes, result.episodes, result.communities) for item in items))
+                            self.assertEqual(len(result.edge_reranker_scores), len(result.edges))
+                            self.assertEqual(len(result.node_reranker_scores), len(result.nodes))
+
+                        # The real search path must still use exact fallback for explicit filters.
+                        filters = SearchFilters(node_labels=["Person"], invalid_at=[[
+                            DateFilter(comparison_operator=ComparisonOperator.is_null),
+                        ]])
+                        queries.clear()
+                        filtered = await client.search_("private", config, [group], search_filter=filters)
+                        self.assertFalse(any("db.index.vector.query" in q for q in queries))
+                        self.assertEqual(len(entity_exact(queries)), 2)
+                        self.assertTrue(filtered.edges)
+                        self.assertTrue(all(edge.invalid_at is None for edge in filtered.edges))
+                        if enabled == "1":
+                            self.assertEqual(filtered.model_dump(), snapshots["filtered"])
+                        else:
+                            snapshots["filtered"] = filtered.model_dump()
+
+                        # BFS uses different argument orders for nodes and edges.
+                        for kind in ("node", "edge"):
+                            method = getattr(search_utils, kind + "_bfs_search")
+                            args = ([group + "-00"], SearchFilters(), 1) if kind == "node" else ([group + "-00"], 1, SearchFilters())
+                            bfs = await method(client.driver, *args, [group], 3)
+                            records = sorted((item.model_dump() for item in bfs), key=lambda row: row["uuid"])
+                            if enabled == "1":
+                                self.assertEqual(records, snapshots[kind + "_bfs"])
+                            else:
+                                snapshots[kind + "_bfs"] = records
+                finally:
+                    await graph.close()
+
     async def test_index_lifecycle_filters_provenance_and_quality(self):
         driver = connection()
         executor = MeasuredExecutor(driver, os.environ.get("NEO4J_DATABASE", "neo4j"), 60)
@@ -44,12 +133,14 @@ class VectorNeo4jIntegrationTests(unittest.IsolatedAsyncioTestCase):
             acquired = True
             for group, near in zip(groups, (False, True)):
                 await executor.execute_query(
-                    "CREATE (:Episodic {uuid: $episode, name: 'fixture-note-slug', group_id: $group}) "
+                    "CREATE (:Episodic {uuid: $episode, name: 'fixture-note-slug', group_id: $group, "
+                    "content: 'private episode', source: 'text', source_description: 'fixture', "
+                    "entity_edges: [], created_at: datetime(), valid_at: datetime()}) "
                     "CREATE (:Entity:Person {uuid: $sink, name: 'private sink', summary: 'private', "
                     "group_id: $group, created_at: datetime()})", episode=group + "-episode", sink=group + "-sink", group=group,
                 )
                 rows = [{"uuid": group + f"-{i:02d}", "vector": vector(1 if near else .8, .01 * i if near else .6, .02 * i),
-                         "superseded": i % 2 == 1} for i in range(12)]
+                         "superseded": i % 2 == 1} for i in range(24)]
                 await executor.execute_query(
                     "UNWIND $rows AS row MATCH (sink:Entity {uuid: $sink}) "
                     "CREATE (n:Entity:Person {uuid: row.uuid, name: 'private name', summary: 'private summary', "
@@ -61,6 +152,11 @@ class VectorNeo4jIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     "expired_at: CASE WHEN row.superseded THEN datetime('2021-01-02T00:00:00Z') ELSE null END}]->(sink)",
                     rows=rows, group=group, sink=group + "-sink", episode=group + "-episode",
                 )
+            await executor.execute_query(
+                "CREATE (:Community {uuid: $uuid, name: 'private community', summary: 'private summary', "
+                "group_id: $group, created_at: datetime(), name_embedding: $vector})",
+                uuid=groups[0] + "-community", group=groups[0], vector=vector(1., 0.),
+            )
             exact = Neo4jSearchOperations()
             indexed = IndexedReadSearch()
             query_vector = vector(1., 0.)
@@ -105,7 +201,7 @@ class VectorNeo4jIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(edge.target_node_uuid, groups[0] + "-sink")
                 self.assertIsNotNone(edge.valid_at)
             # Both groups are returned only when both are requested.
-            combined = await indexed.edge_similarity_search(executor, query_vector, None, None, filters, groups, 20, .6)
+            combined = await indexed.edge_similarity_search(executor, query_vector, None, None, filters, groups, 40, .6)
             self.assertEqual({e.group_id for e in combined}, set(groups))
             self.assertEqual(await indexed.edge_similarity_search(executor, query_vector, None, None, filters, [], 3), [])
             # Score filtering uses exact cosine and the upstream strict > predicate.
@@ -136,6 +232,7 @@ class VectorNeo4jIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 return row
             with patch("vector_search.index_metadata", side_effect=offline):
                 self.assert_records_equal(await indexed.edge_similarity_search(*args), expected)
+            await self.assert_graphiti_search_routing(groups[0], query_vector)
             # Reject an incompatible managed index; never silently replace it.
             await executor.execute_query(f"DROP INDEX {EDGE_INDEX.name}")
             await executor.execute_query(

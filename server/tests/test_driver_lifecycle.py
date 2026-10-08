@@ -77,7 +77,7 @@ class DriverConstructionTests(unittest.TestCase):
     def test_vector_adapter_is_installed_only_on_graph_read_client(self):
         import graph
         from types import SimpleNamespace
-        from vector_search import IndexedReadSearch
+        from vector_search import IndexedReadSearchInterface
         from graphiti_core.driver.neo4j.operations.search_ops import Neo4jSearchOperations
 
         async def run():
@@ -88,7 +88,10 @@ class DriverConstructionTests(unittest.TestCase):
                 client = SimpleNamespace(driver=read_driver, close=mock.AsyncMock())
                 with mock.patch.object(graph, "_g", None), mock.patch.object(graph, "build_graphiti", return_value=client):
                     self.assertIs(await graph._get_graph(), client)
-                    self.assertIsInstance(read_driver._search_ops, IndexedReadSearch)
+                    self.assertIsInstance(read_driver.search_interface, IndexedReadSearchInterface)
+                    self.assertIs(read_driver.search_interface.operations, read_driver._search_ops)
+                    self.assertIsNone(ingestion_driver.search_interface)
+                    self.assertIsNone(ingest.DipInkNeo4jDriver.search_interface)
                     self.assertIs(type(ingestion_driver._search_ops), Neo4jSearchOperations)
                 await ingestion_driver.close()
                 await read_driver.close()

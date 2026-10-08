@@ -11,6 +11,7 @@ from dataclasses import dataclass
 
 from graphiti_core.driver.driver import GraphProvider
 from graphiti_core.driver.neo4j.operations.search_ops import Neo4jSearchOperations
+from graphiti_core.driver.search_interface.search_interface import SearchInterface
 from graphiti_core.driver.record_parsers import entity_edge_from_record, entity_node_from_record
 from graphiti_core.graph_queries import get_vector_cosine_func_query
 from graphiti_core.models.edges.edge_db_queries import get_entity_edge_return_query
@@ -163,13 +164,52 @@ class IndexedReadSearch(Neo4jSearchOperations):
                                       group_ids, limit, min_score, source_node_uuid, target_node_uuid)
 
 
+class IndexedReadSearchInterface(SearchInterface):
+    """Bridge the Graphiti 0.29.2 legacy interface to indexed read operations.
+
+    Fulltext methods are required and use the upstream Neo4j operations.
+    Optional BFS, community, embedding, and reranker methods retain the base
+    NotImplementedError contract, so search_utils uses its unchanged legacy
+    implementations. Operations rerankers return nodes, not the legacy tuple.
+    """
+
+    operations: IndexedReadSearch
+
+    async def node_similarity_search(self, driver, search_vector, search_filter,
+                                     group_ids=None, limit=10, min_score=0.6):
+        return await self.operations.node_similarity_search(
+            driver, search_vector, search_filter, group_ids, limit, min_score,
+        )
+
+    async def edge_similarity_search(self, driver, search_vector, source_node_uuid,
+                                     target_node_uuid, search_filter, group_ids=None,
+                                     limit=10, min_score=0.6):
+        return await self.operations.edge_similarity_search(
+            driver, search_vector, source_node_uuid, target_node_uuid,
+            search_filter, group_ids, limit, min_score,
+        )
+
+    async def node_fulltext_search(self, driver, query, search_filter, group_ids=None, limit=10):
+        return await self.operations.node_fulltext_search(driver, query, search_filter, group_ids, limit)
+
+    async def edge_fulltext_search(self, driver, query, search_filter, group_ids=None, limit=10):
+        return await self.operations.edge_fulltext_search(driver, query, search_filter, group_ids, limit)
+
+    async def episode_fulltext_search(self, driver, query, search_filter, group_ids=None, limit=10):
+        return await self.operations.episode_fulltext_search(driver, query, search_filter, group_ids, limit)
+
+
 def install_read_search(driver):
     """Opt in only on the graph read client; disabled means unchanged upstream code."""
     if os.environ.get("GRAPH_VECTOR_SEARCH", "0").lower() not in {"1", "true", "yes"}:
         return
     raw_dimensions = os.environ.get("GRAPH_VECTOR_DIMENSIONS", "").strip()
-    driver._search_ops = IndexedReadSearch(
+    adapter = IndexedReadSearch(
         overfetch=int(os.environ.get("GRAPH_VECTOR_OVERFETCH", "20")),
         max_candidates=int(os.environ.get("GRAPH_VECTOR_MAX_CANDIDATES", "2000")),
         dimensions=int(raw_dimensions) if raw_dimensions else None,
     )
+    # Graphiti.search_ uses search_interface, not search_ops. Set only instance
+    # attributes; ingestion drivers retain the class-level None interface.
+    driver.search_interface = IndexedReadSearchInterface(operations=adapter)
+    driver._search_ops = adapter
