@@ -201,6 +201,7 @@ See [`.env.example`](./.env.example) for the full commented list. High-level gro
 | Wiki embeddings | `WIKI_MCP_EMBED_PROVIDER`, `WIKI_MCP_OPENAI_MODEL`, `WIKI_MCP_FASTEMBED_MODEL`, reindex/retry knobs | `openai` (default) or local `fastembed` |
 | Cache / metrics | `CACHE_DIR`, `MCP_METRICS_PATH`, `ANSWER_CACHE_TTL`, `GRAPH_FUSION` | Feed status + gaps + Prometheus gauges |
 | Graph pool | `GROUP_ID`, `NEO4J_MAX_POOL`, `NEO4J_ACQ_TIMEOUT` | `GROUP_ID` is a Graphiti property partition, **not** a Neo4j database |
+| Optional vector retrieval | `GRAPH_VECTOR_SEARCH`, `GRAPH_VECTOR_DIMENSIONS`, `GRAPH_VECTOR_OVERFETCH`, `GRAPH_VECTOR_MAX_CANDIDATES` | Graph reads only; disabled by default. See [index administration and quality checks](server/VECTOR_RETRIEVAL.md). |
 | Alerts | `MAX_PENDING_AGE_HOURS`, `MAX_COMMUNITY_AGE_DAYS`, `ALLOW_MISSING_COMMUNITIES` | Missing communities fail by default. Set the last variable to `1` for a visible warning instead. |
 | Curator (memory repo CI) | `PI_API_KEY`, `PI_PROVIDER`, `PI_MODEL`, `PI_MODELS_JSON` | Set in the private memory repo's Actions secrets/variables |
 

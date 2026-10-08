@@ -59,6 +59,8 @@ One process, one MCP endpoint (`/mcp`), all tools. One image, three roles:
 
 ## graph side behavior
 
+Optional [indexed vector retrieval](VECTOR_RETRIEVAL.md) accelerates graph reads on Neo4j 5.26.2. Explicit commands create and validate indexes; quality checks gate enablement. Ingestion matching remains exact.
+
 - **Fusion**: `graph_search` merges the wiki index's semantic hits into its
   packet via a direct in-process call (episodes are BM25-only in graphiti; the
   wiki's embeddings cover that blind spot). Best-effort — an unready index

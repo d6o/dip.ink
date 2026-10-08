@@ -83,6 +83,7 @@ jobs:
           GROUP_ID: ci-${{ github.run_id }}-${{ github.run_attempt }}
           # Lane A opt-in flag (authoritative). Aliases kept for compatibility.
           NEO4J_INTEGRATION: "1"
+          NEO4J_VECTOR_TEST_ISOLATED: "1"
           RUN_NEO4J_INTEGRATION: "1"
           DIPINK_RUN_NEO4J_INTEGRATION: "1"
         run: bash ci/run-neo4j-integration.sh

@@ -74,6 +74,27 @@ class DriverConstructionTests(unittest.TestCase):
         self.assertNotIn("password", captured)
         driver_cls.assert_called_once()
 
+    def test_vector_adapter_is_installed_only_on_graph_read_client(self):
+        import graph
+        from types import SimpleNamespace
+        from vector_search import IndexedReadSearch
+        from graphiti_core.driver.neo4j.operations.search_ops import Neo4jSearchOperations
+
+        async def run():
+            with mock.patch.dict(os.environ, {"GRAPH_VECTOR_SEARCH": "1"}), \
+                 mock.patch("neo4j.AsyncGraphDatabase.driver", return_value=_FakeAsyncDriver()):
+                ingestion_driver = ingest.DipInkNeo4jDriver("bolt://fixture:7687", "fixture", "fixture")
+                read_driver = ingest.DipInkNeo4jDriver("bolt://fixture:7687", "fixture", "fixture")
+                client = SimpleNamespace(driver=read_driver, close=mock.AsyncMock())
+                with mock.patch.object(graph, "_g", None), mock.patch.object(graph, "build_graphiti", return_value=client):
+                    self.assertIs(await graph._get_graph(), client)
+                    self.assertIsInstance(read_driver._search_ops, IndexedReadSearch)
+                    self.assertIs(type(ingestion_driver._search_ops), Neo4jSearchOperations)
+                await ingestion_driver.close()
+                await read_driver.close()
+
+        asyncio.run(run())
+
     def test_group_builder_does_not_clone_or_treat_group_as_database(self):
         sentinel = object()
         with mock.patch.object(ingest, "build_graphiti", return_value=sentinel) as build:

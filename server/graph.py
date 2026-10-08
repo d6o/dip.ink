@@ -40,6 +40,7 @@ from starlette.routing import Route
 # the roomy Neo4j pool, patch_community_clustering).
 from chat_fallback import OrderedModelFallback, is_recoverable_provider_error, parse_model_ladder
 from ingest import DEFAULT_GROUP_ID, build_graphiti
+from vector_search import install_read_search
 from graphiti_core.search.search_config_recipes import COMBINED_HYBRID_SEARCH_RRF
 
 from core import log, mcp, now_iso as _now_iso, record_query as _record_query
@@ -94,7 +95,13 @@ async def _get_graph():
     global _g
     if _g is None:
         log.info("building Graphiti client (extraction LLM from env, OpenAI embedder, bounded pool)")
-        _g = build_graphiti()
+        client = build_graphiti()
+        try:
+            install_read_search(client.driver)
+        except Exception:
+            await client.close()
+            raise
+        _g = client
     return _g
 
 
