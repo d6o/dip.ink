@@ -9,7 +9,7 @@ from typing import Any
 
 import yaml
 
-PINNED_MEMORY = "ghcr.io/d6o/dip.ink/memory:v0.1.11"
+PINNED_MEMORY = "ghcr.io/d6o/dip.ink/memory:v0.1.12"
 APP_NAMESPACE = "dipink"
 COMMUNITY_STALE_EXPR = (
     "max(dipink_community_age_seconds) > 691200 "
