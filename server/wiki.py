@@ -250,11 +250,18 @@ def read_frontmatter_and_body(content: str, *, strict: bool = False) -> tuple[di
         if strict:
             mark = getattr(exc, "problem_mark", None)
             location = f" at note line {mark.line + 2}, column {mark.column + 1}" if mark else ""
-            problem = " ".join(str(getattr(exc, "problem", "invalid YAML")).split())[:140]
-            raise ValueError(
-                f"Invalid YAML frontmatter{location}: {problem}. "
-                "Fix the indentation or quote values that contain ': '."
-            ) from None
+            # Parser messages can contain submitted tag or alias names.
+            # Use static reasons so the error cannot disclose note excerpts.
+            if isinstance(exc, yaml.constructor.ConstructorError):
+                problem = "unsupported YAML type or key"
+                advice = "Use standard YAML types and scalar mapping keys."
+            elif isinstance(exc, yaml.composer.ComposerError):
+                problem = "invalid YAML alias or document"
+                advice = "Use one YAML document and define each alias before use."
+            else:
+                problem = "invalid YAML syntax"
+                advice = "Fix the indentation or quote values that contain ': '."
+            raise ValueError(f"Invalid YAML frontmatter{location}: {problem}. {advice}") from None
         return {}, body
     # Empty or comment-only frontmatter retains the metadata backfill behavior.
     if fm is None and not any(line.strip() and not line.lstrip().startswith("#") for line in raw.splitlines()):

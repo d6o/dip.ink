@@ -214,6 +214,22 @@ class NoteFrontmatterValidationTests(unittest.TestCase):
             wiki.source_note_markdown("2026-10-09-120000-example", note)
         self.assertNotIn("sensitive-content", str(error.exception))
 
+    def test_yaml_errors_do_not_include_tag_or_alias_names(self):
+        cases = (
+            ("topic: !private-payload-marker value", "standard YAML types"),
+            ("topic: *private-payload-marker", "define each alias"),
+            ("topic: [value, private-payload-marker: : invalid]", "quote values"),
+        )
+        for raw, advice in cases:
+            note = f"---\n{raw}\n---\nbody"
+            with self.subTest(raw=raw):
+                self.assert_rejected_without_changes(note, advice)
+                with self.assertRaises(ValueError) as error:
+                    wiki.read_frontmatter_and_body(note, strict=True)
+                self.assertIn("note line 2", str(error.exception))
+                self.assertNotIn("private-payload-marker", str(error.exception))
+                self.assertNotIn(raw, str(error.exception))
+
     def test_valid_capture_inputs_reach_commit_and_preserve_metadata(self):
         inputs = (
             ("body", {}),
