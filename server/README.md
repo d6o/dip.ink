@@ -61,6 +61,7 @@ One process, one MCP endpoint (`/mcp`), all tools. One image, three roles:
   frontmatter, and missing closing delimiters before Git or file changes.
   It returns `ok: false`, `error_code: invalid_frontmatter`, and a bounded error.
   YAML errors include a line and column when available, but no note excerpts.
+  Excessive depth returns a static error with advice to reduce depth.
   Error reasons and advice use static text. Quote values that
   contain `: `, such as `session: "Fix: the note API"`.
   Missing `captured`, `session`, or `topic` fields retain deterministic defaults.

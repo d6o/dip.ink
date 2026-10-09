@@ -214,6 +214,23 @@ class NoteFrontmatterValidationTests(unittest.TestCase):
             wiki.source_note_markdown("2026-10-09-120000-example", note)
         self.assertNotIn("sensitive-content", str(error.exception))
 
+    def test_excessive_nesting_returns_static_error_without_changes(self):
+        notes = (
+            "---\nsession: " + "[" * 1000 + "x\n---\nbody",
+            "---\nsession: " + "[" * 1000 + "private-payload-marker" + "]" * 1000 + "\n---\nbody",
+            "---\nsession: " + "{nested: " * 1000 + "private-payload-marker" + "}" * 1000 + "\n---\nbody",
+        )
+        self.assertEqual(len(notes[0].encode("utf-8")), 1023)
+        for note in notes:
+            with self.subTest(length=len(note)):
+                self.assert_rejected_without_changes(note, "Reduce nested lists or mappings")
+                with self.assertRaises(ValueError) as error:
+                    wiki.read_frontmatter_and_body(note, strict=True)
+                self.assertNotIn("private-payload-marker", str(error.exception))
+                fm, body = wiki.read_frontmatter_and_body(note)
+                self.assertEqual(fm, {})
+                self.assertEqual(body, "body")
+
     def test_yaml_errors_do_not_include_tag_or_alias_names(self):
         cases = (
             ("topic: !private-payload-marker value", "standard YAML types"),

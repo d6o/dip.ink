@@ -246,6 +246,13 @@ def read_frontmatter_and_body(content: str, *, strict: bool = False) -> tuple[di
     body = normalized[opening.end() + closing.end():]
     try:
         fm = yaml.safe_load(raw)
+    except RecursionError:
+        if strict:
+            raise ValueError(
+                "Frontmatter exceeds the parser depth limit. "
+                "Reduce nested lists or mappings. Then retry."
+            ) from None
+        return {}, body
     except yaml.YAMLError as exc:
         if strict:
             mark = getattr(exc, "problem_mark", None)
