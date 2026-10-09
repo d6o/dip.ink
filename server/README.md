@@ -84,13 +84,18 @@ Optional [indexed vector retrieval](VECTOR_RETRIEVAL.md) accelerates graph reads
   `not_found`/errors never are.
 - **Current-state answers**: an uninvalidated graph fact is not proof of the
   latest deployment or live state. For an explicit latest/current question,
-  `graph_answer` reads bounded bodies from the three newest dated wiki hits.
-  It accepts only the newest dated evidence with packet support. It returns
-  `as_of`, states that live state is not verified, sets `escalate: true`, and
-  never returns high confidence. If the newest evidence is unsupported, it
-  returns `not_found`. Current-state answers bypass the answer cache because
-  new wiki captures can appear before graph ingest. Dated historical questions
-  use the normal packet.
+  `graph_answer` keeps wiki hits within 0.1 of the top semantic score. It then
+  reads bounded excerpts from the three newest dated hits. Each excerpt keeps
+  the durable claims and the lines with release identifiers.
+  Only supported sources within 24 hours of the newest relevant evidence reach
+  the distiller. Older facts and undated summaries do not reach it. Every
+  version, tag, digest, or commit in the answer must occur in the cited text.
+  The answer returns `as_of` (the newest cited source time), states that live
+  state is not verified, sets `escalate: true`, and never has high confidence.
+  Unsupported evidence returns `not_found`. Current-state answers bypass the
+  answer cache because new wiki captures can appear before graph ingest. Query
+  events record `temporal_mode`. Dated historical questions use the normal
+  packet.
 - **Provenance**: search edges carry episode UUIDs; a single batched Cypher
   resolves them to note slugs so every fact cites its source note.
 - **Isolation**: `GROUP_ID` is a Graphiti **property partition**, not a Neo4j
