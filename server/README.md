@@ -82,6 +82,15 @@ Optional [indexed vector retrieval](VECTOR_RETRIEVAL.md) accelerates graph reads
   property the daily healthcheck probes). Real answers are cached for
   `ANSWER_CACHE_TTL` (default 1h) and invalidated by ingest watermarks;
   `not_found`/errors never are.
+- **Current-state answers**: an uninvalidated graph fact is not proof of the
+  latest deployment or live state. For an explicit latest/current question,
+  `graph_answer` reads bounded bodies from the three newest dated wiki hits.
+  It accepts only the newest dated evidence with packet support. It returns
+  `as_of`, states that live state is not verified, sets `escalate: true`, and
+  never returns high confidence. If the newest evidence is unsupported, it
+  returns `not_found`. Current-state answers bypass the answer cache because
+  new wiki captures can appear before graph ingest. Dated historical questions
+  use the normal packet.
 - **Provenance**: search edges carry episode UUIDs; a single batched Cypher
   resolves them to note slugs so every fact cites its source note.
 - **Isolation**: `GROUP_ID` is a Graphiti **property partition**, not a Neo4j
