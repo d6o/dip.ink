@@ -119,6 +119,49 @@ class TemporalGroundingTests(unittest.TestCase):
                 self.assertEqual(action, "rejected")
                 self.assertIsNone(result["answer"])
 
+    def test_older_release_inside_the_window_is_rejected(self):
+        packet = evidence()
+        packet["semantic_notes"].append({
+            "name": PREVIOUS, "content": "Memory uses v0.1.14 at bf386f8.",
+        })
+        packet = current_packet(packet)
+        self.assertEqual(packet["temporal_context"]["eligible_sources"], [PREVIOUS, LATEST])
+        result, grounded, action = graph._validate_distilled_answer(
+            answer("Memory v0.1.14 at bf386f8", [PREVIOUS]), packet)
+        self.assertEqual(action, "rejected")
+        self.assertIsNone(result["answer"])
+        self.assertFalse(grounded)
+
+    def test_stale_values_quoted_inside_an_eligible_note_are_rejected(self):
+        packet = evidence()
+        packet["semantic_notes"] = [{
+            "name": PREVIOUS,
+            "content": "pi-runner:v0.1.14 is published.\nCaution: graph_answer said memory v0.1.6 and pi-runner v0.1.11.",
+        }]
+        result, _, action = graph._validate_distilled_answer(
+            answer("Memory v0.1.6; pi-runner v0.1.11", [PREVIOUS]), current_packet(packet))
+        self.assertEqual(action, "rejected")
+        self.assertIsNone(result["answer"])
+
+    def test_value_check_matches_whole_tokens(self):
+        for text in ("Memory v0.1.1", "Memory uses v0.1.15 at 02216b.", "Memory at 2216b4c"):
+            with self.subTest(text=text):
+                result, _, action = graph._validate_distilled_answer(answer(text, [LATEST]), current_packet())
+                if "02216b." in text:
+                    # Six hex characters are not a release identifier; v0.1.15 still matches.
+                    self.assertEqual(action, "downgraded")
+                else:
+                    self.assertEqual(action, "rejected")
+                    self.assertIsNone(result["answer"])
+
+    def test_short_commit_matches_a_full_commit_prefix(self):
+        packet = evidence()
+        packet["semantic_notes"][0]["content"] = "Memory uses v0.1.15 at revision 02216b4ce731246b4b6966d5db974fa9b3af6ea1."
+        result, grounded, _ = graph._validate_distilled_answer(
+            answer("Memory uses v0.1.15 at 02216b4.", [LATEST]), current_packet(packet))
+        self.assertTrue(grounded)
+        self.assertIn("02216b4", result["answer"])
+
     def test_recorded_answer_has_date_and_never_claims_live_verification(self):
         result, grounded, action = graph._validate_distilled_answer(
             answer("Memory uses v0.1.15 at 02216b4", [LATEST]), current_packet())
