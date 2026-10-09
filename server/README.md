@@ -89,7 +89,12 @@ Optional [indexed vector retrieval](VECTOR_RETRIEVAL.md) accelerates graph reads
   the durable claims and the lines with release identifiers.
   Only supported sources within 24 hours of the newest relevant evidence reach
   the distiller. Older facts and undated summaries do not reach it. Every
-  version, tag, digest, or commit in the answer must occur in the cited text.
+  version, tag, digest, or commit in the answer must be a whole identifier in
+  the cited text. A short commit can match the start of a full commit. The
+  server rejects a version when an eligible source at or after the citation
+  records a higher version of the same major.minor line. This also rejects
+  stale versions that a note quotes. It can reject two products that share one
+  version line at different patches; that failure returns `not_found`.
   The answer returns `as_of` (the newest cited source time), states that live
   state is not verified, sets `escalate: true`, and never has high confidence.
   Unsupported evidence returns `not_found`. Current-state answers bypass the
