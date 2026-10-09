@@ -59,6 +59,8 @@ class TemporalIntentTests(unittest.TestCase):
             "Which service is running on 8080 now?",
             "What is deployed now after the 2026-10-08 release?",
             "What version now after the 2026-10-08 release?",
+            # Present-tense pin questions are stale-prone current state.
+            "What image tags does the CI workflow use?",
         ):
             with self.subTest(question=question):
                 self.assertTrue(graph._current_state_question(question))
