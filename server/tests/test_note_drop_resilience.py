@@ -157,6 +157,104 @@ class ArchiveAwareIdempotencyTests(unittest.TestCase):
         self.assertEqual(parse.call_count, first_count)
 
 
+class NoteFrontmatterValidationTests(unittest.TestCase):
+    def assert_rejected_without_changes(self, note_md: str, error_text: str):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            git_dir = root / ".git"
+            git_dir.mkdir()
+            lock = git_dir / "index.lock"
+            lock.write_text("keep", encoding="utf-8")
+            before = sorted(p.relative_to(root) for p in root.rglob("*"))
+            with mock.patch.object(wiki, "WIKI_REPO_URL", "https://git.example/wiki.git"), \
+                 mock.patch.object(wiki, "WIKI_REPO_TOKEN", "configured"), \
+                 mock.patch.object(wiki, "WIKI_ROOT", root), \
+                 mock.patch.object(wiki, "_run_git") as run_git, \
+                 mock.patch.object(wiki, "_clear_stale_git_locks") as clear_locks, \
+                 mock.patch.object(wiki, "find_existing_note_drop") as find_existing, \
+                 mock.patch.object(wiki, "_repo_lock") as repo_lock:
+                result = wiki._wiki_note_drop_impl("invalid-frontmatter", note_md)
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["error_code"], "invalid_frontmatter")
+            self.assertIn(error_text, result["error"])
+            self.assertLessEqual(len(result["error"]), 300)
+            run_git.assert_not_called()
+            clear_locks.assert_not_called()
+            find_existing.assert_not_called()
+            repo_lock.__enter__.assert_not_called()
+            self.assertEqual(before, sorted(p.relative_to(root) for p in root.rglob("*")))
+            self.assertEqual(lock.read_text(encoding="utf-8"), "keep")
+
+    def test_indented_topic_is_rejected_before_side_effects(self):
+        note = "---\ncaptured: 2026-10-09T04:17:59Z\nsession: batomon release\n topic: sync diagnosis\n---\nbody"
+        self.assert_rejected_without_changes(note, "note line 4, column 7")
+
+    def test_unquoted_colon_has_actionable_error(self):
+        note = "---\nsession: fix: the thing\n---\nbody"
+        self.assert_rejected_without_changes(note, "quote values")
+
+    def test_non_mapping_frontmatter_is_rejected(self):
+        for raw in ("- captured\n- session", "text", "null", "false", "42", "!!set {a: null}"):
+            with self.subTest(raw=raw):
+                self.assert_rejected_without_changes(f"---\n{raw}\n---\nbody", "must be a YAML mapping")
+
+    def test_unclosed_frontmatter_is_rejected(self):
+        for note in ("---\nsession: s\nbody", "---"):
+            with self.subTest(note=note):
+                self.assert_rejected_without_changes(note, "closing '---' line")
+
+    def test_crlf_and_bom_do_not_bypass_validation(self):
+        note = "---\nsession: s\n topic: t\n---\nbody"
+        self.assert_rejected_without_changes("\ufeff" + note.replace("\n", "\r\n"), "Invalid YAML")
+
+    def test_large_invalid_value_does_not_echo_the_note(self):
+        note = "---\nsession: " + "sensitive-content " * 1000 + ": invalid\n---\nbody"
+        self.assert_rejected_without_changes(note, "Invalid YAML")
+        with self.assertRaisesRegex(ValueError, "Invalid YAML") as error:
+            wiki.source_note_markdown("2026-10-09-120000-example", note)
+        self.assertNotIn("sensitive-content", str(error.exception))
+
+    def test_valid_capture_inputs_reach_commit_and_preserve_metadata(self):
+        inputs = (
+            ("body", {}),
+            ("---\n{}\n---\nbody", {}),
+            ("---\ntopic: provided topic\n---\nbody", {"topic": "provided topic"}),
+            ("---\ncapture-session: legacy session\ncapture-topic: legacy topic\n---\nbody",
+             {"session": "legacy session", "topic": "legacy topic"}),
+            ("---\ncaptured: '2026-10-09T12:00:00Z'\nsession: provided session\ntopic: provided topic\n---\nbody",
+             {"captured": "2026-10-09T12:00:00Z", "session": "provided session", "topic": "provided topic"}),
+        )
+        for note, expected in inputs:
+            with self.subTest(note=note), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                (root / ".git").mkdir()
+                with mock.patch.object(wiki, "WIKI_REPO_URL", "https://git.example/wiki.git"), \
+                     mock.patch.object(wiki, "WIKI_REPO_TOKEN", "configured"), \
+                     mock.patch.object(wiki, "WIKI_ROOT", root), \
+                     mock.patch.object(wiki, "_run_git", return_value=mock.Mock(stdout="abc123")) as run_git, \
+                     mock.patch.object(wiki, "_clear_stale_git_locks"), \
+                     mock.patch.object(wiki, "find_existing_note_drop", return_value=None):
+                    result = wiki._wiki_note_drop_impl("valid-frontmatter", note)
+                self.assertTrue(result["ok"], result)
+                calls = [call.args[0] for call in run_git.call_args_list]
+                self.assertIn("commit", calls)
+                self.assertIn("push", calls)
+                stored = root / result["path"] / result["source_file"]
+                fm, body = wiki.read_frontmatter_and_body(stored.read_text(encoding="utf-8"))
+                for key in ("captured", "session", "topic"):
+                    self.assertTrue(str(fm[key]).strip())
+                for key, value in expected.items():
+                    self.assertEqual(fm[key], value)
+                self.assertIn("body", body)
+
+    def test_index_reads_tolerate_damaged_frontmatter(self):
+        for raw in ("- a", "null", "session: s\n topic: t"):
+            with self.subTest(raw=raw):
+                fm, body = wiki.read_frontmatter_and_body(f"---\n{raw}\n---\nbody")
+                self.assertEqual(fm, {})
+                self.assertEqual(body, "body")
+
+
 class EventLoopSafetyTests(unittest.TestCase):
     def test_note_drop_tool_runs_impl_off_the_event_loop(self):
         """The async MCP tool must delegate to a worker thread so a slow git op
@@ -219,9 +317,23 @@ class SourceNoteMarkdownBackfillTests(unittest.TestCase):
         self.assertEqual(fm["captured"], "2026-07-18T23:01:39Z")
         self.assertEqual(fm["topic"], "thunderstormwatch domain registered")
 
+    def test_empty_frontmatter_retains_backfill(self):
+        for raw in ("", "# capture metadata omitted\n", "{}\n"):
+            with self.subTest(raw=raw):
+                fm = self.parse(wiki.source_note_markdown(self.FOLDER, f"---\n{raw}---\nbody"))
+                self.assert_batchable(fm)
+
+    def test_crlf_frontmatter_preserves_provided_metadata(self):
+        note = "---\ncaptured: 2026-10-09T12:00:00Z\nsession: a session\ntopic: a topic\n---\nbody"
+        fm = self.parse(wiki.source_note_markdown(self.FOLDER, "\ufeff" + note.replace("\n", "\r\n")))
+        self.assertEqual(fm["session"], "a session")
+        self.assertEqual(fm["topic"], "a topic")
+        self.assertEqual(str(fm["captured"]), "2026-10-09 12:00:00+00:00")
+
     def test_capture_alias_keys_are_promoted(self):
         note = (
             "---\n"
+            "capture-captured: '2026-07-18T20:00:00Z'\n"
             "capture-session: contentmachine daily content run\n"
             "capture-topic: kotlin comparacoes gap map\n"
             "---\n\nbody\n"
@@ -232,6 +344,8 @@ class SourceNoteMarkdownBackfillTests(unittest.TestCase):
         self.assertEqual(fm["topic"], "kotlin comparacoes gap map")
         self.assertNotIn("capture-session", fm)
         self.assertNotIn("capture-topic", fm)
+        self.assertNotIn("capture-captured", fm)
+        self.assertEqual(fm["captured"], "2026-07-18T20:00:00Z")
 
     def test_missing_captured_only_is_backfilled_and_rest_preserved(self):
         note = (

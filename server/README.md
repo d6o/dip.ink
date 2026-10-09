@@ -56,6 +56,15 @@ One process, one MCP endpoint (`/mcp`), all tools. One image, three roles:
   idempotent across both the live inbox and archived source-note paths,
   serialized against the git working tree, and rolled back if the push fails.
   There is **no automatic secret scanning** — agents must never submit secrets.
+- **Capture frontmatter**: explicit frontmatter must contain valid YAML and a
+  mapping of keys to values. The API rejects invalid YAML, non-mapping
+  frontmatter, and missing closing delimiters before Git or file changes.
+  It returns `ok: false`, `error_code: invalid_frontmatter`, and a bounded error.
+  YAML errors include a line and column when available. Quote values that
+  contain `: `, such as `session: "Fix: the note API"`.
+  Missing `captured`, `session`, or `topic` fields retain deterministic defaults.
+  The API also preserves the legacy `capture-captured`, `capture-session`, and
+  `capture-topic` aliases. Empty or absent frontmatter remains valid.
 
 ## graph side behavior
 

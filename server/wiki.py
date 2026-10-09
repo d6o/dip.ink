@@ -231,15 +231,39 @@ def is_skipped(p: Path) -> bool:
     return False
 
 
-def read_frontmatter_and_body(content: str) -> tuple[dict, str]:
-    m = re.match(r"^---\n(.*?)\n---\n?", content, re.DOTALL)
-    if not m:
+def read_frontmatter_and_body(content: str, *, strict: bool = False) -> tuple[dict, str]:
+    """Parse capture input strictly; tolerate damaged pages for index reads."""
+    normalized = content.removeprefix("\ufeff").replace("\r\n", "\n")
+    opening = re.match(r"^---[ \t]*(?:\n|$)", normalized)
+    if not opening:
         return {}, content
+    closing = re.search(r"^---[ \t]*(?:\n|$)", normalized[opening.end():], re.MULTILINE)
+    if not closing:
+        if strict:
+            raise ValueError("Frontmatter has no closing '---' line. Add the closing delimiter before the note body.")
+        return {}, content
+    raw = normalized[opening.end():opening.end() + closing.start()]
+    body = normalized[opening.end() + closing.end():]
     try:
-        fm = yaml.safe_load(m.group(1)) or {}
-    except yaml.YAMLError:
+        fm = yaml.safe_load(raw)
+    except yaml.YAMLError as exc:
+        if strict:
+            mark = getattr(exc, "problem_mark", None)
+            location = f" at note line {mark.line + 2}, column {mark.column + 1}" if mark else ""
+            problem = " ".join(str(getattr(exc, "problem", "invalid YAML")).split())[:140]
+            raise ValueError(
+                f"Invalid YAML frontmatter{location}: {problem}. "
+                "Fix the indentation or quote values that contain ': '."
+            ) from None
+        return {}, body
+    # Empty or comment-only frontmatter retains the metadata backfill behavior.
+    if fm is None and not any(line.strip() and not line.lstrip().startswith("#") for line in raw.splitlines()):
         fm = {}
-    return fm, content[m.end():]
+    if not isinstance(fm, dict):
+        if strict:
+            raise ValueError("Frontmatter must be a YAML mapping of keys to values, not a list, scalar, or null.")
+        return {}, body
+    return fm, body
 
 
 def hash_body(body: str) -> str:
@@ -285,7 +309,7 @@ def source_note_markdown(folder_name: str, note_md: str, capture_hash: str | Non
     auto-curator can move it into `wiki/sources/notes/YYYY/MM/DD/...` without
     creating a second stub page.
     """
-    fm, body = read_frontmatter_and_body(note_md)
+    fm, body = read_frontmatter_and_body(note_md, strict=True)
     date = folder_name[:10]
     tags = fm.get("tags") if isinstance(fm.get("tags"), list) else []
     clean_tags = []
@@ -1206,6 +1230,11 @@ def _wiki_note_drop_impl(
     input_body_bytes = note_md.encode("utf-8")
     if len(input_body_bytes) > NOTE_BODY_MAX:
         return {"ok": False, "error": f"note_md is {len(input_body_bytes)} bytes; max {NOTE_BODY_MAX}"}
+    # Reject explicit invalid metadata before locks, Git, or file changes.
+    try:
+        read_frontmatter_and_body(note_md, strict=True)
+    except ValueError as exc:
+        return {"ok": False, "error_code": "invalid_frontmatter", "error": str(exc)[:300]}
 
     text_atts = attachments or {}
     bin_atts = binary_attachments or {}
@@ -1383,6 +1412,10 @@ async def wiki_note_drop(
             with `captured: <ISO 8601 datetime>`, `session: <one-line context>`,
             and `topic: <1-5 word topic>`. `wiki_note_drop` wraps that capture
             metadata in wiki-compatible source-page frontmatter when needed.
+            Explicit frontmatter must contain valid YAML and must be a mapping.
+            Invalid input returns an error before Git or file changes. Quote
+            values that contain ': '. Missing metadata uses deterministic
+            defaults; legacy `capture-*` aliases remain supported.
         attachments: optional text attachments as {filename: content}. Use for
             `.log`, `.txt`, `.yaml`, `.json`, `.conf`, etc. Each ≤ 256 KB.
         binary_attachments: optional binary attachments as {filename: base64-content}.
