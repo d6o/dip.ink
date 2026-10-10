@@ -232,10 +232,9 @@ panels = [
     ),
     timeseries(
         23,
-        "graph_answer cache and grounding",
+        "graph_answer grounding",
         [
-            target("sum by (cached) (rate(dipink_graph_answer_total[5m]))", "cached={{cached}}", "A"),
-            target("sum by (grounded) (rate(dipink_graph_answer_total[5m]))", "grounded={{grounded}}", "B"),
+            target("sum by (grounded) (rate(dipink_graph_answer_total[5m]))", "grounded={{grounded}}", "A"),
         ],
         16,
         30,

@@ -37,7 +37,6 @@ x-graph-env: &graph-env
 x-server-env: &server-env
   <<: *graph-env
   GRAPH_FUSION: ${GRAPH_FUSION:-1}
-  ANSWER_CACHE_TTL: ${ANSWER_CACHE_TTL:-3600}
   WIKI_MCP_EMBED_PROVIDER: ${WIKI_MCP_EMBED_PROVIDER:-openai}
   WIKI_MCP_OPENAI_MODEL: ${WIKI_MCP_OPENAI_MODEL:-text-embedding-3-small}
   WIKI_MCP_FASTEMBED_MODEL: ${WIKI_MCP_FASTEMBED_MODEL:-BAAI/bge-small-en-v1.5}

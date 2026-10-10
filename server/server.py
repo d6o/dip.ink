@@ -211,7 +211,6 @@ def _collect_usage_status() -> dict:
     events = [event for event in core.read_metrics(1) if not event.get("test")]
     by_tool: dict[str, int] = {}
     errors = 0
-    cache_hits = 0
     confidence = {name: 0 for name in ("high", "medium", "low", "not_found", "error")}
     for event in events:
         tool = str(event.get("tool") or "other")
@@ -220,14 +219,11 @@ def _collect_usage_status() -> dict:
         conf = str(event.get("confidence") or "")
         if conf in confidence:
             confidence[conf] += 1
-        if event.get("cached") is True:
-            cache_hits += 1
         if conf == "error" or event.get("outcome") == "error" or bool(event.get("error")):
             errors += 1
     return {
         "total": len(events),
         "errors": errors,
-        "cache_hits": cache_hits,
         "by_tool": dict(sorted(by_tool.items())),
         "graph_answer_confidence": confidence,
     }
@@ -355,7 +351,6 @@ async def collect_status() -> dict:
         usage = {
             "total": 0,
             "errors": 0,
-            "cache_hits": 0,
             "by_tool": {},
             "graph_answer_confidence": {
                 name: 0 for name in ("high", "medium", "low", "not_found", "error")

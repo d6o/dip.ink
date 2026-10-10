@@ -210,7 +210,7 @@ See [`.env.example`](./.env.example) for the full commented list. High-level gro
 | Extraction ladder | `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`, `LLM_MODEL_LADDER` | Ordered fallbacks; empty ladder inherits `LLM_MODEL` |
 | Distiller | `DISTILL_BASE_URL`, `DISTILL_API_KEY`, `DISTILL_MODEL`, `DISTILL_MODEL_LADDER` | Optional independent overrides for `graph_answer` |
 | Wiki embeddings | `WIKI_MCP_EMBED_PROVIDER`, `WIKI_MCP_OPENAI_MODEL`, `WIKI_MCP_FASTEMBED_MODEL`, reindex/retry knobs | `openai` (default) or local `fastembed` |
-| Cache / metrics | `CACHE_DIR`, `MCP_METRICS_PATH`, `ANSWER_CACHE_TTL`, `GRAPH_FUSION` | Feed status + gaps + Prometheus gauges |
+| Cache / metrics | `CACHE_DIR`, `MCP_METRICS_PATH`, `GRAPH_FUSION` | Feed status + gaps + Prometheus gauges |
 | Graph pool | `GROUP_ID`, `NEO4J_MAX_POOL`, `NEO4J_ACQ_TIMEOUT` | `GROUP_ID` is a Graphiti property partition, **not** a Neo4j database |
 | Optional vector retrieval | `GRAPH_VECTOR_SEARCH`, `GRAPH_VECTOR_DIMENSIONS`, `GRAPH_VECTOR_OVERFETCH`, `GRAPH_VECTOR_MAX_CANDIDATES` | Graph reads only; disabled by default. See [index administration and quality checks](server/VECTOR_RETRIEVAL.md). |
 | Alerts | `MAX_PENDING_AGE_HOURS` | Pending note-to-episode lag. A quiet memory with zero pending notes is healthy. |
@@ -286,7 +286,7 @@ That pack is intentionally **not** part of `deploy/k8s` so the public quickstart
 
 After apply, **verify the Prometheus target is ACTIVE**. A known kube-prometheus-stack sharding/relabel gotcha can drop cross-namespace ServiceMonitors even when the object exists — do not assume presence means scrape success. `memory_status` / `/api/status` and the Grafana panels should agree on core counts (inbox, blocked, ingest lag, readiness).
 
-Metric labels are bounded-cardinality only (`tool`, `outcome`, `confidence`, `cached`, `grounded`, `phase`, `version`). No raw query text, note slug, page name, or other private value is used as a label.
+Metric labels are bounded-cardinality only (`tool`, `outcome`, `confidence`, `grounded`, `phase`, `version`). No raw query text, note slug, page name, or other private value is used as a label.
 
 ## Releases and CI
 

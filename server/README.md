@@ -79,9 +79,7 @@ Optional [indexed vector retrieval](VECTOR_RETRIEVAL.md) accelerates graph reads
 - **Distiller** (`graph_answer`): one plain chat completion, temperature 0,
   answering **only from the packet** — invented provenance is discarded, and
   unsupported answers return `not_found` + `escalate` (the no-hallucination
-  property the daily healthcheck probes). Real answers are cached for
-  `ANSWER_CACHE_TTL` (default 1h) and invalidated by ingest watermarks;
-  `not_found`/errors never are.
+  property the daily healthcheck probes). Each call assembles a new packet.
 - **Current-state answers**: an uninvalidated graph fact is not proof of the
   latest deployment or live state. For an explicit latest/current question,
   `graph_answer` keeps wiki hits within 0.1 of the top semantic score. It then
@@ -97,10 +95,8 @@ Optional [indexed vector retrieval](VECTOR_RETRIEVAL.md) accelerates graph reads
   version line at different patches; that failure returns `not_found`.
   The answer returns `as_of` (the newest cited source time), states that live
   state is not verified, sets `escalate: true`, and never has high confidence.
-  Unsupported evidence returns `not_found`. Current-state answers bypass the
-  answer cache because new wiki captures can appear before graph ingest. Query
-  events record `temporal_mode`. Dated historical questions use the normal
-  packet.
+  Unsupported evidence returns `not_found`. Query events record `temporal_mode`.
+  Dated historical questions use the normal packet.
 - **Provenance**: search edges carry episode UUIDs; a single batched Cypher
   resolves them to note slugs so every fact cites its source note.
 - **Isolation**: `GROUP_ID` is a Graphiti **property partition**, not a Neo4j
@@ -132,7 +128,7 @@ Optional [indexed vector retrieval](VECTOR_RETRIEVAL.md) accelerates graph reads
 | `MCP_ALLOWED_HOSTS` | `localhost,127.0.0.1,memory` | add your ingress hostname (DNS-rebinding protection) |
 | `GROUP_ID` | `main` | Graphiti group property partition (not a Neo4j database) |
 | `NOTES_ROOT` / `INBOX_ROOTS` | `/notes/wiki/sources/notes` / `/notes/notes` | where notes live in the ingest checkout |
-| `ANSWER_CACHE_TTL` / `GRAPH_FUSION` | `3600` / `1` | answer cache TTL; wiki fusion toggle |
+| `GRAPH_FUSION` | `1` | wiki fusion toggle |
 
 ## HTTP surface
 

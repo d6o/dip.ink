@@ -15,7 +15,6 @@ data:
   DISTILL_MODEL: ""
   DISTILL_MODEL_LADDER: ""
   GRAPH_FUSION: "1"
-  ANSWER_CACHE_TTL: "3600"
 
   # Wiki embedding/index configuration.
   WIKI_MCP_EMBED_PROVIDER: "openai"

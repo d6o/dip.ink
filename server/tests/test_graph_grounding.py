@@ -102,14 +102,12 @@ class GroundingValidationTests(unittest.TestCase):
         })
 
 
-class AnswerCacheFreshnessTests(unittest.TestCase):
+class AnswerGroundingEventTests(unittest.TestCase):
     def setUp(self):
-        graph._ANSWER_CACHE.clear()
-        graph._ANSWER_CACHE_WATERMARK = None
         for key in graph.GROUNDING_COUNTS:
             graph.GROUNDING_COUNTS[key] = 0
 
-    def test_new_ingest_watermark_invalidates_cached_answer(self):
+    def test_repeated_questions_assemble_a_fresh_packet(self):
         async def run() -> None:
             distill_result = {
                 "answer": "42",
@@ -118,10 +116,6 @@ class AnswerCacheFreshnessTests(unittest.TestCase):
                 "escalate": False,
             }
             with mock.patch.object(
-                graph,
-                "_graph_ingest_watermark",
-                new=mock.AsyncMock(side_effect=["watermark-1", "watermark-1", "watermark-2"]),
-            ), mock.patch.object(
                 graph,
                 "_assemble_packet",
                 new=mock.AsyncMock(return_value=packet()),
@@ -132,25 +126,19 @@ class AnswerCacheFreshnessTests(unittest.TestCase):
             ) as distill, mock.patch.object(graph, "_record_query") as record:
                 first = await graph._graph_answer_impl("What is the answer?")
                 second = await graph._graph_answer_impl(" what is the answer ")
-                third = await graph._graph_answer_impl("What is the answer?")
 
             self.assertEqual(first, second)
-            self.assertEqual(second, third)
             self.assertEqual(assemble.await_count, 2)
             self.assertEqual(distill.await_count, 2)
             events = [call.args[0] for call in record.call_args_list]
-            self.assertEqual([event["cached"] for event in events], [False, True, False])
             self.assertTrue(all(event["grounded"] for event in events))
-            self.assertEqual(len(graph._ANSWER_CACHE), 1)
-            self.assertIn(("what is the answer", "watermark-2"), graph._ANSWER_CACHE)
+            self.assertTrue(all("cached" not in event for event in events))
 
         asyncio.run(run())
 
-    def test_rejected_answer_is_counted_and_never_cached(self):
+    def test_rejected_answer_is_counted(self):
         async def run() -> None:
             with mock.patch.object(
-                graph, "_graph_ingest_watermark", new=mock.AsyncMock(return_value="w1")
-            ), mock.patch.object(
                 graph, "_assemble_packet", new=mock.AsyncMock(return_value=packet())
             ), mock.patch.object(
                 graph,
@@ -166,32 +154,10 @@ class AnswerCacheFreshnessTests(unittest.TestCase):
 
             self.assertEqual(result["confidence"], "not_found")
             self.assertEqual(graph.GROUNDING_COUNTS["rejected"], 1)
-            self.assertEqual(graph._ANSWER_CACHE, {})
             event = record.call_args.args[0]
             self.assertFalse(event["grounded"])
             self.assertEqual(event["grounding_action"], "rejected")
-
-        asyncio.run(run())
-
-    def test_watermark_query_is_group_scoped(self):
-        class Driver:
-            def __init__(self):
-                self.query = ""
-                self.params = {}
-
-            async def execute_query(self, query, **params):
-                self.query = query
-                self.params = params
-                return [{"watermark": "2026-07-18T12:00:00Z"}], None, None
-
-        async def run() -> None:
-            driver = Driver()
-            fake_graph = type("G", (), {"driver": driver})()
-            with mock.patch.object(graph, "_get_graph", new=mock.AsyncMock(return_value=fake_graph)):
-                watermark = await graph._graph_ingest_watermark()
-            self.assertEqual(watermark, "2026-07-18T12:00:00Z")
-            self.assertIn("group_id: $group_id", driver.query)
-            self.assertEqual(driver.params["group_id"], graph.DEFAULT_GROUP_ID)
+            self.assertNotIn("cached", event)
 
         asyncio.run(run())
 

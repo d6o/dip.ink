@@ -104,7 +104,6 @@ class ObservabilityContractTests(unittest.TestCase):
             "ts": time.time(),
             "tool": "graph_answer",
             "confidence": "high",
-            "cached": False,
             "grounded": False,
             "grounding_action": "rejected",
             "assemble_ms": 10,
@@ -132,7 +131,7 @@ class ObservabilityContractTests(unittest.TestCase):
             "dipink_tool_duration_seconds": {"tool", "le"},
             "dipink_note_drop": {"outcome"},
             "dipink_graph_answer_duration_seconds": {"phase", "le"},
-            "dipink_graph_answer": {"confidence", "cached", "grounded"},
+            "dipink_graph_answer": {"confidence", "grounded"},
         }
         for sample_name, metric_samples in samples.items():
             if not sample_name.startswith("dipink_"):

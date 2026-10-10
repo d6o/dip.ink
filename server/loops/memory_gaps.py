@@ -118,10 +118,8 @@ def main() -> None:
     ga_compression = (round(ga_med_packet / ga_med_answer, 1)
                       if ga_med_answer and ga_med_packet else None)
     ga_not_found = [e for e in graph_answers if e.get("confidence") in ("not_found", "error")]
-    ga_cached = sum(1 for e in graph_answers if e.get("cached"))
     ga_stats = {
         "calls": len(graph_answers),
-        "cache_hits": ga_cached,
         "confidence_distribution": dict(ga_conf),
         "median_answer_tokens_est": ga_med_answer,
         "median_packet_tokens_est": ga_med_packet,

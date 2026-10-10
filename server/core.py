@@ -95,7 +95,7 @@ NOTE_DROP = Counter(
 )
 GRAPH_ANSWER = Counter(
     "dipink_graph_answer_total", "Graph-answer outcomes",
-    ["confidence", "cached", "grounded"], registry=PROMETHEUS_REGISTRY,
+    ["confidence", "grounded"], registry=PROMETHEUS_REGISTRY,
 )
 GRAPH_ANSWER_DURATION = Histogram(
     "dipink_graph_answer_duration_seconds", "Graph-answer phase duration", ["phase"],
@@ -140,11 +140,8 @@ for _tool in sorted(_KNOWN_METRIC_TOOLS):
 for _outcome in sorted(_NOTE_OUTCOMES):
     NOTE_DROP.labels(outcome=_outcome)
 for _confidence in sorted(_CONFIDENCE):
-    for _cached in ("false", "true"):
-        for _grounded in ("false", "true", "unknown"):
-            GRAPH_ANSWER.labels(
-                confidence=_confidence, cached=_cached, grounded=_grounded
-            )
+    for _grounded in ("false", "true", "unknown"):
+        GRAPH_ANSWER.labels(confidence=_confidence, grounded=_grounded)
 for _phase in ("assemble", "distill"):
     GRAPH_ANSWER_DURATION.labels(phase=_phase)
 
@@ -183,14 +180,13 @@ def observe_tool_event(event: dict) -> None:
             NOTE_DROP.labels(outcome=note_outcome).inc()
         if tool == "graph_answer":
             conf = confidence if confidence in _CONFIDENCE else "error"
-            cached = "true" if event.get("cached") is True else "false"
             grounded_value = event.get("grounded")
             grounded = (
                 "true" if grounded_value is True
                 else "false" if grounded_value is False
                 else "unknown"
             )
-            GRAPH_ANSWER.labels(confidence=conf, cached=cached, grounded=grounded).inc()
+            GRAPH_ANSWER.labels(confidence=conf, grounded=grounded).inc()
             GRAPH_ANSWER_DURATION.labels(phase="assemble").observe(
                 max(0.0, float(event.get("assemble_ms") or 0.0) / 1000.0)
             )

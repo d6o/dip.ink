@@ -93,7 +93,6 @@ class MemoryStatusTests(unittest.TestCase):
         usage = {
             "total": 4,
             "errors": 1,
-            "cache_hits": 2,
             "by_tool": {"graph_answer": 4},
             "graph_answer_confidence": {
                 "high": 2, "medium": 0, "low": 0, "not_found": 1, "error": 1
@@ -154,7 +153,7 @@ class MemoryStatusTests(unittest.TestCase):
                  mock.patch.object(server, "_collect_repo_status", return_value=repo), \
                  mock.patch.object(server, "_graph_status", new=mock.AsyncMock(return_value=graph_result)), \
                  mock.patch.object(server, "_collect_usage_status", return_value={
-                     "total": 0, "errors": 0, "cache_hits": 0, "by_tool": {},
+                     "total": 0, "errors": 0, "by_tool": {},
                      "graph_answer_confidence": {
                          "high": 0, "medium": 0, "low": 0, "not_found": 0, "error": 0
                      },

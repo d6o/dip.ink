@@ -1553,24 +1553,13 @@ data:
                 "uid": "prometheus"
               },
               "editorMode": "code",
-              "expr": "sum by (cached) (rate(dipink_graph_answer_total[5m]))",
-              "legendFormat": "cached={{cached}}",
-              "range": true,
-              "refId": "A"
-            },
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "prometheus"
-              },
-              "editorMode": "code",
               "expr": "sum by (grounded) (rate(dipink_graph_answer_total[5m]))",
               "legendFormat": "grounded={{grounded}}",
               "range": true,
-              "refId": "B"
+              "refId": "A"
             }
           ],
-          "title": "graph_answer cache and grounding",
+          "title": "graph_answer grounding",
           "type": "timeseries"
         },
         {

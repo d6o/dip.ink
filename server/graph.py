@@ -70,15 +70,6 @@ DISTILL_MODEL_LADDER = parse_model_ladder(
     or "gpt-4.1-mini"
 )
 
-# Answer cache: factual questions repeat (same question 3× in 90 min on day
-# one) and the graph only changes on ingest ticks, so a short TTL is safe.
-# Only real answers are cached — not_found/error always re-run.
-ANSWER_CACHE_TTL = float(os.environ.get("ANSWER_CACHE_TTL", "3600"))  # seconds; 0 disables
-_ANSWER_CACHE: dict[tuple[str, str], tuple[float, dict, int]] = {}
-# key=(normalized question, ingest watermark) -> (expires_at, result, packet_tokens_est)
-_ANSWER_CACHE_MAX = 500
-_ANSWER_CACHE_WATERMARK: str | None = None
-
 # Bounded deterministic grounding outcomes, also emitted on each query event.
 GROUNDING_COUNTS = {
     "accepted": 0,
@@ -105,28 +96,6 @@ async def _get_graph():
             raise
         _g = client
     return _g
-
-
-async def _graph_ingest_watermark() -> str | None:
-    """Latest explicit episode completion time for answer-cache freshness.
-
-    ``"none"`` is a stable cache version for an empty/legacy-only graph. Query
-    failures return None and disable caching rather than risk serving stale data.
-    """
-    try:
-        g = await _get_graph()
-        rows, _, _ = await g.driver.execute_query(
-            "MATCH (e:Episodic {group_id: $group_id}) "
-            "RETURN toString(max(e.dipink_completed_at)) AS watermark",
-            group_id=DEFAULT_GROUP_ID,
-            routing_="r",
-        )
-        if not rows or not rows[0].get("watermark"):
-            return "none"
-        return str(rows[0]["watermark"])
-    except Exception as error:  # noqa: BLE001
-        log.warning("graph_answer: ingest watermark unavailable: %s", type(error).__name__)
-        return None
 
 
 def _valid_at_window(edge) -> dict:
@@ -697,42 +666,11 @@ def _validate_distilled_answer(parsed: dict, packet: dict) -> tuple[dict, bool, 
 
 
 async def _graph_answer_impl(question: str, is_test: bool = False) -> dict:
-    """Shared implementation with deterministic grounding and fresh caching."""
-    global _ANSWER_CACHE_WATERMARK
+    """Shared implementation with deterministic grounding."""
     t0 = time.time()
     q = (question or "").strip()
-    normalized = " ".join(q.lower().split()).rstrip("?!. ")
 
     current_state = _current_state_question(q)
-    # Wiki captures can change before the graph watermark changes.
-    # Current-state questions must read a new packet instead of a cached answer.
-    watermark = None if current_state else await _graph_ingest_watermark()
-    cache_key: tuple[str, str] | None = None
-    if ANSWER_CACHE_TTL > 0 and watermark is not None:
-        if _ANSWER_CACHE_WATERMARK != watermark:
-            _ANSWER_CACHE.clear()
-            _ANSWER_CACHE_WATERMARK = watermark
-        cache_key = (normalized, watermark)
-        hit = _ANSWER_CACHE.get(cache_key)
-        if hit and hit[0] > time.time():
-            result = dict(hit[1])
-            _count_grounding("accepted")
-            event = {
-                "ts": time.time(), "at": _now_iso(), "source": "mcp", "tool": "graph_answer",
-                "question": q[:200], "confidence": result["confidence"],
-                "n_sources": len(result.get("sources") or []), "escalate": result["escalate"],
-                "answer_tokens_est": len(result.get("answer") or "") // 4,
-                "packet_tokens_est": hit[2], "assemble_ms": 0, "distill_ms": 0,
-                "cached": True, "grounded": True, "grounding_action": "accepted",
-                "temporal_mode": "default",
-            }
-            if is_test:
-                event["test"] = True
-            _record_query(event)
-            return result
-        if hit:
-            _ANSWER_CACHE.pop(cache_key, None)
-
     packet: dict | None = None
     try:
         packet = await _assemble_packet(
@@ -765,23 +703,6 @@ async def _graph_answer_impl(question: str, is_test: bool = False) -> dict:
     distill_ms = int((time.time() - t1) * 1000)
     _count_grounding(grounding_action)
 
-    # Cache only grounded, non-null answers and bind them to the explicit graph
-    # ingest watermark. Abstentions/errors always re-run.
-    if (
-        cache_key is not None
-        and grounded
-        and result.get("answer")
-        and result["confidence"] in ("high", "medium", "low")
-    ):
-        if len(_ANSWER_CACHE) >= _ANSWER_CACHE_MAX:
-            oldest = min(_ANSWER_CACHE, key=lambda candidate: _ANSWER_CACHE[candidate][0])
-            _ANSWER_CACHE.pop(oldest, None)
-        _ANSWER_CACHE[cache_key] = (
-            time.time() + ANSWER_CACHE_TTL,
-            dict(result),
-            packet_tokens_est,
-        )
-
     event = {
         "ts": time.time(), "at": _now_iso(), "source": "mcp", "tool": "graph_answer",
         "question": q[:200], "confidence": result["confidence"],
@@ -790,7 +711,6 @@ async def _graph_answer_impl(question: str, is_test: bool = False) -> dict:
         "packet_tokens_est": packet_tokens_est,
         "assemble_ms": assemble_ms,
         "distill_ms": distill_ms,
-        "cached": False,
         "grounded": grounded,
         "grounding_action": grounding_action,
         "temporal_mode": "current" if current_state else "default",
