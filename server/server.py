@@ -4,8 +4,7 @@ Assembles the two tool modules onto a single FastMCP instance + HTTP app:
 
   wiki.py   wiki_search / wiki_get / wiki_backlinks / wiki_note_drop
             (+ /api/search, /api/page, /api/backlinks, /api/reindex, /live)
-  graph.py  graph_answer / graph_search / graph_get_note / graph_entity /
-            graph_current_facts / graph_changes
+  graph.py  graph_answer / graph_search / graph_get_note / graph_changes
             (+ /api/answer, /api/graph/search, /api/graph/health)
 
 Shared here: /mcp (the single MCP transport), /health (combined readiness),
@@ -202,8 +201,8 @@ def _collect_repo_status() -> dict:
 KNOWN_USAGE_TOOLS = {
     "search", "get", "backlinks",  # legacy wiki event names
     "wiki_search", "wiki_get", "wiki_backlinks", "wiki_note_drop",
-    "graph_answer", "graph_search", "graph_get_note", "graph_entity",
-    "graph_current_facts", "graph_changes", "memory_status",
+    "graph_answer", "graph_search", "graph_get_note",
+    "graph_changes", "memory_status",
 }
 
 

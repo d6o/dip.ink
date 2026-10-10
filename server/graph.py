@@ -14,10 +14,6 @@ shape. Registers on the shared FastMCP instance (core.mcp):
     won a two-judge retrieval eval).
   - graph_get_note(slug): fetch a source note by its timestamp slug (the
     provenance path — every fact traces to one).
-  - graph_entity(name): a known entity + its CURRENT facts + attributes
-    (bitemporal: superseded facts excluded). Graphiti's unique capability.
-  - graph_current_facts(subject): what's true NOW about a subject — the temporal
-    angle plain document search has no answer to.
 
 Read-only. Writes (note capture) stay with wiki_note_drop → git (source of
 truth); the ingest cron turns dropped notes into the graph. This module just
@@ -773,66 +769,6 @@ async def graph_get_note(slug: str) -> dict | None:
     r = rows[0]
     _record_query({"ts": time.time(), "at": _now_iso(), "source": "mcp", "tool": "graph_get_note", "slug": slug, "hit": True, "chars": len(r.get("content") or "")})
     return {"slug": slug, "content": r.get("content") or "", "valid_at": str(r.get("valid_at") or "")}
-
-
-@mcp.tool()
-async def graph_entity(name: str) -> dict | None:
-    """Look up a known ENTITY by name and return its summary + its CURRENT facts
-    (superseded facts excluded) + attributes. Use this when you already know the
-    thing (e.g. a service, tool, decision) and want its current state and related
-    facts — the bitemporal angle wiki_search can't provide."""
-    g = await _get_graph()
-    rows, _, _ = await g.driver.execute_query(
-        "MATCH (n:Entity {group_id: $group_id}) WHERE toLower(n.name) = toLower($name) "
-        "RETURN n.name AS name, n.summary AS summary, n.group_id AS group_id LIMIT 1",
-        name=name,
-        group_id=DEFAULT_GROUP_ID,
-    )
-    if not rows:
-        _record_query({"ts": time.time(), "at": _now_iso(), "source": "mcp", "tool": "graph_entity", "name": name, "hit": False})
-        return None
-    n = rows[0]
-    # current facts touching this entity (invalid_at null = still current)
-    frows, _, _ = await g.driver.execute_query(
-        "MATCH (n:Entity {group_id: $group_id})-[r]-(m:Entity {group_id: $group_id}) "
-        "WHERE toLower(n.name) = toLower($name) "
-        "AND r.group_id = $group_id AND r.fact IS NOT NULL AND r.invalid_at IS NULL "
-        "RETURN r.fact AS fact, m.name AS other, r.valid_at AS valid_at "
-        "ORDER BY r.valid_at DESC LIMIT 25",
-        name=name,
-        group_id=DEFAULT_GROUP_ID,
-    )
-    facts = [{"fact": f["fact"], "other": f["other"], "valid_at": str(f["valid_at"] or "")} for f in frows]
-    _record_query({"ts": time.time(), "at": _now_iso(), "source": "mcp", "tool": "graph_entity", "name": name, "hit": True, "n_facts": len(facts)})
-    return {"name": n["name"], "summary": n.get("summary") or "", "current_facts": facts}
-
-
-@mcp.tool()
-async def graph_current_facts(subject: str) -> list[dict]:
-    """Return the CURRENT atomic facts about a subject (free-text). Excludes
-    superseded/outdated facts (invalid_at set). Use this when you specifically
-    need what's true NOW about something — the temporal query wiki_search can't
-    answer (it returns documents regardless of recency)."""
-    g = await _get_graph()
-    res = await g.search_(
-        subject,
-        config=COMBINED_HYBRID_SEARCH_RRF.model_copy(update={"limit": 15}),
-        group_ids=[DEFAULT_GROUP_ID],
-    )
-    slug_map = await _resolve_episode_slugs(g, list(res.edges or []))
-    out = []
-    for e in (res.edges or []):
-        if getattr(e, "invalid_at", None):  # skip superseded
-            continue
-        out.append({
-            "fact": getattr(e, "fact", "") or str(e),
-            "source_slug": _episode_slug(e, slug_map),
-            "valid_at": str(getattr(e, "valid_at", "") or ""),
-        })
-        if len(out) >= 10:
-            break
-    _record_query({"ts": time.time(), "at": _now_iso(), "source": "mcp", "tool": "graph_current_facts", "subject": (subject or "")[:200], "n": len(out)})
-    return out
 
 
 @mcp.tool()

@@ -1,8 +1,8 @@
 """core — the single FastMCP instance + shared config both tool modules use.
 
 wiki.py registers wiki_search / wiki_get / wiki_backlinks / wiki_note_drop;
-graph.py registers graph_answer / graph_search / graph_get_note / graph_entity /
-graph_current_facts / graph_changes; server.py registers memory_status and
+graph.py registers graph_answer / graph_search / graph_get_note /
+graph_changes; server.py registers memory_status and
 assembles the HTTP app.
 """
 from __future__ import annotations
@@ -123,8 +123,8 @@ STATE_GAUGES = {
 
 _KNOWN_METRIC_TOOLS = {
     "wiki_search", "wiki_get", "wiki_backlinks", "wiki_note_drop",
-    "graph_answer", "graph_search", "graph_get_note", "graph_entity",
-    "graph_current_facts", "graph_changes", "memory_status", "other",
+    "graph_answer", "graph_search", "graph_get_note",
+    "graph_changes", "memory_status", "other",
 }
 _TOOL_ALIASES = {"search": "wiki_search", "get": "wiki_get", "backlinks": "wiki_backlinks"}
 _TOOL_OUTCOMES = {"ok", "error", "not_found", "degraded"}

@@ -173,8 +173,6 @@ One server, two tool families, plus an operational status tool.
 | `graph_answer(question)` | **use first for factual questions** — distilled `{answer, confidence, sources, escalate}` |
 | `graph_search(query, k)` | rich packet: facts (+ provenance + validity), entities, source excerpt, semantic note hits |
 | `graph_changes(subject, since_days)` | temporal diff: new facts + superseded facts — resuming a project after time away is one call |
-| `graph_current_facts(subject)` | what's true NOW (superseded excluded) |
-| `graph_entity(name)` | a known entity's summary + current facts |
 | `graph_get_note(slug)` | provenance fetch: the original source note behind any fact |
 
 **status** (operations — bounded, non-secret):

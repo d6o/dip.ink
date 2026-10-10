@@ -104,8 +104,6 @@ def main() -> None:
         "graph_answer_calls": len(graph_answers),
         "wiki_gets": sum(1 for e in wev if e.get("tool") == "get"),
         "graph_note_gets": sum(1 for e in gev if e.get("tool") == "graph_get_note"),
-        "graph_entity_calls": sum(1 for e in gev if e.get("tool") == "graph_entity"),
-        "graph_current_facts_calls": sum(1 for e in gev if e.get("tool") == "graph_current_facts"),
     }
 
     # --- graph_answer health: confidence distribution + compression ratio ---

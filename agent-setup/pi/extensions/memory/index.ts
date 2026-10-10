@@ -4,8 +4,7 @@
  * Exposes all eleven tools of the single memory MCP server as native pi tools:
  *
  *   wiki_search / wiki_get / wiki_backlinks / wiki_note_drop   (wiki side)
- *   graph_answer / graph_search / graph_get_note / graph_entity /
- *   graph_current_facts / graph_changes                        (graph side)
+ *   graph_answer / graph_search / graph_get_note / graph_changes   (graph side)
  *   memory_status                                               (operations)
  *
  * The agent-facing usage rules live in ./skill/SKILL.md and are contributed to
@@ -271,18 +270,6 @@ const TOOLS: ToolSpec[] = [
     }),
   },
   {
-    name: "graph_entity",
-    label: "Memory Entity",
-    description:
-      "Look up a known ENTITY by name and return its summary + its CURRENT facts (superseded " +
-      "facts excluded). Use when you already know the thing (a service, tool, decision) and " +
-      "want its current state.",
-    promptSnippet: "Look up a known entity + its current facts",
-    parameters: Type.Object({
-      name: Type.String({ description: "Entity name (case-insensitive match)." }),
-    }),
-  },
-  {
     name: "graph_changes",
     label: "Memory Changes",
     description:
@@ -297,17 +284,6 @@ const TOOLS: ToolSpec[] = [
       since_days: Type.Optional(
         Type.Integer({ description: "Lookback window in days (default 14, max 120)." }),
       ),
-    }),
-  },
-  {
-    name: "graph_current_facts",
-    label: "Memory Current Facts",
-    description:
-      "Return the CURRENT atomic facts about a subject (free-text). Excludes " +
-      "superseded/outdated facts. Use when you specifically need what's true NOW.",
-    promptSnippet: "What's currently true about a subject (excludes superseded facts)",
-    parameters: Type.Object({
-      subject: Type.String({ description: "The subject to get current facts about." }),
     }),
   },
   {

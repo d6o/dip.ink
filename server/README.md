@@ -18,8 +18,7 @@ One process, one MCP endpoint (`/mcp`), all tools. One image, three roles:
   `/api/reindex`, `/live`.
 - `graph.py` — the Graphiti side: `graph_answer` (distilled answers with
   deterministic provenance grounding), `graph_search` (rich packet with
-  in-process wiki fusion), `graph_get_note`, `graph_entity`,
-  `graph_current_facts`, `graph_changes`, plus `/api/answer`,
+  in-process wiki fusion), `graph_get_note`, `graph_changes`, plus `/api/answer`,
   `/api/graph/search`, `/api/graph/health`.
 - `server.py` — assembles everything onto one Starlette app and owns the
   bounded operational snapshot used by `memory_status` / `/api/status`
