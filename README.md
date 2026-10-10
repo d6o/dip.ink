@@ -106,7 +106,7 @@ That starts:
 | `ingest` | — | every 15 min: pull the repo, ingest new notes into the graph |
 | `communities` | — | weekly: entity resolution + community rebuild |
 | `gaps` | — | weekly: mine the query log for memory gaps |
-| `alerts` | — | every 30 min: dead-man checks (server, ingest lag, communities) |
+| `alerts` | — | every 30 min: dead-man checks (server, ingest lag); optional Telegram notifications |
 | `healthcheck` | — | daily: deep end-to-end pipeline verification |
 | `contradiction-janitor` | — | monthly: report-only contradiction analysis by default |
 
@@ -305,7 +305,7 @@ Release sequence for maintainers: push main → wait CI green → tag `v0.1.17` 
 - **Ingest concurrency must stay 1.** Graphiti's `add_episode` does a non-atomic read-modify-write of edge invalidation; concurrent writes to the same entity silently lose supersession. Serial ingest is correct and fast enough (steady state is a couple of notes per tick).
 - **Notes ingest oldest-first.** Bitemporal supersession only orders correctly if facts arrive in event order. The ingest sorts by the slug's timestamp prefix, and backfilled notes land at their *original* capture time.
 - **The graph is a projection.** You can wipe Neo4j and re-ingest the whole corpus from git at any time (better model, better prompts). Nothing in the graph is source-of-truth.
-- **A failed cron job IS the alert.** `memory-alerts` and `memory-healthcheck` run with no retries; a red job in your scheduler is the signal. Healthcheck failures additionally file a note into the inbox, so the failure shows up in the memory itself. Prefer pending-note lag over wall-clock inactivity: a quiet memory with zero pending notes is healthy.
+- **Send alerts to a person.** A red job alone reaches nobody. Set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`, and `memory-alerts` and `memory-healthcheck` send firing alerts to Telegram. A state record in Neo4j stops repeats: a new alert set sends at once, an unchanged set sends a reminder every `NOTIFY_REPEAT_HOURS` (default 12), and a cleared set sends one "resolved" message. Each alert names an owner: `lead` (an agent can fix it) or `operator` (for example a credential or quota problem). Both jobs print one `ALERTS_JSON` line that an agent review can turn into tickets. Without Telegram, healthcheck failures file a note into the inbox. The jobs still run with no retries, so a red job also stays visible. Prefer pending-note lag over wall-clock inactivity: a quiet memory with zero pending notes is healthy.
 - **`graph_answer` never hallucinates by design** — the distiller answers only from the retrieval packet, provenance is deterministically grounded, and unsupported answers return `not_found` + `escalate`. The daily healthcheck probes this property with a nonsense question and fails loudly if it ever gets an answer.
 - **No automatic secret scanning.** Agents never capture secrets; the private repo and gated network are the perimeter.
 

@@ -71,6 +71,9 @@ from pathlib import Path
 # server.py and memory_alerts.py).
 sys.path.insert(0, "/app")
 
+from loops import notify  # noqa: E402
+from loops.notify import Alert  # noqa: E402
+
 NOTES_DIR = Path(os.environ.get("NOTES_DIR", "/notes"))
 # The combined memory server. MCP_BASE is the agent-facing URL; MCP_INTERNAL
 # is the internal-network fallback used to distinguish "ingress broken" from
@@ -421,33 +424,11 @@ def check_usage() -> None:
 
 
 # ---------------------------------------------------------------- main
-def main() -> None:
-    print(f"memory-healthcheck @ {NOW.isoformat()} (notes={NOTES_DIR}, dry_run={DRY_RUN})")
-    inbox, deferred, curated = collect_notes()
-    print(f"notes on disk: inbox={len(inbox)} deferred={len(deferred)} curated={len(curated)}")
-
-    check_write_path(inbox, deferred, curated)
-    import asyncio
-    try:
-        asyncio.run(check_ingestion(inbox, deferred, curated))
-    except Exception as e:
-        failures.append(f"ingestion check errored: {e}")
-    check_curation(inbox, deferred, curated)
-    check_exposing()
-    check_indexing(curated)
-    check_usage()
-
-    for w in warnings:
-        print(f"  ~~ WARN: {w}")
-    if failures:
-        print("MEMORY HEALTHCHECK FAILING:")
-        for f in failures:
-            print(f"  !! {f}")
-        if not DRY_RUN:
-            now_iso = NOW.strftime("%Y-%m-%dT%H:%M:%SZ")
-            fail_lines = "\n".join(f"- {f}" for f in failures)
-            warn_lines = "\n".join(f"- {w}" for w in warnings) or "- (none)"
-            res = drop_note("memory-healthcheck-failed", f"""---
+def drop_failure_note() -> None:
+    now_iso = NOW.strftime("%Y-%m-%dT%H:%M:%SZ")
+    fail_lines = "\n".join(f"- {f}" for f in failures)
+    warn_lines = "\n".join(f"- {w}" for w in warnings) or "- (none)"
+    res = drop_note("memory-healthcheck-failed", f"""---
 captured: {now_iso}
 session: automated daily memory healthcheck — FAILURES detected
 topic: memory healthcheck failure
@@ -469,9 +450,44 @@ topic: memory healthcheck failure
 
 ## What to do
 
-Investigate per check letter (A write path, B ingestion, C curation backlog, D MCP exposing, E wiki index, F usage) — the runbook is the module docstring of `graphiti/loops/memory_healthcheck.py`.
+Investigate per check letter (A write path, B ingestion, C curation backlog, D MCP exposing, E wiki index, F usage) — the runbook is the module docstring of `server/loops/memory_healthcheck.py`.
 """)
-            print(f"failure note drop result: {res}")
+    print(f"failure note drop result: {res}")
+
+
+def main() -> None:
+    print(f"memory-healthcheck @ {NOW.isoformat()} (notes={NOTES_DIR}, dry_run={DRY_RUN})")
+    inbox, deferred, curated = collect_notes()
+    print(f"notes on disk: inbox={len(inbox)} deferred={len(deferred)} curated={len(curated)}")
+
+    check_write_path(inbox, deferred, curated)
+    import asyncio
+    try:
+        asyncio.run(check_ingestion(inbox, deferred, curated))
+    except Exception as e:
+        failures.append(f"ingestion check errored: {e}")
+    check_curation(inbox, deferred, curated)
+    check_exposing()
+    check_indexing(curated)
+    check_usage()
+
+    for w in warnings:
+        print(f"  ~~ WARN: {w}")
+    alerts = [Alert(notify.alert_key(f), f, notify.classify_owner(f)) for f in failures]
+    notify.print_alerts_json("memory-healthcheck", alerts, warnings)
+    action = None
+    if not DRY_RUN:
+        action = notify.notify("memory-healthcheck", "healthcheck", alerts, throttle_without_state=False)
+    if failures:
+        print("MEMORY HEALTHCHECK FAILING:")
+        for f in failures:
+            print(f"  !! {f}")
+        if not DRY_RUN and not notify.telegram_configured():
+            # Without Telegram, the failure note in the memory inbox is the
+            # only signal that an operator or agent can see.
+            drop_failure_note()
+        raise SystemExit(1)
+    if action == "send-failed":
         raise SystemExit(1)
     print("ALL MEMORY PIPELINE CHECKS PASSED")
 

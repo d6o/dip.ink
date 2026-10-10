@@ -24,10 +24,6 @@ def healthy_status(*, pending: int = 0, lag_seconds: float = 0.0) -> dict:
             # Deliberately old activity is irrelevant when pending=0.
             "newest_episode": {"completed_at": "2020-01-01T00:00:00Z"},
         },
-        "communities": {
-            "count": 2,
-            "age_seconds": 3600.0,
-        },
         "queues": {
             "blocked": {"count": 0},
             "review_queue_open": 0,
@@ -47,7 +43,7 @@ class MemoryAlertPolicyTests(unittest.TestCase):
     def test_old_pending_note_fires(self):
         with mock.patch.object(memory_alerts, "MAX_PENDING_AGE_H", 2):
             memory_alerts.evaluate_status(healthy_status(pending=1, lag_seconds=3 * 3600))
-        self.assertTrue(any("ingest pending lag" in failure for failure in memory_alerts.failures))
+        self.assertTrue(any("ingest pending lag" in f.message for f in memory_alerts.failures))
 
     def test_recent_pending_note_inside_grace_passes(self):
         with mock.patch.object(memory_alerts, "MAX_PENDING_AGE_H", 2):
@@ -64,54 +60,29 @@ class MemoryAlertPolicyTests(unittest.TestCase):
         self.assertEqual(memory_alerts.failures, [])
         self.assertEqual(len(memory_alerts.warnings), 2)
 
-    def test_stale_nonzero_communities_still_fail_when_missing_are_allowed(self):
-        snapshot = healthy_status()
-        snapshot["communities"] = {
-            "count": 2,
-            "age_seconds": 9 * 86400,
-        }
-        with (
-            mock.patch.object(memory_alerts, "MAX_COMMUNITY_AGE_D", 8),
-            mock.patch.object(memory_alerts, "ALLOW_MISSING_COMMUNITIES", True),
-        ):
-            memory_alerts.evaluate_status(snapshot)
-        self.assertTrue(any("communities stale" in failure for failure in memory_alerts.failures))
-
-    def test_missing_communities_fail_under_default_strict_policy(self):
+    def test_community_fields_are_ignored(self):
         snapshot = healthy_status()
         snapshot["communities"] = {"count": 0, "age_seconds": None}
-        with mock.patch.object(memory_alerts, "ALLOW_MISSING_COMMUNITIES", False):
-            memory_alerts.evaluate_status(snapshot)
-        self.assertIn("communities: none in graph", memory_alerts.failures)
-        self.assertEqual(memory_alerts.warnings, [])
-
-    def test_missing_communities_warn_under_explicit_optional_policy(self):
-        snapshot = healthy_status()
-        snapshot["communities"] = {"count": 0, "age_seconds": None}
-        with mock.patch.object(memory_alerts, "ALLOW_MISSING_COMMUNITIES", True):
-            memory_alerts.evaluate_status(snapshot)
+        memory_alerts.evaluate_status(snapshot)
         self.assertEqual(memory_alerts.failures, [])
-        self.assertEqual(
-            memory_alerts.warnings,
-            ["communities: none in graph (allowed by ALLOW_MISSING_COMMUNITIES=1)"],
-        )
+        self.assertEqual(memory_alerts.warnings, [])
 
     def test_ingest_status_error_fires_instead_of_false_quiet_health(self):
         snapshot = healthy_status()
         snapshot["ingest"]["error"] = "OSError"
         memory_alerts.evaluate_status(snapshot)
-        self.assertTrue(any("ingest status unavailable" in failure for failure in memory_alerts.failures))
+        self.assertTrue(any("ingest status unavailable" in f.message for f in memory_alerts.failures))
 
     def test_component_down_still_fires(self):
         snapshot = healthy_status()
         snapshot["components"]["graph"] = {"ready": False, "error": "down"}
         memory_alerts.evaluate_status(snapshot)
-        self.assertTrue(any("component graph not ready" in failure for failure in memory_alerts.failures))
+        self.assertTrue(any("component graph not ready" in f.message for f in memory_alerts.failures))
 
     def test_server_down_still_fires(self):
         with mock.patch("urllib.request.urlopen", side_effect=OSError("connection refused")):
             memory_alerts.check_status("http://memory")
-        self.assertTrue(any("unreachable" in failure for failure in memory_alerts.failures))
+        self.assertTrue(any("unreachable" in f.message for f in memory_alerts.failures))
 
     def test_status_endpoint_payload_is_evaluated(self):
         payload = json.dumps(healthy_status()).encode()
@@ -131,6 +102,22 @@ class MemoryAlertPolicyTests(unittest.TestCase):
         with mock.patch("urllib.request.urlopen", return_value=Response()):
             memory_alerts.check_status("http://memory")
         self.assertEqual(memory_alerts.failures, [])
+
+
+    def test_alert_keys_are_stable_across_counts(self):
+        with mock.patch.object(memory_alerts, "MAX_PENDING_AGE_H", 2):
+            memory_alerts.evaluate_status(healthy_status(pending=5, lag_seconds=3 * 3600))
+            first = [f.key for f in memory_alerts.failures]
+            memory_alerts.failures.clear()
+            memory_alerts.evaluate_status(healthy_status(pending=9, lag_seconds=8 * 3600))
+        self.assertEqual(first, [f.key for f in memory_alerts.failures])
+        self.assertEqual(first, ["ingest-lag"])
+
+    def test_credential_error_is_operator_owned(self):
+        snapshot = healthy_status()
+        snapshot["components"]["graph"] = {"ready": False, "error": "AuthError: 401 Unauthorized"}
+        memory_alerts.evaluate_status(snapshot)
+        self.assertEqual(memory_alerts.failures[0].owner, "operator")
 
 
 if __name__ == "__main__":

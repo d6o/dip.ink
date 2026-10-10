@@ -2,9 +2,13 @@
 
 Checks the shared `/api/status` snapshot rather than treating graph inactivity as
 failure. Pending note→episode lag is the freshness signal: a quiet memory with
-zero pending notes is healthy regardless of the newest episode's age. Community
-age and component readiness remain hard checks. Blocked notes and review-queue
-items are visible warnings but do not fail the job by themselves.
+zero pending notes is healthy regardless of the newest episode's age. Component
+readiness is a hard check. Blocked notes and review-queue items are visible
+warnings but do not fail the job by themselves.
+
+Firing alerts go to Telegram through loops/notify.py (when configured), with a
+state record that stops repeated messages. The ALERTS_JSON line feeds the daily
+lead review that files tickets for lead-owned alerts.
 """
 from __future__ import annotations
 
@@ -16,12 +20,13 @@ from datetime import datetime, timezone
 
 sys.path.insert(0, "/app")
 
+from loops import notify  # noqa: E402
+from loops.notify import Alert  # noqa: E402
+
 MCP_BASE = os.environ.get("MCP_BASE", os.environ.get("WIKI_MCP_BASE", "http://memory:8080")).rstrip("/")
 MAX_PENDING_AGE_H = float(os.environ.get("MAX_PENDING_AGE_HOURS", "2"))
-MAX_COMMUNITY_AGE_D = float(os.environ.get("MAX_COMMUNITY_AGE_DAYS", "8"))
-ALLOW_MISSING_COMMUNITIES = os.environ.get("ALLOW_MISSING_COMMUNITIES", "0") == "1"
 
-failures: list[str] = []
+failures: list[Alert] = []
 warnings: list[str] = []
 
 
@@ -31,33 +36,28 @@ def evaluate_status(snapshot: dict) -> None:
     for name in ("wiki", "graph", "git_clone"):
         component = components.get(name) or {}
         if not component.get("ready"):
-            failures.append(f"component {name} not ready ({component.get('error') or 'unknown'})")
+            error = component.get("error") or "unknown"
+            failures.append(Alert(
+                f"component-{name}",
+                f"component {name} not ready ({error})",
+                notify.classify_owner(str(error)),
+            ))
 
     ingest = snapshot.get("ingest") or {}
     if ingest.get("error"):
-        failures.append(f"ingest status unavailable ({ingest.get('error')})")
+        failures.append(Alert(
+            "ingest-status",
+            f"ingest status unavailable ({ingest.get('error')})",
+            notify.classify_owner(str(ingest.get("error"))),
+        ))
     pending = int(ingest.get("pending") or 0)
     lag_seconds = float(ingest.get("lag_seconds") or 0.0)
     if pending > 0 and lag_seconds > MAX_PENDING_AGE_H * 3600:
-        failures.append(
+        failures.append(Alert(
+            "ingest-lag",
             f"ingest pending lag: {pending} note(s), oldest {lag_seconds / 3600:.1f}h "
-            f"(threshold {MAX_PENDING_AGE_H:g}h)"
-        )
-
-    communities = snapshot.get("communities") or {}
-    community_count = int(communities.get("count") or 0)
-    community_age = communities.get("age_seconds")
-    if community_count == 0:
-        message = "communities: none in graph"
-        if ALLOW_MISSING_COMMUNITIES:
-            warnings.append(f"{message} (allowed by ALLOW_MISSING_COMMUNITIES=1)")
-        else:
-            failures.append(message)
-    elif community_age is not None and float(community_age) > MAX_COMMUNITY_AGE_D * 86400:
-        failures.append(
-            f"communities stale: newest is {float(community_age) / 86400:.1f}d old "
-            f"(threshold {MAX_COMMUNITY_AGE_D:g}d)"
-        )
+            f"(threshold {MAX_PENDING_AGE_H:g}h)",
+        ))
 
     queues = snapshot.get("queues") or {}
     blocked = int((queues.get("blocked") or {}).get("count") or 0)
@@ -72,14 +72,14 @@ def check_status(base: str) -> None:
     try:
         with urllib.request.urlopen(f"{base}/api/status", timeout=20) as response:
             if response.status != 200:
-                failures.append(f"memory-server /api/status HTTP {response.status}")
+                failures.append(Alert("server-http", f"memory-server /api/status HTTP {response.status}"))
                 return
             snapshot = json.loads(response.read())
     except Exception as error:  # noqa: BLE001
-        failures.append(f"memory-server unreachable: {error}")
+        failures.append(Alert("server-unreachable", f"memory-server unreachable: {error}"))
         return
     if not isinstance(snapshot, dict):
-        failures.append("memory-server /api/status returned a non-object")
+        failures.append(Alert("server-status-shape", "memory-server /api/status returned a non-object"))
         return
     evaluate_status(snapshot)
 
@@ -91,10 +91,14 @@ def main() -> None:
 
     for warning in warnings:
         print(f"  ~~ WARN: {warning}")
+    notify.print_alerts_json("memory-alerts", failures, warnings)
+    action = notify.notify("memory-alerts", "memory", failures)
     if failures:
         print("MEMORY ALERTS FIRING:")
         for failure in failures:
-            print(f"  !! {failure}")
+            print(f"  !! [{failure.owner}] {failure.message}")
+        raise SystemExit(1)
+    if action == "send-failed":
         raise SystemExit(1)
     print(f"all memory checks OK at {datetime.now(timezone.utc).isoformat()}")
 

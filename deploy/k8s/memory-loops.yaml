@@ -6,10 +6,11 @@
 #    zero-hit / low-relevance queries and drops a memory-gaps report note.
 #  - contradiction-janitor (monthly, 1st 05:00, DRY_RUN first): LLM pass over
 #    dense entities' current facts. Report-only until DRY_RUN is explicitly 0.
-#  - memory-alerts (every 30min): pending-ingest, community age, and server
-#    health checks. A Failed job IS the alert.
+#  - memory-alerts (every 30min): pending-ingest and server health checks.
+#    Firing alerts go to Telegram when TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID are
+#    set (deduplicated; reminder every NOTIFY_REPEAT_HOURS). The job also fails.
 #  - memory-healthcheck (daily, 05:30): DEEP end-to-end pipeline test; failures
-#    also drop a note into the wiki inbox so the failure is visible in memory.
+#    go to Telegram, or into the wiki inbox as a note when Telegram is unset.
 ---
 apiVersion: batch/v1
 kind: CronJob
@@ -160,11 +161,11 @@ spec:
               env:
                 - {name: MCP_BASE, value: "http://memory.dipink.svc.cluster.local"}
                 - {name: MAX_PENDING_AGE_HOURS, value: "2"}
-                - {name: MAX_COMMUNITY_AGE_DAYS, value: "8"}
-                # The rebuild CronJob above is intentionally suspended. Keep
-                # zero communities visible without making every alert job fail.
-                # Stale nonzero communities remain a hard failure.
-                - {name: ALLOW_MISSING_COMMUNITIES, value: "1"}
+                # Telegram notifications (optional). See .env.example.
+                - name: TELEGRAM_BOT_TOKEN
+                  valueFrom: {secretKeyRef: {name: dipink-secrets, key: TELEGRAM_BOT_TOKEN, optional: true}}
+                - name: TELEGRAM_CHAT_ID
+                  valueFrom: {secretKeyRef: {name: dipink-secrets, key: TELEGRAM_CHAT_ID, optional: true}}
                 - {name: NEO4J_URI, value: bolt://neo4j:7687}
                 - {name: NEO4J_USER, value: neo4j}
                 - name: NEO4J_PASSWORD
@@ -235,6 +236,10 @@ spec:
                 - {name: MCP_BASE, value: "http://memory.dipink.svc.cluster.local"}
                 - {name: MCP_INTERNAL, value: "http://memory.dipink.svc.cluster.local"}
                 - {name: ANSWER_PROBE, value: "what is this memory system's note inbox called"}
+                - name: TELEGRAM_BOT_TOKEN
+                  valueFrom: {secretKeyRef: {name: dipink-secrets, key: TELEGRAM_BOT_TOKEN, optional: true}}
+                - name: TELEGRAM_CHAT_ID
+                  valueFrom: {secretKeyRef: {name: dipink-secrets, key: TELEGRAM_CHAT_ID, optional: true}}
                 - {name: NEO4J_URI, value: bolt://neo4j:7687}
                 - {name: NEO4J_USER, value: neo4j}
                 - name: NEO4J_PASSWORD
