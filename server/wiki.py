@@ -84,6 +84,7 @@ EMBED_PROVIDER = os.environ.get("WIKI_MCP_EMBED_PROVIDER", "openai")
 OPENAI_MODEL = os.environ.get("WIKI_MCP_OPENAI_MODEL", "text-embedding-3-small")
 FASTEMBED_MODEL = os.environ.get("WIKI_MCP_FASTEMBED_MODEL", "BAAI/bge-small-en-v1.5")
 REINDEX_INTERVAL_SEC = int(os.environ.get("WIKI_MCP_REINDEX_SEC", "300"))
+REINDEX_MIN_WAKE_GAP_SEC = int(os.environ.get("WIKI_MCP_REINDEX_MIN_WAKE_GAP_SEC", "90"))
 REINDEX_RETRY_INITIAL_SEC = int(os.environ.get("WIKI_MCP_RETRY_INITIAL_SEC", "5"))
 REINDEX_RETRY_MAX_SEC = int(os.environ.get("WIKI_MCP_RETRY_MAX_SEC", "300"))
 BACKGROUND_REINDEX_ENABLED = os.environ.get("WIKI_MCP_BACKGROUND_REINDEX", "1").lower() not in {
@@ -1544,14 +1545,22 @@ def _background_reindex(index: Index, stop_event: threading.Event) -> None:
         "supervised reindex loop starting (interval=%ds retry=%ds..%ds)",
         REINDEX_INTERVAL_SEC, REINDEX_RETRY_INITIAL_SEC, REINDEX_RETRY_MAX_SEC,
     )
+    last_start = 0.0
     while True:
         # A note drop sets _reindex_wake. Either event ends the wait early.
         woke = _reindex_wake.wait(delay)
-        _reindex_wake.clear()
         if stop_event.is_set():
             return
         if woke:
+            # One reindex scans the full tree (about 40 s on 14k pages). Keep
+            # a minimum gap so a burst of note drops does not run reindex
+            # back to back. Drops during the gap join the next run.
+            gap = REINDEX_MIN_WAKE_GAP_SEC - (time.monotonic() - last_start)
+            if gap > 0 and stop_event.wait(gap):
+                return
             log.info("reindex woke early after a note drop")
+        _reindex_wake.clear()
+        last_start = time.monotonic()
         stats = _reindex_once(index)
         if stats.get("ok"):
             retry_sec = max(1, REINDEX_RETRY_INITIAL_SEC)
