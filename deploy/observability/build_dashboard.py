@@ -8,7 +8,7 @@ from pathlib import Path
 
 DATASOURCE = {"type": "prometheus", "uid": "prometheus"}
 CRONJOBS = (
-    "(graphiti-ingest|build-communities|memory-gaps|memory-alerts|"
+    "(graphiti-ingest|memory-gaps|memory-alerts|"
     "memory-healthcheck|contradiction-janitor)"
 )
 
@@ -161,16 +161,6 @@ panels = [
         "Wiki index age",
         [target("max(dipink_wiki_index_age_seconds)", "index age", "A")],
         0,
-        5,
-        12,
-        6,
-        unit="s",
-    ),
-    timeseries(
-        9,
-        "Community age",
-        [target("max(dipink_community_age_seconds)", "community age", "A")],
-        12,
         5,
         12,
         6,
@@ -393,7 +383,6 @@ required_metrics = (
     "dipink_ingest_pending_notes",
     "dipink_ingest_partial_notes",
     "dipink_ingest_lag_seconds",
-    "dipink_community_age_seconds",
 )
 missing = [metric for metric in required_metrics if metric not in payload]
 if missing:

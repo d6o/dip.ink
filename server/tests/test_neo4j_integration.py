@@ -71,9 +71,7 @@ class Neo4jLifecycleIntegrationTests(unittest.TestCase):
                     "CREATE (n:Entity {uuid: randomUUID(), name: 'fixture', group_id: $group_id, "
                     "summary: 'fixture', created_at: datetime()}) "
                     "CREATE (e)-[:MENTIONS {uuid: randomUUID(), group_id: $group_id, "
-                    "created_at: datetime()}]->(n) "
-                    "CREATE (:Community {uuid: randomUUID(), name: 'fixture community', "
-                    "group_id: $group_id, summary: 'fixture', created_at: datetime()})",
+                    "created_at: datetime()}]->(n)",
                     slug=slug,
                     group_id=group_id,
                 )
@@ -87,9 +85,9 @@ class Neo4jLifecycleIntegrationTests(unittest.TestCase):
                 await graph.close()
                 self.assertIsNone(graph._g)
 
-                # The shallow alert policy consumes a status graph/community
-                # snapshot collected against this real Neo4j instance.
-                graph_component, ingest_state, communities = await server._graph_status()
+                # The shallow alert policy consumes a status snapshot collected
+                # against this real Neo4j instance.
+                graph_component, ingest_state = await server._graph_status()
                 memory_alerts.failures.clear()
                 memory_alerts.warnings.clear()
                 memory_alerts.evaluate_status({
@@ -99,7 +97,6 @@ class Neo4jLifecycleIntegrationTests(unittest.TestCase):
                         "git_clone": {"ready": True},
                     },
                     "ingest": ingest_state,
-                    "communities": communities,
                     "queues": {
                         "blocked": {"count": 0},
                         "review_queue_open": 0,

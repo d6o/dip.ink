@@ -33,7 +33,7 @@ If the tools aren't in your tool list and registration fails, you are not on the
 ## Which tool when
 
 - **Factual question** ("what port does X use?", "what did I decide about Y?") → `graph_answer` FIRST. It returns a distilled `{answer, confidence, sources, escalate}` (~150 tokens) instead of a fat search packet. If it returns `escalate: true` or `not_found`, fall back to `graph_search`.
-- **Broad/exploratory context** ("what do I know about X?") → `graph_search` (facts + community summary + entities + source excerpt + semantic note hits) or `wiki_search` (curated pages).
+- **Broad/exploratory context** ("what do I know about X?") → `graph_search` (facts + entities + source excerpt + semantic note hits) or `wiki_search` (curated pages).
 - **What's true NOW** (excluding superseded facts) → `graph_current_facts` or `graph_entity`.
 - **Resuming after time away** → `graph_changes(subject, since_days)` — one call instead of five searches.
 - **Provenance** — every graph fact carries a `source_slug`; fetch the original note with `graph_get_note(slug)`.

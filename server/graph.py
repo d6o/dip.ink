@@ -9,9 +9,9 @@ shape. Registers on the shared FastMCP instance (core.mcp):
     {answer, confidence, sources, superseded_note?, escalate}. ~150 tokens out
     instead of ~1,800. The fix for "the memory bombards agents".
   - graph_search(query): the rich packet — current atomic facts (with provenance
-    slug + validity window), a community summary, top entities, and the top
-    source-note excerpt. Uses Graphiti's `search_()` + COMBINED_HYBRID_SEARCH_RRF
-    (the config that won a two-judge retrieval eval).
+    slug + validity window), top entities, and the top source-note excerpt.
+    Uses Graphiti's `search_()` + COMBINED_HYBRID_SEARCH_RRF (the config that
+    won a two-judge retrieval eval).
   - graph_get_note(slug): fetch a source note by its timestamp slug (the
     provenance path — every fact traces to one).
   - graph_entity(name): a known entity + its CURRENT facts + attributes
@@ -39,7 +39,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 
 # Reuse the ingest client wiring (Graphiti extraction LLM, OpenAI embedder,
-# the roomy Neo4j pool, patch_community_clustering).
+# the roomy Neo4j pool).
 from chat_fallback import OrderedModelFallback, is_recoverable_provider_error, parse_model_ladder
 from ingest import DEFAULT_GROUP_ID, build_graphiti
 from vector_search import install_read_search
@@ -342,7 +342,7 @@ def _current_evidence_packet(packet: dict) -> dict:
     """Give the distiller only recent supported evidence.
 
     Source validation proves citation identity, not answer entailment. Undated
-    entity and community summaries, and older facts, are absent from this view.
+    entity summaries, and older facts, are absent from this view.
     """
     temporal = packet["temporal_context"]
     eligible = set(temporal["eligible_sources"])
@@ -353,7 +353,6 @@ def _current_evidence_packet(packet: dict) -> dict:
             fact for fact in packet.get("facts") or []
             if fact.get("current") is not False and fact.get("source_slug") in eligible
         ],
-        "communities": [],
         "entities": [],
         "source_excerpt": excerpt if excerpt.get("slug") in eligible and str(excerpt.get("content") or "").strip() else None,
         "semantic_notes": [
@@ -409,18 +408,16 @@ async def _assemble_packet(
     k: int,
     *,
     excerpt_chars: int = 2500,
-    n_communities: int = 3,
-    community_chars: int = 1000,
     current_state: bool = False,
 ) -> dict:
     """Shared packet assembler for graph_search (wire format) and graph_answer
     (distiller input).
 
-    Packet-trim experiment (2026-07-11): excerpt 800/1200 + communities 2@600
-    caused SYSTEMATIC frozen-50 verdict flips to v1 (13 and 11 flips vs a
-    3-flip same-day fat-packet control) — the excerpt is load-bearing for
-    retrieval quality. Trim rejected; graph_answer (which always distills the
-    full packet server-side) is the token-compression mechanism instead."""
+    Packet-trim experiment (2026-07-11): an excerpt of 800 or 1200 characters
+    caused systematic frozen-50 verdict flips to v1 (13 and 11 flips vs a
+    3-flip same-day fat-packet control). The excerpt is load-bearing for
+    retrieval quality. The trim stays rejected. graph_answer distills the
+    full packet server-side and is the token-compression mechanism instead."""
     g = await _get_graph()
     config = COMBINED_HYBRID_SEARCH_RRF.model_copy(update={"limit": k})
     # graph search + wiki semantic search run concurrently (fusion)
@@ -428,7 +425,6 @@ async def _assemble_packet(
         g.search_(query, config=config, group_ids=[DEFAULT_GROUP_ID]),
         _wiki_semantic_hits(query, 25 if current_state else 3, hydrate=current_state),
     )
-    communities = list(res.communities or [])[:n_communities]
     nodes = list(res.nodes or [])[:8]
     edges = list(res.edges or [])[:12]
     episodes = list(res.episodes or [])[:2]
@@ -443,10 +439,6 @@ async def _assemble_packet(
     return {
         "query": query,
         "facts": facts,
-        "communities": [{
-            "name": getattr(c, "name", "")[:120],
-            "summary": (getattr(c, "summary", "") or "")[:community_chars],
-        } for c in communities],
         "entities": [{
             "name": getattr(n, "name", ""),
             "summary": (getattr(n, "summary", "") or "")[:300],
@@ -513,7 +505,7 @@ def _extract_json(text: str):
 
 _DISTILL_SYSTEM = """You distill retrieval packets from the operator's knowledge graph into direct answers.
 
-You will get a QUESTION and a RETRIEVAL PACKET (JSON with facts, communities, entities, a source-note excerpt, and semantic note hits). Rules:
+You will get a QUESTION and a RETRIEVAL PACKET (JSON with facts, entities, a source-note excerpt, and semantic note hits). Rules:
 
 1. Answer ONLY from the packet. NEVER use your own knowledge or guess. If the packet does not contain the answer, return confidence "not_found" with answer null and escalate true.
 2. A current:false fact does not support current state. Use it for a dated historical question, or describe it in superseded_note.
@@ -744,8 +736,7 @@ async def _graph_answer_impl(question: str, is_test: bool = False) -> dict:
     packet: dict | None = None
     try:
         packet = await _assemble_packet(
-            q, 8, excerpt_chars=2500, n_communities=3, community_chars=1000,
-            current_state=current_state,
+            q, 8, excerpt_chars=2500, current_state=current_state,
         )
     except Exception as error:  # noqa: BLE001
         log.warning("graph_answer: packet assembly failed: %r", error)
@@ -826,9 +817,8 @@ async def graph_answer(question: str) -> dict:
 async def graph_search(query: str, k: int = 5) -> dict:
     """Search the operator's Graphiti knowledge graph for `query`. Returns a structured
     packet (NOT a list of pages): the top atomic FACTS (each with its source-note
-    slug + validity window — `current=false` means superseded), a relevant
-    COMMUNITY summary (auto-synthesized from notes), the top ENTITIES, and an
-    excerpt of the top SOURCE NOTE. This is the native Graphiti retrieval.
+    slug + validity window — `current=false` means superseded), the top ENTITIES,
+    and an excerpt of the top SOURCE NOTE. This is the native Graphiti retrieval.
 
     For a factual question, prefer graph_answer (direct distilled answer).
     Use this for broad/exploratory context, or when graph_answer escalates."""
@@ -837,7 +827,7 @@ async def graph_search(query: str, k: int = 5) -> dict:
     _record_query({
         "ts": time.time(), "at": _now_iso(), "source": "mcp", "tool": "graph_search",
         "query": (query or "")[:200], "k": kk,
-        "n_facts": len(packet["facts"]), "n_communities": len(packet["communities"]),
+        "n_facts": len(packet["facts"]),
         "n_entities": len(packet["entities"]), "has_source": packet["source_excerpt"] is not None,
         "n_semantic": len(packet["semantic_notes"]),
     })
@@ -985,7 +975,7 @@ async def _http_graph_search(req: Request) -> JSONResponse:
         _record_query({
             "ts": time.time(), "at": _now_iso(), "source": "mcp", "tool": "graph_search",
             "query": q[:200], "k": k, "n_facts": len(packet["facts"]),
-            "n_communities": len(packet["communities"]), "n_entities": len(packet["entities"]),
+            "n_entities": len(packet["entities"]),
             "has_source": packet["source_excerpt"] is not None,
             "n_semantic": len(packet["semantic_notes"]), "test": True,
         })

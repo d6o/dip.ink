@@ -130,16 +130,3 @@ spec:
           annotations:
             summary: dip.ink note-drop failures detected
             description: At least one wiki_note_drop call reported a non-success outcome in the last ten minutes.
-
-        - alert: DipinkCommunitiesStale
-          expr: |
-            max(dipink_community_age_seconds) > 691200
-            and
-            max(dipink_community_age_seconds) < +Inf
-          for: 30m
-          labels:
-            severity: warning
-            service: dipink
-          annotations:
-            summary: dip.ink communities are stale
-            description: The latest finite graph community age is more than eight days.

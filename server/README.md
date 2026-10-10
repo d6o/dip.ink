@@ -24,7 +24,7 @@ One process, one MCP endpoint (`/mcp`), all tools. One image, three roles:
 - `server.py` — assembles everything onto one Starlette app and owns the
   bounded operational snapshot used by `memory_status` / `/api/status`
   (component readiness, index age, inbox/deferred/blocked, review queue,
-  ingest pending/partial/lag, communities, query summary, build/version).
+  ingest pending/partial/lag, query summary, build/version).
   It degrades component-by-component and never returns note bodies, query text,
   or credentials.
 - `core.py` also owns the bounded-cardinality Prometheus registry rendered by
@@ -110,11 +110,9 @@ Optional [indexed vector retrieval](VECTOR_RETRIEVAL.md) accelerates graph reads
 
 | Job | Cadence | What |
 |---|---|---|
-| `memory_alerts.py` | 30 min | dead-man checks: pending note→episode lag (not wall-clock quiet), community age, server `/health`. Quiet memory with zero pending is healthy. Exit 1 = alert. |
+| `memory_alerts.py` | 30 min | dead-man checks: pending note→episode lag (not wall-clock quiet), server `/health`. Quiet memory with zero pending is healthy. Exit 1 = alert. |
 | `memory_healthcheck.py` | daily | deep end-to-end: write path (canary if quiet), per-note ingest verification, curation backlog/liveness/lag, server exposure incl. `graph_answer` correctness + no-hallucination guard, index freshness, usage counts. Failures drop a note into the inbox. |
 | `memory_gaps.py` | weekly | mines the query log for zero-hit / low-relevance / not-found queries and files a "memory gaps" report note — which gets ingested: the memory knows what it's missing. |
-| `build_communities.py` | weekly | entity resolution (below) then community rebuild, with unbounded→bounded fallback and transient-error retries. |
-| `entity_resolution.py` | (inside rebuild) | merges alias entities ("MyApp" vs "myapp.example.com") — string candidates, LLM confirmation, capped merges, DRY_RUN honored. |
 | `contradiction_janitor.py` | monthly | LLM audit of the densest entities' current facts; report-only by default (`DRY_RUN=1`). |
 
 ## Key env

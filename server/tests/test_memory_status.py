@@ -89,7 +89,6 @@ class MemoryStatusTests(unittest.TestCase):
                 "watermark": "now",
                 "error": None,
             },
-            {"count": 3, "age_seconds": 60.0, "newest_at": "now", "error": None},
         )
         usage = {
             "total": 4,
@@ -120,7 +119,7 @@ class MemoryStatusTests(unittest.TestCase):
         self.assertTrue(snapshot["queues"]["blocked"]["items_truncated"])
         self.assertEqual(snapshot["queues"]["review_queue_open"], 2)
         self.assertEqual(snapshot["ingest"]["pending"], 2)
-        self.assertEqual(snapshot["communities"]["count"], 3)
+        self.assertNotIn("communities", snapshot)
         self.assertEqual(snapshot["build"]["version"], server.DIPINK_VERSION)
         encoded = json.dumps(snapshot)
         self.assertNotIn("private note body", encoded)
@@ -148,7 +147,6 @@ class MemoryStatusTests(unittest.TestCase):
                 "lag_seconds": 0.0, "oldest_pending_at": None,
                 "newest_episode": None, "watermark": None, "error": "graph_unavailable",
             },
-            {"count": 0, "age_seconds": None, "newest_at": None, "error": "graph_unavailable"},
         )
 
         async def run():
@@ -181,7 +179,6 @@ class MemoryStatusTests(unittest.TestCase):
             "queues": {},
             "notes": {},
             "ingest": {},
-            "communities": {},
             "usage_24h": {},
             "build": {},
         }

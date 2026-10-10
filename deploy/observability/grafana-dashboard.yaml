@@ -551,104 +551,6 @@ data:
           "type": "timeseries"
         },
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "fieldConfig": {
-            "defaults": {
-              "color": {
-                "mode": "palette-classic"
-              },
-              "custom": {
-                "axisCenteredZero": false,
-                "axisColorMode": "text",
-                "axisLabel": "",
-                "axisPlacement": "auto",
-                "barAlignment": 0,
-                "drawStyle": "line",
-                "fillOpacity": 12,
-                "gradientMode": "none",
-                "hideFrom": {
-                  "legend": false,
-                  "tooltip": false,
-                  "viz": false
-                },
-                "insertNulls": false,
-                "lineInterpolation": "linear",
-                "lineWidth": 2,
-                "pointSize": 5,
-                "scaleDistribution": {
-                  "type": "linear"
-                },
-                "showPoints": "never",
-                "spanNulls": false,
-                "stacking": {
-                  "group": "A",
-                  "mode": "none"
-                },
-                "thresholdsStyle": {
-                  "mode": "off"
-                }
-              },
-              "mappings": [],
-              "thresholds": {
-                "mode": "absolute",
-                "steps": [
-                  {
-                    "color": "green",
-                    "value": null
-                  },
-                  {
-                    "color": "red",
-                    "value": 80
-                  }
-                ]
-              },
-              "unit": "s"
-            },
-            "overrides": []
-          },
-          "gridPos": {
-            "h": 6,
-            "w": 12,
-            "x": 12,
-            "y": 5
-          },
-          "id": 9,
-          "options": {
-            "legend": {
-              "calcs": [
-                "lastNotNull"
-              ],
-              "displayMode": "list",
-              "placement": "bottom",
-              "showLegend": true
-            },
-            "tooltip": {
-              "hideZeros": false,
-              "mode": "multi",
-              "sort": "desc"
-            }
-          },
-          "pluginVersion": "11.0.0",
-          "targets": [
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "prometheus"
-              },
-              "editorMode": "code",
-              "expr": "max(dipink_community_age_seconds)",
-              "legendFormat": "community age",
-              "range": true,
-              "refId": "A"
-            }
-          ],
-          "title": "Community age",
-          "type": "timeseries"
-        },
-        {
           "collapsed": false,
           "gridPos": {
             "h": 1,
@@ -1871,7 +1773,7 @@ data:
                 "uid": "prometheus"
               },
               "editorMode": "code",
-              "expr": "time() - max by (cronjob) (kube_cronjob_status_last_successful_time{namespace=\"dipink\", cronjob=~\"(graphiti-ingest|build-communities|memory-gaps|memory-alerts|memory-healthcheck|contradiction-janitor)\"})",
+              "expr": "time() - max by (cronjob) (kube_cronjob_status_last_successful_time{namespace=\"dipink\", cronjob=~\"(graphiti-ingest|memory-gaps|memory-alerts|memory-healthcheck|contradiction-janitor)\"})",
               "legendFormat": "{{cronjob}}",
               "range": true,
               "refId": "A"
@@ -1969,7 +1871,7 @@ data:
                 "uid": "prometheus"
               },
               "editorMode": "code",
-              "expr": "max by (cronjob) (kube_cronjob_status_active{namespace=\"dipink\", cronjob=~\"(graphiti-ingest|build-communities|memory-gaps|memory-alerts|memory-healthcheck|contradiction-janitor)\"})",
+              "expr": "max by (cronjob) (kube_cronjob_status_active{namespace=\"dipink\", cronjob=~\"(graphiti-ingest|memory-gaps|memory-alerts|memory-healthcheck|contradiction-janitor)\"})",
               "legendFormat": "active {{cronjob}}",
               "range": true,
               "refId": "A"
@@ -1980,7 +1882,7 @@ data:
                 "uid": "prometheus"
               },
               "editorMode": "code",
-              "expr": "max by (cronjob) (kube_cronjob_spec_suspend{namespace=\"dipink\", cronjob=~\"(graphiti-ingest|build-communities|memory-gaps|memory-alerts|memory-healthcheck|contradiction-janitor)\"})",
+              "expr": "max by (cronjob) (kube_cronjob_spec_suspend{namespace=\"dipink\", cronjob=~\"(graphiti-ingest|memory-gaps|memory-alerts|memory-healthcheck|contradiction-janitor)\"})",
               "legendFormat": "suspended {{cronjob}}",
               "range": true,
               "refId": "B"
@@ -2078,7 +1980,7 @@ data:
                 "uid": "prometheus"
               },
               "editorMode": "code",
-              "expr": "max by (job_name) (kube_job_status_failed{namespace=\"dipink\", job_name=~\"(graphiti-ingest|build-communities|memory-gaps|memory-alerts|memory-healthcheck|contradiction-janitor)-[0-9]+\"})",
+              "expr": "max by (job_name) (kube_job_status_failed{namespace=\"dipink\", job_name=~\"(graphiti-ingest|memory-gaps|memory-alerts|memory-healthcheck|contradiction-janitor)-[0-9]+\"})",
               "legendFormat": "{{job_name}}",
               "range": true,
               "refId": "A"
@@ -2176,7 +2078,7 @@ data:
                 "uid": "prometheus"
               },
               "editorMode": "code",
-              "expr": "max by (job_name) (kube_job_status_succeeded{namespace=\"dipink\", job_name=~\"(graphiti-ingest|build-communities|memory-gaps|memory-alerts|memory-healthcheck|contradiction-janitor)-[0-9]+\"})",
+              "expr": "max by (job_name) (kube_job_status_succeeded{namespace=\"dipink\", job_name=~\"(graphiti-ingest|memory-gaps|memory-alerts|memory-healthcheck|contradiction-janitor)-[0-9]+\"})",
               "legendFormat": "{{job_name}}",
               "range": true,
               "refId": "A"

@@ -215,7 +215,7 @@ const TOOLS: ToolSpec[] = [
     label: "Memory Status",
     description:
       "Return a bounded operational summary of memory component readiness, wiki indexing, " +
-      "inbox/deferred/blocked/review queues, ingest lag/partials, communities, recent usage, " +
+      "inbox/deferred/blocked/review queues, ingest lag/partials, recent usage, " +
       "and build version. Components degrade independently and no raw note/query content is returned.",
     promptSnippet: "Get bounded operational status for the memory system",
     parameters: Type.Object({}),
@@ -244,11 +244,11 @@ const TOOLS: ToolSpec[] = [
     description:
       "Search the operator's knowledge graph. Returns a STRUCTURED PACKET: the top atomic " +
       "FACTS — each with its source-note slug and a current/superseded flag (`current=false` " +
-      "= outdated) — a COMMUNITY summary, top ENTITIES, an excerpt of the top SOURCE NOTE, " +
+      "= outdated) — top ENTITIES, an excerpt of the top SOURCE NOTE, " +
       "plus semantic_notes (the wiki's embedding hits, fused in). Use for BREADTH — " +
       "exploring a topic, resuming a project — or when graph_answer escalates.",
     promptSnippet:
-      "Search the operator's knowledge graph (temporal facts + provenance + communities)",
+      "Search the operator's knowledge graph (temporal facts + provenance)",
     parameters: Type.Object({
       query: Type.String({
         description: "What to look for — a topic, service, decision, how-to, incident, etc.",

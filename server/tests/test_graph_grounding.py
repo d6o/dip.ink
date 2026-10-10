@@ -24,7 +24,6 @@ def packet() -> dict:
             "source_slug": VALID_SLUG,
             "current": True,
         }],
-        "communities": [],
         "entities": [],
         "source_excerpt": None,
         "semantic_notes": [{"name": SEMANTIC_SLUG}],

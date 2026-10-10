@@ -254,7 +254,7 @@ def _wiki_status() -> tuple[dict, dict]:
     return component, index
 
 
-async def _graph_status() -> tuple[dict, dict, dict]:
+async def _graph_status() -> tuple[dict, dict]:
     group_id = os.environ.get("GROUP_ID", "main")
     component = {"ready": False, "error": None}
     ingest = {
@@ -269,7 +269,6 @@ async def _graph_status() -> tuple[dict, dict, dict]:
         "watermark": None,
         "error": None,
     }
-    communities = {"count": 0, "age_seconds": None, "newest_at": None, "error": None}
     try:
         import graph
 
@@ -279,8 +278,7 @@ async def _graph_status() -> tuple[dict, dict, dict]:
     except Exception as error:  # noqa: BLE001
         component["error"] = _safe_error(error)
         ingest["error"] = "graph_unavailable"
-        communities["error"] = "graph_unavailable"
-        return component, ingest, communities
+        return component, ingest
 
     try:
         from ingest import collect_ingest_status, discover_notes, note_content_hash
@@ -312,24 +310,7 @@ async def _graph_status() -> tuple[dict, dict, dict]:
         })
     except Exception as error:  # noqa: BLE001
         ingest["error"] = _safe_error(error)
-
-    try:
-        rows, _, _ = await client.driver.execute_query(
-            "MATCH (c:Community {group_id: $group_id}) "
-            "RETURN count(c) AS count, max(c.created_at) AS newest",
-            group_id=group_id,
-            routing_="r",
-        )
-        row = rows[0] if rows else {}
-        newest = _to_datetime(row.get("newest"))
-        communities.update({
-            "count": int(row.get("count") or 0),
-            "age_seconds": _age_seconds(newest, datetime.now(timezone.utc)),
-            "newest_at": newest.isoformat() if newest else None,
-        })
-    except Exception as error:  # noqa: BLE001
-        communities["error"] = _safe_error(error)
-    return component, ingest, communities
+    return component, ingest
 
 
 async def collect_status() -> dict:
@@ -367,7 +348,7 @@ async def collect_status() -> dict:
             "newest_note": None,
         }
 
-    graph_component, ingest, communities = await _graph_status()
+    graph_component, ingest = await _graph_status()
     try:
         usage = await anyio.to_thread.run_sync(_collect_usage_status)
     except Exception as error:  # noqa: BLE001
@@ -395,7 +376,6 @@ async def collect_status() -> dict:
         "queues": repo["queues"],
         "notes": {"newest": repo["newest_note"]},
         "ingest": ingest,
-        "communities": communities,
         "usage_24h": usage,
         "build": {"version": DIPINK_VERSION, "revision": DIPINK_BUILD},
     }
@@ -426,8 +406,8 @@ def invalidate_status_cache() -> None:
 @core.mcp.tool()
 async def memory_status() -> dict:
     """Return a bounded operational summary of wiki, graph, queues, ingest,
-    communities, recent usage, and build version. Component failures degrade
-    independently; no raw note bodies, query text, or credentials are returned."""
+    recent usage, and build version. Component failures degrade independently;
+    no raw note bodies, query text, or credentials are returned."""
     started = time.monotonic()
     snapshot = await get_status()
     await anyio.to_thread.run_sync(lambda: core.record_query({

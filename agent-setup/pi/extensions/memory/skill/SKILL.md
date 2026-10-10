@@ -9,9 +9,9 @@ The operator maintains a personal, LLM-curated memory system. The `memory` exten
 
 ## Which tool when
 
-- **Operational health/backlog** → `memory_status` for component readiness, inbox/deferred/blocked counts, ingest lag, communities, recent usage, and build version. It never returns note bodies or raw query text.
+- **Operational health/backlog** → `memory_status` for component readiness, inbox/deferred/blocked counts, ingest lag, recent usage, and build version. It never returns note bodies or raw query text.
 - **Factual question** ("what port does X use?", "what did I decide about Y?") → `graph_answer` FIRST. Direct distilled `{answer, confidence, sources, escalate}` (~150 tokens). If `escalate: true` or `not_found`, fall back to `graph_search`.
-- **Broad/exploratory context** → `graph_search` (facts + community summary + entities + source excerpt + semantic wiki hits) or `wiki_search` (curated pages).
+- **Broad/exploratory context** → `graph_search` (facts + entities + source excerpt + semantic wiki hits) or `wiki_search` (curated pages).
 - **What's true NOW** (excluding superseded facts) → `graph_current_facts` or `graph_entity`.
 - **Resuming after time away** → `graph_changes(subject, since_days)`.
 - **Provenance** — every graph fact carries a `source_slug`; fetch the original with `graph_get_note(slug)`.

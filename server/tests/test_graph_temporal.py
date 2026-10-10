@@ -29,8 +29,7 @@ def evidence() -> dict:
             {"fact": "Memory uses v0.1.6.", "source_slug": OLD, "current": True},
             {"fact": "The release publishes pi-runner:v0.1.11.", "source_slug": NEW, "current": True},
         ],
-        "entities": [{"summary": "Memory uses v0.1.6."}],
-        "communities": [{"summary": "The curator uses v0.1.7."}],
+        "entities": [{"summary": "Memory uses v0.1.6. The curator uses v0.1.7."}],
         "source_excerpt": {"slug": OLD, "content": "Memory uses v0.1.6."},
         "semantic_notes": [
             {"name": LATEST, "type": "source", "description": "Patch release", "content": LATEST_TEXT},
@@ -249,7 +248,6 @@ class TemporalGroundingTests(unittest.TestCase):
             self.assertNotIn(stale, text)
         self.assertEqual(view["facts"], [])
         self.assertEqual(view["entities"], [])
-        self.assertEqual(view["communities"], [])
         self.assertIsNone(view["source_excerpt"])
         self.assertEqual([hit["name"] for hit in view["semantic_notes"]], [LATEST])
 

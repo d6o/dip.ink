@@ -115,7 +115,6 @@ _STATE_GAUGE_NAMES = (
     "dipink_ingest_pending_notes",
     "dipink_ingest_partial_notes",
     "dipink_ingest_lag_seconds",
-    "dipink_community_age_seconds",
 )
 STATE_GAUGES = {
     name: Gauge(name, name.replace("dipink_", "").replace("_", " "), registry=PROMETHEUS_REGISTRY)
@@ -207,13 +206,10 @@ def update_state_metrics(snapshot: dict) -> None:
     index = snapshot.get("index") or {}
     queues = snapshot.get("queues") or {}
     ingest = snapshot.get("ingest") or {}
-    communities = snapshot.get("communities") or {}
 
     wiki_ready = bool((components.get("wiki") or {}).get("ready"))
     graph_ready = bool((components.get("graph") or {}).get("ready"))
     index_age = index.get("age_seconds")
-    community_age = communities.get("age_seconds")
-    community_count = int(communities.get("count") or 0)
     values = {
         "dipink_wiki_index_ready": 1 if wiki_ready else 0,
         "dipink_wiki_index_degraded": 1 if index.get("degraded") else 0,
@@ -229,10 +225,6 @@ def update_state_metrics(snapshot: dict) -> None:
         "dipink_ingest_pending_notes": float(ingest.get("pending") or 0),
         "dipink_ingest_partial_notes": float(ingest.get("partial") or 0),
         "dipink_ingest_lag_seconds": float(ingest.get("lag_seconds") or 0.0),
-        "dipink_community_age_seconds": (
-            float(community_age) if community_age is not None
-            else (float("inf") if graph_ready and community_count == 0 else 0.0)
-        ),
     }
     for name, value in values.items():
         STATE_GAUGES[name].set(value)

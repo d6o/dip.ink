@@ -8,7 +8,7 @@ This optional adapter supports Neo4j 5.26.2 Community. It uses `db.index.vector.
 - `graph._get_graph` installs the adapter only for graph reads. `ingest.build_graphiti` retains upstream exact matching and temporal invalidation.
 - Graphiti 0.29.2 routes `search_` through `driver.search_interface`, not `driver.search_ops`. A per-instance bridge connects that interface to indexed read operations.
 - Optional interface methods retain legacy fallback. In particular, legacy rerankers return UUID/score tuples, whereas operations rerankers return nodes.
-- Fulltext, BFS, communities, RRF, provenance parsing, and response packets remain unchanged.
+- Fulltext, BFS, RRF, provenance parsing, and response packets remain unchanged.
 - No request creates indexes. Missing, offline, incompatible, or failed indexes cause exact fallback for that branch.
 - The adapter checks index metadata before each ANN query. Metadata permission failures also cause exact fallback.
 - ANN returns bounded candidates. The adapter applies the group restriction and reranks with the existing `vector.similarity.cosine` function.
