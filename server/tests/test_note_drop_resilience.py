@@ -165,9 +165,6 @@ class ArchiveAwareIdempotencyTests(unittest.TestCase):
         self.root.mkdir(parents=True)
         self.patch_root = mock.patch.object(wiki, "WIKI_ROOT", self.root)
         self.patch_root.start()
-        wiki._capture_hash_root = None
-        wiki._capture_hash_revision_value = None
-        wiki._capture_hash_index = {}
 
     def tearDown(self):
         self.patch_root.stop()
@@ -231,22 +228,21 @@ class ArchiveAwareIdempotencyTests(unittest.TestCase):
 
         self.assertIsNone(wiki.find_existing_note_drop("retry-me", "different-hash"))
 
-    def test_capture_hash_scan_is_cached_for_same_git_revision(self):
-        folder = "2026-07-18-120000-retry-me"
-        self._write_source("notes", folder, "hash-live")
-        git_dir = self.root / ".git" / "refs" / "heads"
-        git_dir.mkdir(parents=True)
-        (self.root / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
-        (git_dir / "main").write_text("abc123\n", encoding="utf-8")
-
+    def test_lookup_reads_only_folders_of_the_same_slug(self):
+        self._write_source("notes", "2026-07-18-120000-retry-me", "hash-live")
+        for i in range(20):
+            self._write_source("wiki/sources/notes/2026/07/18", f"2026-07-18-1200{i:02d}-other-{i}", f"h{i}")
         with mock.patch.object(
             wiki, "read_frontmatter_and_body", wraps=wiki.read_frontmatter_and_body
         ) as parse:
             self.assertIsNotNone(wiki.find_existing_note_drop("retry-me", "hash-live"))
-            first_count = parse.call_count
-            self.assertIsNotNone(wiki.find_existing_note_drop("retry-me", "hash-live"))
-        self.assertGreater(first_count, 0)
-        self.assertEqual(parse.call_count, first_count)
+        self.assertEqual(parse.call_count, 1)
+
+    def test_suffix_match_does_not_confuse_longer_slugs(self):
+        self._write_source("notes", "2026-07-18-120000-big-retry-me", "hash-live")
+        self.assertIsNone(wiki.find_existing_note_drop("retry-me-x", "hash-live"))
+        # "-retry-me" is a suffix of "-big-retry-me"; the hash still decides.
+        self.assertIsNone(wiki.find_existing_note_drop("retry-me", "other"))
 
 
 class NoteFrontmatterValidationTests(unittest.TestCase):

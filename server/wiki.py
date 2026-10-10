@@ -129,10 +129,6 @@ class ExistingNoteDrop:
     archived: bool
 
 
-_capture_hash_lock = threading.Lock()
-_capture_hash_root: Path | None = None
-_capture_hash_revision_value: str | None = None
-_capture_hash_index: dict[str, list[ExistingNoteDrop]] = {}
 
 
 # --- Git plumbing for clone-at-startup, periodic pull, and note-drop push ---
@@ -479,59 +475,22 @@ def _capture_hash_revision(root: Path) -> str | None:
         return None
 
 
-def _refresh_capture_hash_index(*, force: bool = False) -> None:
-    """Index capture hashes across live inboxes and canonical archives.
+def _slug_folders(location: Path, depth: int, suffix: str) -> list[Path]:
+    """Folders at `depth` levels under `location` whose names end with suffix.
 
-    The scan is O(notes) only once per git revision (or every call for a
-    non-git test/dev tree). Normal retries are O(1), which remains practical at
-    ~10k source notes.
+    Reads directory entries only. No file is opened.
     """
-    global _capture_hash_root, _capture_hash_revision_value, _capture_hash_index
-    root = Path(WIKI_ROOT)
-    revision = _capture_hash_revision(root)
-    with _capture_hash_lock:
-        if (
-            not force
-            and revision is not None
-            and _capture_hash_root == root
-            and _capture_hash_revision_value == revision
-        ):
-            return
-
-        indexed: dict[str, list[ExistingNoteDrop]] = defaultdict(list)
-        locations = (
-            (root / "notes", False),
-            (root / "wiki" / "sources" / "notes", True),
-        )
-        for location, archived in locations:
-            if not location.exists():
+    level = [location]
+    for _ in range(depth):
+        following: list[Path] = []
+        for directory in level:
+            try:
+                with os.scandir(directory) as entries:
+                    following.extend(Path(e.path) for e in entries if e.is_dir(follow_symlinks=False))
+            except OSError:
                 continue
-            for source_file in location.rglob("*.md"):
-                folder = source_file.parent
-                if source_file.stem != folder.name:
-                    continue
-                try:
-                    fm, _body = read_frontmatter_and_body(
-                        source_file.read_text(encoding="utf-8")
-                    )
-                except Exception:
-                    continue
-                capture_hash = fm.get("capture-hash")
-                if not isinstance(capture_hash, str) or not capture_hash:
-                    continue
-                try:
-                    relative_dir = folder.relative_to(root).as_posix()
-                except ValueError:
-                    continue
-                indexed[capture_hash].append(ExistingNoteDrop(
-                    folder=folder.name,
-                    relative_dir=relative_dir,
-                    archived=archived,
-                ))
-
-        _capture_hash_root = root
-        _capture_hash_revision_value = revision
-        _capture_hash_index = dict(indexed)
+        level = following
+    return [folder for folder in level if folder.name.endswith(suffix)]
 
 
 def find_existing_note_drop(
@@ -540,14 +499,37 @@ def find_existing_note_drop(
     *,
     force_refresh: bool = False,
 ) -> ExistingNoteDrop | None:
-    """Find a retried payload in notes/ or wiki/sources/notes/."""
-    _refresh_capture_hash_index(force=force_refresh)
+    """Find a retried payload in notes/ or wiki/sources/notes/.
+
+    A retry uses the same slug, so only folders that end with "-<slug>" can
+    match. The lookup reads directory entries and opens only those few source
+    notes. A full scan of every source note took about 16 s at 13k notes and
+    ran again after each clone refresh. `force_refresh` is accepted for API
+    compatibility; every call reads the current tree.
+    """
+    del force_refresh
+    root = Path(WIKI_ROOT)
     suffix = f"-{slug}"
-    with _capture_hash_lock:
-        matches = list(_capture_hash_index.get(capture_hash, ()))
-    for existing in matches:
-        if existing.folder.endswith(suffix):
-            return existing
+    locations = (
+        (root / "notes", 1, False),
+        (root / "wiki" / "sources" / "notes", 4, True),  # YYYY/MM/DD/<folder>
+    )
+    for location, depth, archived in locations:
+        if not location.is_dir():
+            continue
+        for folder in sorted(_slug_folders(location, depth, suffix)):
+            source_file = folder / f"{folder.name}.md"
+            try:
+                fm, _body = read_frontmatter_and_body(source_file.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if fm.get("capture-hash") != capture_hash:
+                continue
+            try:
+                relative_dir = folder.relative_to(root).as_posix()
+            except ValueError:
+                continue
+            return ExistingNoteDrop(folder=folder.name, relative_dir=relative_dir, archived=archived)
     return None
 
 
