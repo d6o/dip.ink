@@ -249,6 +249,17 @@ class GiteaNoteDropTests(unittest.TestCase):
                 self.assertNotIn(SECRET_TOKEN, result["error"])
                 self.assertEqual(len(self.fake.posts), before + 1)
 
+    def test_refused_token_falls_back_to_git(self) -> None:
+        for status in (401, 403):
+            with self.subTest(status=status):
+                self.fake.post_status = status
+                self.fake.post_error = "token does not have the required scope"
+                with mock.patch.object(wiki, "_run_git", side_effect=RuntimeError("git path ran")) as run_git:
+                    result = self._drop(slug=f"refused-{status}")
+                self.assertTrue(run_git.called, "expected the git fallback to run")
+                self.assertFalse(result["ok"])
+                self.assertIn("git path ran", result["error"])
+
     def test_timeout_then_get_returns_success(self) -> None:
         real_request = wiki._gitea_request
         calls = {"post": 0}

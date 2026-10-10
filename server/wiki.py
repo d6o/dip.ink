@@ -797,8 +797,10 @@ def _wiki_note_drop_via_gitea(
     decoded_bin: dict[str, bytes],
     capture_hash: str,
     started: float,
-) -> dict:
-    """Create one note with one ChangeFiles request. Do not run git."""
+) -> dict | None:
+    """Create one note with one ChangeFiles request. Do not run git.
+
+    Returns None when the API refuses the token; the caller then uses git."""
     recent = _recall_api_drop(capture_hash)
     if recent is not None and recent.get("folder", "").endswith(f"-{slug}"):
         log.info(
@@ -893,6 +895,12 @@ def _wiki_note_drop_via_gitea(
             slug, folder_name, sha[:12], time.monotonic() - started,
         )
         return result
+
+    if status in (401, 403):
+        # The token cannot write through the API (for example a token
+        # without the repository write scope). Git push can still work.
+        log.warning("gitea contents API refused the token (%d); using the git path", status)
+        return None
 
     if status in (409, 422):
         message = _gitea_error_message(response_body).lower()
@@ -1707,9 +1715,11 @@ def _wiki_note_drop_impl(
     # does not run git. The local clone can be stale; find_existing_note_drop
     # still checks it, and the in-process map covers an immediate retry.
     if note_drop_uses_gitea_api():
-        return _wiki_note_drop_via_gitea(
+        api_result = _wiki_note_drop_via_gitea(
             slug, note_md, decoded_text, decoded_bin, capture_hash, started,
         )
+        if api_result is not None:
+            return api_result
 
     # --- Single-flight: serialize git ops on the working tree ---
     with _repo_lock:
