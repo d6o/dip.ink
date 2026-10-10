@@ -15,8 +15,13 @@ os.environ.setdefault("OPENAI_API_KEY", "test-only")
 os.environ["WIKI_MCP_EMBED_PROVIDER"] = "openai"
 os.environ["WIKI_MCP_BACKGROUND_REINDEX"] = "0"
 os.environ["WIKI_ROOT"] = "/tmp/wiki-mcp-test-global-root"
+# Existing tests exercise the git fallback. The Gitea path has its own file.
+# Assign the attribute too: an earlier test module may already have imported wiki.
+os.environ["WIKI_WRITE_MODE"] = "git"
 
 import wiki  # noqa: E402
+
+wiki.WIKI_WRITE_MODE = "git"
 
 
 class StaleLockTests(unittest.TestCase):

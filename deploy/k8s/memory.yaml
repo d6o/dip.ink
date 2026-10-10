@@ -47,6 +47,9 @@ spec:
               valueFrom: {secretKeyRef: {name: dipink-secrets, key: WIKI_REPO_TOKEN}}
             - {name: CACHE_DIR, value: /var/lib/memory/cache}
             - {name: WIKI_CLONE_PATH, value: /var/lib/memory/wiki}
+            # auto uses the Gitea contents API when the host supports it.
+            # Set git to keep fetch, commit, and push on the local clone.
+            - {name: WIKI_WRITE_MODE, value: auto}
             # Graph/extraction credentials. Custom provider and distiller keys
             # are optional; empty/missing values fall back in server code.
             - {name: NEO4J_URI, value: bolt://neo4j:7687}
