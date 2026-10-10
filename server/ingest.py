@@ -24,6 +24,7 @@ import logging
 import os
 import re
 import sys
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -31,6 +32,7 @@ from pathlib import Path
 from pydantic import BaseModel
 
 from chat_fallback import OrderedModelFallback, parse_model_ladder
+import ingest_metrics
 
 from graphiti_core import Graphiti
 from graphiti_core.driver.neo4j_driver import Neo4jDriver
@@ -146,6 +148,7 @@ class CompactSchemaClient(OpenAIGenericClient):
                     **({"prompt.name": prompt_name} if prompt_name else {}),
                 }
             )
+            prompt_token = ingest_metrics.set_prompt(prompt_name)
             try:
                 return await self._generate_response_with_retry(
                     messages, response_model, max_tokens=max_tokens, model_size=model_size
@@ -154,6 +157,8 @@ class CompactSchemaClient(OpenAIGenericClient):
                 span.set_status("error", str(e))
                 span.record_exception(e)
                 raise
+            finally:
+                ingest_metrics.reset_prompt(prompt_token)
 
     async def _generate_response(
         self,
@@ -169,17 +174,29 @@ class CompactSchemaClient(OpenAIGenericClient):
                 openai_messages.append({"role": message.role, "content": message.content})
 
         async def call(model: str):
-            response = await self.client.chat.completions.create(
-                model=model,
-                messages=openai_messages,
-                temperature=self.temperature,
-                max_tokens=max_tokens,
-                response_format=self._build_response_format(response_model),
-            )
-            text = response.choices[0].message.content or ""
-            if not text:
-                raise EmptyResponseError("LLM returned an empty response")
-            return json.loads(self._strip_code_fences(text))
+            metrics = ingest_metrics.current()
+            started = time.monotonic()
+            response = None
+            try:
+                response = await self.client.chat.completions.create(
+                    model=model,
+                    messages=openai_messages,
+                    temperature=self.temperature,
+                    max_tokens=max_tokens,
+                    response_format=self._build_response_format(response_model),
+                )
+                text = response.choices[0].message.content or ""
+                if not text:
+                    raise EmptyResponseError("LLM returned an empty response")
+                parsed = json.loads(self._strip_code_fences(text))
+            except Exception as error:
+                if metrics is not None:
+                    _record_llm_call(metrics, model, started, response, max_tokens,
+                                     ingest_metrics.failure_kind(error))
+                raise
+            if metrics is not None:
+                _record_llm_call(metrics, model, started, response, max_tokens, "ok")
+            return parsed
 
         try:
             result = await self.model_ladder.run(call)
@@ -200,6 +217,46 @@ class CompactSchemaClient(OpenAIGenericClient):
         if isinstance(result, list) and len(result) == 1 and isinstance(result[0], dict):
             result = result[0]
         return result
+
+def _record_llm_call(metrics, model, started, response, max_tokens, outcome) -> None:
+    usage = getattr(response, "usage", None)
+    choice = (getattr(response, "choices", None) or [None])[0]
+    metrics.record_llm(
+        # The router may answer with another model; record the one it reports.
+        model=str(getattr(response, "model", "") or model),
+        started=started,
+        ended=time.monotonic(),
+        outcome=outcome,
+        prompt_tokens=getattr(usage, "prompt_tokens", None),
+        completion_tokens=getattr(usage, "completion_tokens", None),
+        finish_reason=getattr(choice, "finish_reason", None),
+        max_tokens=max_tokens,
+    )
+
+
+def _instrument_embedder(embedder) -> None:
+    """Time embedding calls for the current note. Behavior stays the same."""
+    if embedder is None:
+        return
+    for name in ("create", "create_batch"):
+        original = getattr(embedder, name, None)
+        if original is None:
+            continue
+
+        def wrap(fn):
+            async def timed(input_data, *args, **kwargs):
+                metrics = ingest_metrics.current()
+                started = time.monotonic()
+                try:
+                    return await fn(input_data, *args, **kwargs)
+                finally:
+                    if metrics is not None:
+                        count = len(input_data) if isinstance(input_data, list) else 1
+                        metrics.record_embed(started, time.monotonic(), count)
+            return timed
+
+        setattr(embedder, name, wrap(original))
+
 
 # ---------------------------------------------------------------------------
 # Configuration (all from env)
@@ -270,6 +327,9 @@ async def add_episode_with_retry(g, **kw):
             if not transient or attempt == ADD_EPISODE_RETRIES:
                 raise
             wait = min(2 ** attempt, 20)
+            metrics = ingest_metrics.current()
+            if metrics is not None:
+                metrics.episode_retries += 1
             print(f"[ingest] transient {ename} (retry {attempt + 1}/{ADD_EPISODE_RETRIES} in {wait}s): {msg[:70]}",
                   file=sys.stderr)
             await asyncio.sleep(wait)
@@ -331,6 +391,16 @@ class DipInkNeo4jDriver(Neo4jDriver):
         self._graph_ops = Neo4jGraphMaintenanceOperations()
         self.aoss_client = None
 
+    async def execute_query(self, cypher_query_, **kwargs):
+        metrics = ingest_metrics.current()
+        if metrics is None:
+            return await super().execute_query(cypher_query_, **kwargs)
+        started = time.monotonic()
+        try:
+            return await super().execute_query(cypher_query_, **kwargs)
+        finally:
+            metrics.record_neo4j(started, time.monotonic())
+
 
 def build_graphiti() -> Graphiti:
     """Wire Graphiti: extraction LLM from env, default OpenAI embedder.
@@ -365,11 +435,13 @@ def build_graphiti() -> Graphiti:
         max_connection_pool_size=NEO4J_MAX_POOL,
         connection_acquisition_timeout=NEO4J_ACQ_TIMEOUT,
     )
-    return Graphiti(
+    graphiti = Graphiti(
         graph_driver=graph_driver,
         llm_client=llm_client,
         embedder=None,
     )
+    _instrument_embedder(getattr(graphiti, "embedder", None))
+    return graphiti
 
 
 DEFAULT_GROUP_ID = os.environ.get("GROUP_ID", "main")
@@ -778,20 +850,43 @@ async def _ingest_note(
     group_id: str,
 ) -> None:
     body = read_note_body(path)
-    result = await add_episode_with_retry(
-        g,
-        name=slug,
-        episode_body=body,
-        source=EpisodeType.text,
-        source_description="wiki source note",
-        reference_time=ts,
-        group_id=group_id,
-    )
-    episode = getattr(result, "episode", None)
-    episode_uuid = str(getattr(episode, "uuid", "") or "")
-    if not episode_uuid:
-        raise RuntimeError(f"Graphiti add_episode returned no episode uuid for {slug}")
-    await _mark_episode_complete(g.driver, episode_uuid, episode_content_hash(body), group_id)
+    attempt = await ingest_metrics.prior_attempts(g.driver, slug) + 1
+    metrics, token = ingest_metrics.start(slug, len(body), attempt)
+    result = None
+    error: BaseException | None = None
+    try:
+        result = await add_episode_with_retry(
+            g,
+            name=slug,
+            episode_body=body,
+            source=EpisodeType.text,
+            source_description="wiki source note",
+            reference_time=ts,
+            group_id=group_id,
+        )
+        episode = getattr(result, "episode", None)
+        episode_uuid = str(getattr(episode, "uuid", "") or "")
+        if not episode_uuid:
+            raise RuntimeError(f"Graphiti add_episode returned no episode uuid for {slug}")
+        await _mark_episode_complete(g.driver, episode_uuid, episode_content_hash(body), group_id)
+    except BaseException as caught:
+        error = caught
+        raise
+    finally:
+        ingest_metrics.finish(token)
+        outcome = "ok" if error is None else (
+            "cancelled" if isinstance(error, asyncio.CancelledError) else "fail"
+        )
+        record = metrics.summary(
+            outcome=outcome,
+            error=error,
+            nodes=len(getattr(result, "nodes", None) or []) if result is not None else None,
+            edges=len(getattr(result, "edges", None) or []) if result is not None else None,
+        )
+        ingest_metrics.emit(record)
+        # A cancelled note (job deadline or SIGTERM) is recorded too: it shows
+        # how much work the deadline threw away.
+        await ingest_metrics.persist(g.driver, record)
 
 
 async def _run_pending_batch(
@@ -884,6 +979,24 @@ async def status() -> None:
     print(f"[status] progress: {pct:.1f}%")
 
 
+def _cancel_on_sigterm() -> None:
+    """Turn SIGTERM (Job deadline, pod delete) into task cancellation.
+
+    The note in flight then records a "cancelled" measurement before the
+    process ends. Without it, a deadline kill leaves no trace.
+    """
+    import signal
+
+    loop = asyncio.get_running_loop()
+    task = asyncio.current_task()
+    if task is None:
+        return
+    try:
+        loop.add_signal_handler(signal.SIGTERM, task.cancel)
+    except (NotImplementedError, RuntimeError):
+        pass
+
+
 async def cron() -> None:
     """Resumable bounded batch with explicit completion and content identity.
 
@@ -901,8 +1014,10 @@ async def cron() -> None:
         return
 
     g = build_graphiti_on_group(group_id)
+    _cancel_on_sigterm()
     try:
         await g.build_indices_and_constraints()
+        await ingest_metrics.ensure_index(g.driver)
         assessment = await assess_ingest(
             g.driver,
             notes,
