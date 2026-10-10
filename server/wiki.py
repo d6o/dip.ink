@@ -23,12 +23,16 @@ from __future__ import annotations
 import base64
 import functools
 import hashlib
+import json
 import os
 import re
 import shutil
 import subprocess
 import threading
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 
 import anyio.to_thread
 from collections import defaultdict
@@ -60,6 +64,14 @@ WIKI_CLONE_PATH = Path(os.environ.get("WIKI_CLONE_PATH", "/var/lib/memory/wiki")
 # error; pulls still work for public repos.
 WIKI_REPO_TOKEN = os.environ.get("WIKI_REPO_TOKEN", "")
 WIKI_REPO_USER = os.environ.get("WIKI_REPO_USER", "token")
+# How wiki_note_drop writes a note.
+#   auto       — use the Gitea contents API when the host answers
+#                GET {origin}/api/v1/version; otherwise use git.
+#   gitea-api  — always use the Gitea contents API.
+#   git        — always fetch, commit, and push on the local clone.
+WIKI_WRITE_MODE = os.environ.get("WIKI_WRITE_MODE", "auto").strip().lower() or "auto"
+# One ChangeFiles request must finish well inside the liveness window.
+WIKI_GITEA_TIMEOUT_SEC = float(os.environ.get("WIKI_GITEA_TIMEOUT_SEC", "30"))
 GIT_USER_NAME = os.environ.get("WIKI_GIT_USER_NAME", "wiki-mcp")
 GIT_USER_EMAIL = os.environ.get("WIKI_GIT_USER_EMAIL", "wiki-mcp@localhost")
 # Embedding provider:
@@ -91,9 +103,22 @@ ATTACHMENT_TEXT_MAX = 256 * 1024        # 256 KB per text attachment
 ATTACHMENT_BINARY_MAX = 2 * 1024 * 1024  # 2 MB per binary attachment (decoded)
 
 # Single-flight lock around any git op touching the working tree (clone, pull,
-# fetch+reset, commit, push). Both the periodic reindex pull and the note-drop
-# tool acquire this lock; reads (search, get, backlinks) don't.
+# fetch+reset, commit, push). Both the periodic reindex pull and the git
+# note-drop path acquire this lock; reads (search, get, backlinks) do not.
+# The Gitea API write path does not take this lock and does not run git.
 _repo_lock = threading.Lock()
+# The reindex loop waits on this event. A successful API drop sets it so the
+# local clone sees the new note before the normal interval.
+_reindex_wake = threading.Event()
+# Successful API drops in this process: capture hash -> result dict.
+# An immediate retry with the same payload returns already_exists and does
+# not create a second commit. The map is process-local and bounded.
+_api_drop_lock = threading.Lock()
+_api_drop_cache: dict[str, dict] = {}
+_API_DROP_CACHE_MAX = 256
+# auto mode probes the host once. None means "not probed yet".
+_gitea_detect_lock = threading.Lock()
+_gitea_detected: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -557,6 +582,327 @@ def note_drop_result(
     elif repo_web.startswith("http"):
         result["url"] = f"{repo_web}/src/branch/{WIKI_BRANCH}/{relative_dir}"  # gitea/forgejo
     return result
+
+
+class GiteaAmbiguousError(Exception):
+    """The ChangeFiles request left the process, and the follow-up read failed."""
+
+
+def _bounded_error(text: str, limit: int = 300) -> str:
+    """Return a short error. Drop the token and keep the text inside the limit."""
+    cleaned = str(text).replace("\n", " ").strip()
+    token = WIKI_REPO_TOKEN
+    if token:
+        cleaned = cleaned.replace(token, "[redacted]")
+    if len(cleaned) <= limit:
+        return cleaned
+    return cleaned[: limit - 3] + "..."
+
+
+def _repo_origin_and_slug(repo_url: str) -> tuple[str, str, str]:
+    """Return (origin, owner, repo) from an HTTPS clone URL.
+
+    `https://host/ai-agent/mykg.git` becomes origin `https://host`,
+    owner `ai-agent`, and repo `mykg`.
+    """
+    match = re.match(r"^(https?://[^/]+)/(.+)$", (repo_url or "").strip())
+    if not match:
+        raise ValueError("WIKI_REPO_URL must be an https URL with owner and repo")
+    origin, path = match.group(1), match.group(2)
+    path = re.sub(r"\.git$", "", path).strip("/")
+    parts = [part for part in path.split("/") if part]
+    if len(parts) < 2:
+        raise ValueError("WIKI_REPO_URL must include owner and repo")
+    return origin, parts[-2], parts[-1]
+
+
+def _gitea_api_base(origin: str, owner: str, repo: str) -> str:
+    return (
+        f"{origin}/api/v1/repos/"
+        f"{urllib.parse.quote(owner)}/{urllib.parse.quote(repo)}"
+    )
+
+
+def _gitea_request(
+    method: str,
+    url: str,
+    *,
+    body: dict | None = None,
+    timeout: float | None = None,
+) -> tuple[int, bytes]:
+    """Send one HTTP request. Auth uses the token header, never the URL.
+
+    Returns (status, body). A timeout or a connection error raises the
+    underlying urllib error so the caller can tell a sent request from a
+    request that never left.
+    """
+    data = None if body is None else json.dumps(body).encode("utf-8")
+    request = urllib.request.Request(url, data=data, method=method)
+    request.add_header("Authorization", f"token {WIKI_REPO_TOKEN}")
+    request.add_header("Accept", "application/json")
+    request.add_header("User-Agent", "OpenAI File Downloader, XaiImageApiFetch/1.0")
+    if data is not None:
+        request.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout or WIKI_GITEA_TIMEOUT_SEC) as response:
+            return response.status, response.read()
+    except urllib.error.HTTPError as error:
+        payload = b""
+        try:
+            payload = error.read() or b""
+        except Exception:
+            payload = b""
+        return error.code, payload
+
+
+def _gitea_error_message(payload: bytes) -> str:
+    """Read the short Gitea message. Ignore the rest of the body."""
+    try:
+        parsed = json.loads(payload.decode("utf-8", errors="replace") or "{}")
+    except (json.JSONDecodeError, UnicodeError):
+        return ""
+    if not isinstance(parsed, dict):
+        return ""
+    message = parsed.get("message")
+    return message if isinstance(message, str) else ""
+
+
+def _detect_gitea(origin: str) -> bool:
+    """True when GET {origin}/api/v1/version returns a version string."""
+    url = f"{origin}/api/v1/version"
+    try:
+        status, payload = _gitea_request("GET", url, timeout=min(10.0, WIKI_GITEA_TIMEOUT_SEC))
+    except (urllib.error.URLError, TimeoutError, OSError):
+        return False
+    if status != 200:
+        return False
+    try:
+        parsed = json.loads(payload.decode("utf-8", errors="replace") or "{}")
+    except json.JSONDecodeError:
+        return False
+    return isinstance(parsed, dict) and isinstance(parsed.get("version"), str) and bool(parsed["version"])
+
+
+def note_drop_uses_gitea_api() -> bool:
+    """Choose the write path. Cache the auto probe for this process."""
+    global _gitea_detected
+    mode = WIKI_WRITE_MODE
+    if mode == "git":
+        return False
+    if mode == "gitea-api":
+        return True
+    if mode != "auto":
+        log.warning("unknown WIKI_WRITE_MODE=%s; using git", mode[:40])
+        return False
+    with _gitea_detect_lock:
+        if _gitea_detected is not None:
+            return _gitea_detected
+        try:
+            origin, _owner, _repo = _repo_origin_and_slug(WIKI_REPO_URL)
+            detected = _detect_gitea(origin)
+        except ValueError:
+            detected = False
+        _gitea_detected = detected
+        log.info("wiki write mode auto: gitea_api=%s", detected)
+        return detected
+
+
+def _remember_api_drop(capture_hash: str, result: dict) -> None:
+    with _api_drop_lock:
+        if len(_api_drop_cache) >= _API_DROP_CACHE_MAX and capture_hash not in _api_drop_cache:
+            oldest = next(iter(_api_drop_cache))
+            del _api_drop_cache[oldest]
+        _api_drop_cache[capture_hash] = result
+
+
+def _recall_api_drop(capture_hash: str) -> dict | None:
+    with _api_drop_lock:
+        stored = _api_drop_cache.get(capture_hash)
+    if stored is None:
+        return None
+    replay = dict(stored)
+    replay["already_exists"] = True
+    replay["ok"] = True
+    return replay
+
+
+def _capture_hash_from_note(text: str) -> str:
+    try:
+        fm, _body = read_frontmatter_and_body(text)
+    except Exception:
+        return ""
+    value = fm.get("capture-hash") if isinstance(fm, dict) else ""
+    return value if isinstance(value, str) else ""
+
+
+def _decode_gitea_content(payload: bytes) -> str:
+    """Decode a contents GET body. Gitea returns base64 with newlines."""
+    try:
+        parsed = json.loads(payload.decode("utf-8", errors="replace") or "{}")
+    except json.JSONDecodeError:
+        return ""
+    if not isinstance(parsed, dict):
+        return ""
+    content = parsed.get("content")
+    if not isinstance(content, str) or not content:
+        return ""
+    encoding = parsed.get("encoding")
+    if encoding not in (None, "base64"):
+        return ""
+    try:
+        raw = base64.b64decode(content, validate=False)
+    except Exception:
+        return ""
+    return raw.decode("utf-8", errors="replace")
+
+
+def _verify_gitea_source_note(
+    api_base: str,
+    folder_name: str,
+    capture_hash: str,
+) -> dict:
+    """Read the source note after an ambiguous write.
+
+    A matching capture hash means the commit landed. A different hash is a
+    folder collision. A missing file means the write did not land.
+    """
+    source_path = f"notes/{folder_name}/{folder_name}.md"
+    quoted = urllib.parse.quote(source_path, safe="/")
+    ref = urllib.parse.quote(WIKI_BRANCH, safe="")
+    url = f"{api_base}/contents/{quoted}?ref={ref}"
+    try:
+        status, payload = _gitea_request("GET", url)
+    except (urllib.error.URLError, TimeoutError, OSError) as error:
+        raise GiteaAmbiguousError(type(error).__name__) from error
+    if status == 404:
+        return {"ok": False, "error": "gitea write did not create the note"}
+    if status != 200:
+        raise GiteaAmbiguousError(f"verify status {status}")
+    found_hash = _capture_hash_from_note(_decode_gitea_content(payload))
+    if found_hash and found_hash == capture_hash:
+        return note_drop_result(folder_name, "")
+    if found_hash and found_hash != capture_hash:
+        return {
+            "ok": False,
+            "error": f"folder {folder_name!r} already exists; retry with a different slug",
+        }
+    raise GiteaAmbiguousError("source note has no capture hash")
+
+
+def _wiki_note_drop_via_gitea(
+    slug: str,
+    note_md: str,
+    decoded_text: dict[str, bytes],
+    decoded_bin: dict[str, bytes],
+    capture_hash: str,
+    started: float,
+) -> dict:
+    """Create one note with one ChangeFiles request. Do not run git."""
+    recent = _recall_api_drop(capture_hash)
+    if recent is not None and recent.get("folder", "").endswith(f"-{slug}"):
+        log.info(
+            "wiki_note_drop idempotent hit in process slug=%s folder=%s duration=%.2fs",
+            slug, recent.get("folder"), time.monotonic() - started,
+        )
+        return recent
+
+    # The local index can be up to one reindex interval behind the remote.
+    existing = find_existing_note_drop(slug, capture_hash)
+    if existing:
+        log.info(
+            "wiki_note_drop idempotent hit before api slug=%s folder=%s duration=%.2fs",
+            slug, existing.folder, time.monotonic() - started,
+        )
+        return note_drop_result(existing, already_exists=True)
+
+    try:
+        origin, owner, repo = _repo_origin_and_slug(WIKI_REPO_URL)
+    except ValueError as error:
+        return {"ok": False, "error": _bounded_error(str(error))}
+    api_base = _gitea_api_base(origin, owner, repo)
+
+    ts = time.strftime("%Y-%m-%d-%H%M%S", time.gmtime())
+    folder_name = f"{ts}-{slug}"
+    source_body = source_note_markdown(folder_name, note_md, capture_hash)
+    body_bytes = source_body.encode("utf-8")
+    if len(body_bytes) > NOTE_BODY_MAX + 8192:
+        return {"ok": False, "error": f"source note is {len(body_bytes)} bytes after frontmatter normalization"}
+
+    files: list[dict] = [{
+        "operation": "create",
+        "path": f"notes/{folder_name}/{folder_name}.md",
+        "content": base64.b64encode(body_bytes).decode("ascii"),
+    }]
+    for name, content in decoded_text.items():
+        files.append({
+            "operation": "create",
+            "path": f"notes/{folder_name}/{name}",
+            "content": base64.b64encode(content).decode("ascii"),
+        })
+    for name, content in decoded_bin.items():
+        files.append({
+            "operation": "create",
+            "path": f"notes/{folder_name}/{name}",
+            "content": base64.b64encode(content).decode("ascii"),
+        })
+
+    payload = {
+        "branch": WIKI_BRANCH,
+        "message": f"note: {folder_name}",
+        "files": files,
+        "author": {"name": GIT_USER_NAME, "email": GIT_USER_EMAIL},
+        "committer": {"name": GIT_USER_NAME, "email": GIT_USER_EMAIL},
+    }
+    url = f"{api_base}/contents"
+    try:
+        status, response_body = _gitea_request("POST", url, body=payload)
+    except (urllib.error.URLError, TimeoutError, OSError) as error:
+        try:
+            verified = _verify_gitea_source_note(api_base, folder_name, capture_hash)
+        except GiteaAmbiguousError:
+            return {
+                "ok": False,
+                "error": _bounded_error(
+                    "gitea write result is ambiguous: the request was sent and the follow-up read failed"
+                ),
+            }
+        if verified.get("ok"):
+            _remember_api_drop(capture_hash, verified)
+            _reindex_wake.set()
+            log.info(
+                "wiki_note_drop pushed slug=%s folder=%s sha=%s duration=%.2fs",
+                slug, folder_name, str(verified.get("commit") or "")[:12], time.monotonic() - started,
+            )
+        return verified
+
+    if status in (200, 201):
+        sha = ""
+        try:
+            parsed = json.loads(response_body.decode("utf-8", errors="replace") or "{}")
+            commit = parsed.get("commit") if isinstance(parsed, dict) else None
+            if isinstance(commit, dict) and isinstance(commit.get("sha"), str):
+                sha = commit["sha"]
+        except json.JSONDecodeError:
+            sha = ""
+        result = note_drop_result(folder_name, sha)
+        _remember_api_drop(capture_hash, result)
+        _reindex_wake.set()
+        log.info(
+            "wiki_note_drop pushed slug=%s folder=%s sha=%s duration=%.2fs",
+            slug, folder_name, sha[:12], time.monotonic() - started,
+        )
+        return result
+
+    if status in (409, 422):
+        message = _gitea_error_message(response_body).lower()
+        if "already exist" in message or "already exists" in message or not message:
+            return {
+                "ok": False,
+                "error": f"folder {folder_name!r} already exists; retry with a different slug",
+            }
+        return {"ok": False, "error": _bounded_error(f"gitea rejected the note ({status})")}
+
+    return {"ok": False, "error": _bounded_error(f"gitea write failed ({status})")}
 
 
 # --- In-memory index ---
@@ -1198,7 +1544,14 @@ def _background_reindex(index: Index, stop_event: threading.Event) -> None:
         "supervised reindex loop starting (interval=%ds retry=%ds..%ds)",
         REINDEX_INTERVAL_SEC, REINDEX_RETRY_INITIAL_SEC, REINDEX_RETRY_MAX_SEC,
     )
-    while not stop_event.wait(delay):
+    while True:
+        # A note drop sets _reindex_wake. Either event ends the wait early.
+        woke = _reindex_wake.wait(delay)
+        _reindex_wake.clear()
+        if stop_event.is_set():
+            return
+        if woke:
+            log.info("reindex woke early after a note drop")
         stats = _reindex_once(index)
         if stats.get("ok"):
             retry_sec = max(1, REINDEX_RETRY_INITIAL_SEC)
@@ -1340,6 +1693,14 @@ def _wiki_note_drop_impl(
 
     capture_hash = note_drop_payload_hash(note_md, decoded_text, decoded_bin)
     started = time.monotonic()
+
+    # The API path does one HTTP call. It does not take _repo_lock and it
+    # does not run git. The local clone can be stale; find_existing_note_drop
+    # still checks it, and the in-process map covers an immediate retry.
+    if note_drop_uses_gitea_api():
+        return _wiki_note_drop_via_gitea(
+            slug, note_md, decoded_text, decoded_bin, capture_hash, started,
+        )
 
     # --- Single-flight: serialize git ops on the working tree ---
     with _repo_lock:
@@ -1615,3 +1976,6 @@ def start_background_reindex() -> None:
 
 def stop_background_reindex() -> None:
     _reindex_stop.set()
+    # The loop waits on _reindex_wake too. Set it so shutdown does not wait
+    # for the rest of the interval.
+    _reindex_wake.set()

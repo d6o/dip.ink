@@ -122,6 +122,7 @@ Optional [indexed vector retrieval](VECTOR_RETRIEVAL.md) accelerates graph reads
 | Var | Default | |
 |---|---|---|
 | `WIKI_REPO_URL` / `WIKI_REPO_TOKEN` / `WIKI_REPO_USER` | — / — / `token` | the private memory repo (HTTPS + basic-auth token) |
+| `WIKI_WRITE_MODE` | `auto` | `auto`, `gitea-api`, or `git`. `auto` sends one Gitea `POST /api/v1/repos/{owner}/{repo}/contents` request when `GET {origin}/api/v1/version` succeeds. The request creates the source note and every attachment. `git` keeps fetch, commit, and push for GitHub and GitLab. |
 | `OPENAI_API_KEY` | — | embeddings + default extraction/distillation |
 | `LLM_BASE_URL` / `LLM_API_KEY` / `LLM_MODEL` / `LLM_MODEL_LADDER` | — / — / `gpt-4.1-mini` / inherits | OpenAI-compatible extraction endpoint + ordered fallback ladder |
 | `DISTILL_*` | inherits extraction | optional independent distiller base URL / key / model / ladder |

@@ -82,6 +82,9 @@ services:
       WIKI_REPO_TOKEN: ${WIKI_REPO_TOKEN:-}
       WIKI_REPO_USER: ${WIKI_REPO_USER:-token}
       WIKI_BRANCH: ${WIKI_BRANCH:-main}
+      # auto uses one Gitea contents API call when the host supports it.
+      # git keeps fetch, commit, and push on the local clone.
+      WIKI_WRITE_MODE: ${WIKI_WRITE_MODE:-auto}
       CACHE_DIR: /var/lib/memory/cache
       WIKI_CLONE_PATH: /var/lib/memory/wiki
       MCP_ALLOWED_HOSTS: ${MCP_ALLOWED_HOSTS:-localhost,127.0.0.1,memory}
