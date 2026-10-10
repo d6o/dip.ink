@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -64,6 +65,92 @@ class StaleLockTests(unittest.TestCase):
         self.assertFalse(res["ok"])
         self.assertTrue(seen, "expected a git command to be attempted")
         self.assertFalse(seen[0], "index.lock still present when git first ran")
+
+
+class GitAutoMaintenanceTests(unittest.TestCase):
+    """Regression tests for the 2026-10-10 HEAD.lock incident: a detached
+    `gc --auto` held .git/HEAD.lock outside _repo_lock, and the next
+    note-drop `reset --hard` failed."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.repo = Path(self.tmp.name) / "repo"
+        self.repo.mkdir()
+        env_git = ["-c", "user.email=t@example.com", "-c", "user.name=t"]
+        wiki._run_git("init", "-q", "-b", "main", cwd=self.repo)
+        # The repository asks for gc after every new loose object, detached.
+        wiki._run_git("config", "gc.auto", "1", cwd=self.repo)
+        wiki._run_git("config", "gc.autoDetach", "true", cwd=self.repo)
+        self.env_git = env_git
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _commit_files(self, count: int) -> None:
+        for i in range(count):
+            (self.repo / f"f{i}.txt").write_text(f"content {i}\n")
+        wiki._run_git("add", "-A", cwd=self.repo)
+        wiki._run_git(*self.env_git, "commit", "-q", "-m", "c", cwd=self.repo)
+
+    def _loose_count(self) -> int:
+        out = subprocess.run(
+            ["git", "-C", str(self.repo), "count-objects", "-v"],
+            capture_output=True, text=True, check=True,
+        ).stdout
+        fields = dict(line.split(": ", 1) for line in out.strip().splitlines())
+        return int(fields["count"])
+
+    def test_every_git_command_disables_auto_maintenance(self):
+        effective = wiki._run_git("config", "--get", "gc.auto", cwd=self.repo).stdout.strip()
+        self.assertEqual(effective, "0")
+        detach = wiki._run_git("config", "--get", "gc.autoDetach", cwd=self.repo).stdout.strip()
+        self.assertEqual(detach, "false")
+        maint = wiki._run_git("config", "--get", "maintenance.auto", cwd=self.repo).stdout.strip()
+        self.assertEqual(maint, "false")
+
+    def test_commit_does_not_start_gc(self):
+        self._commit_files(5)
+        self.assertFalse((self.repo / ".git" / "gc.pid").exists())
+        self.assertGreater(self._loose_count(), 0, "commit unexpectedly packed objects")
+
+    def test_foreground_maintenance_packs_before_return(self):
+        # `gc --auto` estimates loose objects from .git/objects/17 only, so
+        # make enough objects that the sample is not empty.
+        self._commit_files(3000)
+        self.assertGreater(self._loose_count(), 0)
+        with mock.patch.object(wiki, "GIT_GC_AUTO_THRESHOLD", 1):
+            wiki._run_foreground_maintenance(self.repo)
+        # Synchronous: the objects are packed when the call returns.
+        self.assertEqual(self._loose_count(), 0)
+        self.assertEqual(list((self.repo / ".git").glob("*.lock")), [])
+
+    def test_foreground_maintenance_disabled_by_zero_threshold(self):
+        self._commit_files(3)
+        before = self._loose_count()
+        with mock.patch.object(wiki, "GIT_GC_AUTO_THRESHOLD", 0):
+            wiki._run_foreground_maintenance(self.repo)
+        self.assertEqual(self._loose_count(), before)
+
+
+class NoteDropFailureRecordTests(unittest.TestCase):
+    def test_failed_drop_records_bounded_reason(self):
+        recorded: list[dict] = []
+        failure = {"ok": False, "error": "failed to sync repo to origin/main: " + "x" * 1000}
+        with mock.patch.object(wiki, "_wiki_note_drop_impl", return_value=failure), \
+             mock.patch.object(wiki, "_record_query", recorded.append):
+            res = wiki._wiki_note_drop_recorded("s", "body", None, None)
+        self.assertIs(res, failure)
+        self.assertEqual(recorded[0]["outcome"], "error")
+        self.assertTrue(recorded[0]["error"].startswith("failed to sync repo"))
+        self.assertLessEqual(len(recorded[0]["error"]), 300)
+
+    def test_successful_drop_records_no_reason(self):
+        recorded: list[dict] = []
+        with mock.patch.object(wiki, "_wiki_note_drop_impl", return_value={"ok": True}), \
+             mock.patch.object(wiki, "_record_query", recorded.append):
+            wiki._wiki_note_drop_recorded("s", "body", None, None)
+        self.assertEqual(recorded[0]["outcome"], "ok")
+        self.assertNotIn("error", recorded[0])
 
 
 class ArchiveAwareIdempotencyTests(unittest.TestCase):

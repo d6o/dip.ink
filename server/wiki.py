@@ -112,10 +112,30 @@ _capture_hash_index: dict[str, list[ExistingNoteDrop]] = {}
 # --- Git plumbing for clone-at-startup, periodic pull, and note-drop push ---
 
 
+# Git starts `gc --auto` / `maintenance run --auto` after fetch and commit, and
+# by default that work detaches into a background process. The background gc
+# runs `pack-refs` and `reflog expire`, which take .git/HEAD.lock and other ref
+# locks outside _repo_lock. A later `reset --hard` then fails with "cannot lock
+# ref 'HEAD'" (seen 2026-10-10). Disable automatic maintenance on every
+# command; _run_foreground_maintenance() does the same work under _repo_lock.
+_GIT_NO_AUTO_MAINTENANCE: tuple[str, ...] = (
+    "-c", "gc.auto=0",
+    "-c", "gc.autoDetach=false",
+    "-c", "maintenance.auto=false",
+    "-c", "maintenance.autoDetach=false",
+)
+# Loose-object threshold for the explicit foreground gc (the git default).
+GIT_GC_AUTO_THRESHOLD = int(os.environ.get("WIKI_GIT_GC_AUTO", "6700"))
+GIT_GC_TIMEOUT_SEC = int(os.environ.get("WIKI_GIT_GC_TIMEOUT_SEC", "600"))
+
+
 def _run_git(*args: str, cwd: Path | str | None = None, check: bool = True, timeout: int = 120) -> subprocess.CompletedProcess:
     """Run a git command, capturing stdout+stderr. Raises RuntimeError on
-    non-zero exit when check=True so callers can wrap in try/except."""
-    cmd: list[str] = ["git"]
+    non-zero exit when check=True so callers can wrap in try/except.
+
+    Automatic (detached) maintenance is always disabled, so no git process
+    outlives the call and holds a lock outside _repo_lock."""
+    cmd: list[str] = ["git", *_GIT_NO_AUTO_MAINTENANCE]
     if cwd is not None:
         cmd.extend(["-C", str(cwd)])
     cmd.extend(args)
@@ -155,6 +175,33 @@ def _clear_stale_git_locks() -> None:
             pass
 
 
+def _run_foreground_maintenance(path: Path) -> None:
+    """Pack loose objects in the foreground. The caller must hold _repo_lock.
+
+    `gc --auto` returns at once when the loose-object count is below the
+    threshold. The later `-c gc.auto=N` overrides the disabled default from
+    _GIT_NO_AUTO_MAINTENANCE; gc.autoDetach stays false, so gc ends before
+    the lock is released."""
+    if GIT_GC_AUTO_THRESHOLD <= 0:
+        return
+    started = time.monotonic()
+    try:
+        res = _run_git(
+            "-c", f"gc.auto={GIT_GC_AUTO_THRESHOLD}",
+            "gc", "--auto", "--quiet",
+            cwd=path, check=False, timeout=GIT_GC_TIMEOUT_SEC,
+        )
+    except subprocess.TimeoutExpired:
+        log.warning("foreground git gc timed out after %ds", GIT_GC_TIMEOUT_SEC)
+        _clear_stale_git_locks()
+        return
+    elapsed = time.monotonic() - started
+    if res.returncode != 0:
+        log.warning("foreground git gc failed rc=%d: %s", res.returncode, res.stderr.strip()[:300])
+    elif elapsed > 1:
+        log.info("foreground git gc finished in %.1fs", elapsed)
+
+
 def _clone_or_pull_wiki() -> Path | None:
     """If WIKI_REPO_URL is set, ensure a writable clone exists at WIKI_CLONE_PATH
     (clone on first run, fetch+reset on subsequent runs) and return the path.
@@ -183,6 +230,7 @@ def _clone_or_pull_wiki() -> Path | None:
             _run_git("clean", "-fd", cwd=WIKI_CLONE_PATH)
         except Exception as e:
             log.warning("startup refresh failed: %s; continuing with existing tree", e)
+        _run_foreground_maintenance(WIKI_CLONE_PATH)
     else:
         log.info("cloning %s into %s (branch=%s)", WIKI_REPO_URL, WIKI_CLONE_PATH, WIKI_BRANCH)
         WIKI_CLONE_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -198,6 +246,9 @@ def _clone_or_pull_wiki() -> Path | None:
     # token on next pod restart without having to manually clear .git/config.
     _run_git("config", "user.email", GIT_USER_EMAIL, cwd=WIKI_CLONE_PATH)
     _run_git("config", "user.name", GIT_USER_NAME, cwd=WIKI_CLONE_PATH)
+    # A manual git command in the pod must not start detached maintenance either.
+    _run_git("config", "gc.autoDetach", "false", cwd=WIKI_CLONE_PATH)
+    _run_git("config", "maintenance.autoDetach", "false", cwd=WIKI_CLONE_PATH)
     if WIKI_REPO_TOKEN:
         _run_git("config", _EXTRAHEADER_KEY, _auth_header_value(), cwd=WIKI_CLONE_PATH)
     else:
@@ -1390,14 +1441,24 @@ def _wiki_note_drop_recorded(
         else "ok" if result.get("ok")
         else "error"
     )
-    _record_query({
+    duration_ms = int((time.monotonic() - started) * 1000)
+    entry = {
         "ts": time.time(),
         "at": _now_iso(),
         "source": "mcp",
         "tool": "wiki_note_drop",
         "outcome": outcome,
-        "duration_ms": int((time.monotonic() - started) * 1000),
-    })
+        "duration_ms": duration_ms,
+    }
+    if outcome == "error":
+        # Record the bounded reason. Errors carry static advice or git stderr,
+        # never the note body (see the frontmatter error tests).
+        code = result.get("error_code")
+        detail = str(result.get("error") or "unknown")
+        reason = (f"{code}: {detail}" if code else detail)[:300]
+        entry["error"] = reason
+        log.warning("wiki_note_drop failed slug=%s duration_ms=%d error=%s", slug, duration_ms, reason)
+    _record_query(entry)
     return result
 
 
