@@ -104,8 +104,6 @@ def main() -> None:
         "graph_answer_calls": len(graph_answers),
         "wiki_gets": sum(1 for e in wev if e.get("tool") == "get"),
         "graph_note_gets": sum(1 for e in gev if e.get("tool") == "graph_get_note"),
-        "graph_entity_calls": sum(1 for e in gev if e.get("tool") == "graph_entity"),
-        "graph_current_facts_calls": sum(1 for e in gev if e.get("tool") == "graph_current_facts"),
     }
 
     # --- graph_answer health: confidence distribution + compression ratio ---
@@ -118,10 +116,8 @@ def main() -> None:
     ga_compression = (round(ga_med_packet / ga_med_answer, 1)
                       if ga_med_answer and ga_med_packet else None)
     ga_not_found = [e for e in graph_answers if e.get("confidence") in ("not_found", "error")]
-    ga_cached = sum(1 for e in graph_answers if e.get("cached"))
     ga_stats = {
         "calls": len(graph_answers),
-        "cache_hits": ga_cached,
         "confidence_distribution": dict(ga_conf),
         "median_answer_tokens_est": ga_med_answer,
         "median_packet_tokens_est": ga_med_packet,

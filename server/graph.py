@@ -9,15 +9,11 @@ shape. Registers on the shared FastMCP instance (core.mcp):
     {answer, confidence, sources, superseded_note?, escalate}. ~150 tokens out
     instead of ~1,800. The fix for "the memory bombards agents".
   - graph_search(query): the rich packet — current atomic facts (with provenance
-    slug + validity window), a community summary, top entities, and the top
-    source-note excerpt. Uses Graphiti's `search_()` + COMBINED_HYBRID_SEARCH_RRF
-    (the config that won a two-judge retrieval eval).
+    slug + validity window), top entities, and the top source-note excerpt.
+    Uses Graphiti's `search_()` + COMBINED_HYBRID_SEARCH_RRF (the config that
+    won a two-judge retrieval eval).
   - graph_get_note(slug): fetch a source note by its timestamp slug (the
     provenance path — every fact traces to one).
-  - graph_entity(name): a known entity + its CURRENT facts + attributes
-    (bitemporal: superseded facts excluded). Graphiti's unique capability.
-  - graph_current_facts(subject): what's true NOW about a subject — the temporal
-    angle plain document search has no answer to.
 
 Read-only. Writes (note capture) stay with wiki_note_drop → git (source of
 truth); the ingest cron turns dropped notes into the graph. This module just
@@ -39,7 +35,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 
 # Reuse the ingest client wiring (Graphiti extraction LLM, OpenAI embedder,
-# the roomy Neo4j pool, patch_community_clustering).
+# the roomy Neo4j pool).
 from chat_fallback import OrderedModelFallback, is_recoverable_provider_error, parse_model_ladder
 from ingest import DEFAULT_GROUP_ID, build_graphiti
 from vector_search import install_read_search
@@ -70,15 +66,6 @@ DISTILL_MODEL_LADDER = parse_model_ladder(
     or "gpt-4.1-mini"
 )
 
-# Answer cache: factual questions repeat (same question 3× in 90 min on day
-# one) and the graph only changes on ingest ticks, so a short TTL is safe.
-# Only real answers are cached — not_found/error always re-run.
-ANSWER_CACHE_TTL = float(os.environ.get("ANSWER_CACHE_TTL", "3600"))  # seconds; 0 disables
-_ANSWER_CACHE: dict[tuple[str, str], tuple[float, dict, int]] = {}
-# key=(normalized question, ingest watermark) -> (expires_at, result, packet_tokens_est)
-_ANSWER_CACHE_MAX = 500
-_ANSWER_CACHE_WATERMARK: str | None = None
-
 # Bounded deterministic grounding outcomes, also emitted on each query event.
 GROUNDING_COUNTS = {
     "accepted": 0,
@@ -105,28 +92,6 @@ async def _get_graph():
             raise
         _g = client
     return _g
-
-
-async def _graph_ingest_watermark() -> str | None:
-    """Latest explicit episode completion time for answer-cache freshness.
-
-    ``"none"`` is a stable cache version for an empty/legacy-only graph. Query
-    failures return None and disable caching rather than risk serving stale data.
-    """
-    try:
-        g = await _get_graph()
-        rows, _, _ = await g.driver.execute_query(
-            "MATCH (e:Episodic {group_id: $group_id}) "
-            "RETURN toString(max(e.dipink_completed_at)) AS watermark",
-            group_id=DEFAULT_GROUP_ID,
-            routing_="r",
-        )
-        if not rows or not rows[0].get("watermark"):
-            return "none"
-        return str(rows[0]["watermark"])
-    except Exception as error:  # noqa: BLE001
-        log.warning("graph_answer: ingest watermark unavailable: %s", type(error).__name__)
-        return None
 
 
 def _valid_at_window(edge) -> dict:
@@ -342,7 +307,7 @@ def _current_evidence_packet(packet: dict) -> dict:
     """Give the distiller only recent supported evidence.
 
     Source validation proves citation identity, not answer entailment. Undated
-    entity and community summaries, and older facts, are absent from this view.
+    entity summaries, and older facts, are absent from this view.
     """
     temporal = packet["temporal_context"]
     eligible = set(temporal["eligible_sources"])
@@ -353,7 +318,6 @@ def _current_evidence_packet(packet: dict) -> dict:
             fact for fact in packet.get("facts") or []
             if fact.get("current") is not False and fact.get("source_slug") in eligible
         ],
-        "communities": [],
         "entities": [],
         "source_excerpt": excerpt if excerpt.get("slug") in eligible and str(excerpt.get("content") or "").strip() else None,
         "semantic_notes": [
@@ -409,18 +373,16 @@ async def _assemble_packet(
     k: int,
     *,
     excerpt_chars: int = 2500,
-    n_communities: int = 3,
-    community_chars: int = 1000,
     current_state: bool = False,
 ) -> dict:
     """Shared packet assembler for graph_search (wire format) and graph_answer
     (distiller input).
 
-    Packet-trim experiment (2026-07-11): excerpt 800/1200 + communities 2@600
-    caused SYSTEMATIC frozen-50 verdict flips to v1 (13 and 11 flips vs a
-    3-flip same-day fat-packet control) — the excerpt is load-bearing for
-    retrieval quality. Trim rejected; graph_answer (which always distills the
-    full packet server-side) is the token-compression mechanism instead."""
+    Packet-trim experiment (2026-07-11): an excerpt of 800 or 1200 characters
+    caused systematic frozen-50 verdict flips to v1 (13 and 11 flips vs a
+    3-flip same-day fat-packet control). The excerpt is load-bearing for
+    retrieval quality. The trim stays rejected. graph_answer distills the
+    full packet server-side and is the token-compression mechanism instead."""
     g = await _get_graph()
     config = COMBINED_HYBRID_SEARCH_RRF.model_copy(update={"limit": k})
     # graph search + wiki semantic search run concurrently (fusion)
@@ -428,7 +390,6 @@ async def _assemble_packet(
         g.search_(query, config=config, group_ids=[DEFAULT_GROUP_ID]),
         _wiki_semantic_hits(query, 25 if current_state else 3, hydrate=current_state),
     )
-    communities = list(res.communities or [])[:n_communities]
     nodes = list(res.nodes or [])[:8]
     edges = list(res.edges or [])[:12]
     episodes = list(res.episodes or [])[:2]
@@ -443,10 +404,6 @@ async def _assemble_packet(
     return {
         "query": query,
         "facts": facts,
-        "communities": [{
-            "name": getattr(c, "name", "")[:120],
-            "summary": (getattr(c, "summary", "") or "")[:community_chars],
-        } for c in communities],
         "entities": [{
             "name": getattr(n, "name", ""),
             "summary": (getattr(n, "summary", "") or "")[:300],
@@ -513,7 +470,7 @@ def _extract_json(text: str):
 
 _DISTILL_SYSTEM = """You distill retrieval packets from the operator's knowledge graph into direct answers.
 
-You will get a QUESTION and a RETRIEVAL PACKET (JSON with facts, communities, entities, a source-note excerpt, and semantic note hits). Rules:
+You will get a QUESTION and a RETRIEVAL PACKET (JSON with facts, entities, a source-note excerpt, and semantic note hits). Rules:
 
 1. Answer ONLY from the packet. NEVER use your own knowledge or guess. If the packet does not contain the answer, return confidence "not_found" with answer null and escalate true.
 2. A current:false fact does not support current state. Use it for a dated historical question, or describe it in superseded_note.
@@ -705,47 +662,15 @@ def _validate_distilled_answer(parsed: dict, packet: dict) -> tuple[dict, bool, 
 
 
 async def _graph_answer_impl(question: str, is_test: bool = False) -> dict:
-    """Shared implementation with deterministic grounding and fresh caching."""
-    global _ANSWER_CACHE_WATERMARK
+    """Shared implementation with deterministic grounding."""
     t0 = time.time()
     q = (question or "").strip()
-    normalized = " ".join(q.lower().split()).rstrip("?!. ")
 
     current_state = _current_state_question(q)
-    # Wiki captures can change before the graph watermark changes.
-    # Current-state questions must read a new packet instead of a cached answer.
-    watermark = None if current_state else await _graph_ingest_watermark()
-    cache_key: tuple[str, str] | None = None
-    if ANSWER_CACHE_TTL > 0 and watermark is not None:
-        if _ANSWER_CACHE_WATERMARK != watermark:
-            _ANSWER_CACHE.clear()
-            _ANSWER_CACHE_WATERMARK = watermark
-        cache_key = (normalized, watermark)
-        hit = _ANSWER_CACHE.get(cache_key)
-        if hit and hit[0] > time.time():
-            result = dict(hit[1])
-            _count_grounding("accepted")
-            event = {
-                "ts": time.time(), "at": _now_iso(), "source": "mcp", "tool": "graph_answer",
-                "question": q[:200], "confidence": result["confidence"],
-                "n_sources": len(result.get("sources") or []), "escalate": result["escalate"],
-                "answer_tokens_est": len(result.get("answer") or "") // 4,
-                "packet_tokens_est": hit[2], "assemble_ms": 0, "distill_ms": 0,
-                "cached": True, "grounded": True, "grounding_action": "accepted",
-                "temporal_mode": "default",
-            }
-            if is_test:
-                event["test"] = True
-            _record_query(event)
-            return result
-        if hit:
-            _ANSWER_CACHE.pop(cache_key, None)
-
     packet: dict | None = None
     try:
         packet = await _assemble_packet(
-            q, 8, excerpt_chars=2500, n_communities=3, community_chars=1000,
-            current_state=current_state,
+            q, 8, excerpt_chars=2500, current_state=current_state,
         )
     except Exception as error:  # noqa: BLE001
         log.warning("graph_answer: packet assembly failed: %r", error)
@@ -774,23 +699,6 @@ async def _graph_answer_impl(question: str, is_test: bool = False) -> dict:
     distill_ms = int((time.time() - t1) * 1000)
     _count_grounding(grounding_action)
 
-    # Cache only grounded, non-null answers and bind them to the explicit graph
-    # ingest watermark. Abstentions/errors always re-run.
-    if (
-        cache_key is not None
-        and grounded
-        and result.get("answer")
-        and result["confidence"] in ("high", "medium", "low")
-    ):
-        if len(_ANSWER_CACHE) >= _ANSWER_CACHE_MAX:
-            oldest = min(_ANSWER_CACHE, key=lambda candidate: _ANSWER_CACHE[candidate][0])
-            _ANSWER_CACHE.pop(oldest, None)
-        _ANSWER_CACHE[cache_key] = (
-            time.time() + ANSWER_CACHE_TTL,
-            dict(result),
-            packet_tokens_est,
-        )
-
     event = {
         "ts": time.time(), "at": _now_iso(), "source": "mcp", "tool": "graph_answer",
         "question": q[:200], "confidence": result["confidence"],
@@ -799,7 +707,6 @@ async def _graph_answer_impl(question: str, is_test: bool = False) -> dict:
         "packet_tokens_est": packet_tokens_est,
         "assemble_ms": assemble_ms,
         "distill_ms": distill_ms,
-        "cached": False,
         "grounded": grounded,
         "grounding_action": grounding_action,
         "temporal_mode": "current" if current_state else "default",
@@ -826,9 +733,8 @@ async def graph_answer(question: str) -> dict:
 async def graph_search(query: str, k: int = 5) -> dict:
     """Search the operator's Graphiti knowledge graph for `query`. Returns a structured
     packet (NOT a list of pages): the top atomic FACTS (each with its source-note
-    slug + validity window — `current=false` means superseded), a relevant
-    COMMUNITY summary (auto-synthesized from notes), the top ENTITIES, and an
-    excerpt of the top SOURCE NOTE. This is the native Graphiti retrieval.
+    slug + validity window — `current=false` means superseded), the top ENTITIES,
+    and an excerpt of the top SOURCE NOTE. This is the native Graphiti retrieval.
 
     For a factual question, prefer graph_answer (direct distilled answer).
     Use this for broad/exploratory context, or when graph_answer escalates."""
@@ -837,7 +743,7 @@ async def graph_search(query: str, k: int = 5) -> dict:
     _record_query({
         "ts": time.time(), "at": _now_iso(), "source": "mcp", "tool": "graph_search",
         "query": (query or "")[:200], "k": kk,
-        "n_facts": len(packet["facts"]), "n_communities": len(packet["communities"]),
+        "n_facts": len(packet["facts"]),
         "n_entities": len(packet["entities"]), "has_source": packet["source_excerpt"] is not None,
         "n_semantic": len(packet["semantic_notes"]),
     })
@@ -863,66 +769,6 @@ async def graph_get_note(slug: str) -> dict | None:
     r = rows[0]
     _record_query({"ts": time.time(), "at": _now_iso(), "source": "mcp", "tool": "graph_get_note", "slug": slug, "hit": True, "chars": len(r.get("content") or "")})
     return {"slug": slug, "content": r.get("content") or "", "valid_at": str(r.get("valid_at") or "")}
-
-
-@mcp.tool()
-async def graph_entity(name: str) -> dict | None:
-    """Look up a known ENTITY by name and return its summary + its CURRENT facts
-    (superseded facts excluded) + attributes. Use this when you already know the
-    thing (e.g. a service, tool, decision) and want its current state and related
-    facts — the bitemporal angle wiki_search can't provide."""
-    g = await _get_graph()
-    rows, _, _ = await g.driver.execute_query(
-        "MATCH (n:Entity {group_id: $group_id}) WHERE toLower(n.name) = toLower($name) "
-        "RETURN n.name AS name, n.summary AS summary, n.group_id AS group_id LIMIT 1",
-        name=name,
-        group_id=DEFAULT_GROUP_ID,
-    )
-    if not rows:
-        _record_query({"ts": time.time(), "at": _now_iso(), "source": "mcp", "tool": "graph_entity", "name": name, "hit": False})
-        return None
-    n = rows[0]
-    # current facts touching this entity (invalid_at null = still current)
-    frows, _, _ = await g.driver.execute_query(
-        "MATCH (n:Entity {group_id: $group_id})-[r]-(m:Entity {group_id: $group_id}) "
-        "WHERE toLower(n.name) = toLower($name) "
-        "AND r.group_id = $group_id AND r.fact IS NOT NULL AND r.invalid_at IS NULL "
-        "RETURN r.fact AS fact, m.name AS other, r.valid_at AS valid_at "
-        "ORDER BY r.valid_at DESC LIMIT 25",
-        name=name,
-        group_id=DEFAULT_GROUP_ID,
-    )
-    facts = [{"fact": f["fact"], "other": f["other"], "valid_at": str(f["valid_at"] or "")} for f in frows]
-    _record_query({"ts": time.time(), "at": _now_iso(), "source": "mcp", "tool": "graph_entity", "name": name, "hit": True, "n_facts": len(facts)})
-    return {"name": n["name"], "summary": n.get("summary") or "", "current_facts": facts}
-
-
-@mcp.tool()
-async def graph_current_facts(subject: str) -> list[dict]:
-    """Return the CURRENT atomic facts about a subject (free-text). Excludes
-    superseded/outdated facts (invalid_at set). Use this when you specifically
-    need what's true NOW about something — the temporal query wiki_search can't
-    answer (it returns documents regardless of recency)."""
-    g = await _get_graph()
-    res = await g.search_(
-        subject,
-        config=COMBINED_HYBRID_SEARCH_RRF.model_copy(update={"limit": 15}),
-        group_ids=[DEFAULT_GROUP_ID],
-    )
-    slug_map = await _resolve_episode_slugs(g, list(res.edges or []))
-    out = []
-    for e in (res.edges or []):
-        if getattr(e, "invalid_at", None):  # skip superseded
-            continue
-        out.append({
-            "fact": getattr(e, "fact", "") or str(e),
-            "source_slug": _episode_slug(e, slug_map),
-            "valid_at": str(getattr(e, "valid_at", "") or ""),
-        })
-        if len(out) >= 10:
-            break
-    _record_query({"ts": time.time(), "at": _now_iso(), "source": "mcp", "tool": "graph_current_facts", "subject": (subject or "")[:200], "n": len(out)})
-    return out
 
 
 @mcp.tool()
@@ -985,7 +831,7 @@ async def _http_graph_search(req: Request) -> JSONResponse:
         _record_query({
             "ts": time.time(), "at": _now_iso(), "source": "mcp", "tool": "graph_search",
             "query": q[:200], "k": k, "n_facts": len(packet["facts"]),
-            "n_communities": len(packet["communities"]), "n_entities": len(packet["entities"]),
+            "n_entities": len(packet["entities"]),
             "has_source": packet["source_excerpt"] is not None,
             "n_semantic": len(packet["semantic_notes"]), "test": True,
         })

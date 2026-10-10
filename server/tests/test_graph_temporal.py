@@ -29,8 +29,7 @@ def evidence() -> dict:
             {"fact": "Memory uses v0.1.6.", "source_slug": OLD, "current": True},
             {"fact": "The release publishes pi-runner:v0.1.11.", "source_slug": NEW, "current": True},
         ],
-        "entities": [{"summary": "Memory uses v0.1.6."}],
-        "communities": [{"summary": "The curator uses v0.1.7."}],
+        "entities": [{"summary": "Memory uses v0.1.6. The curator uses v0.1.7."}],
         "source_excerpt": {"slug": OLD, "content": "Memory uses v0.1.6."},
         "semantic_notes": [
             {"name": LATEST, "type": "source", "description": "Patch release", "content": LATEST_TEXT},
@@ -249,7 +248,6 @@ class TemporalGroundingTests(unittest.TestCase):
             self.assertNotIn(stale, text)
         self.assertEqual(view["facts"], [])
         self.assertEqual(view["entities"], [])
-        self.assertEqual(view["communities"], [])
         self.assertIsNone(view["source_excerpt"])
         self.assertEqual([hit["name"] for hit in view["semantic_notes"]], [LATEST])
 
@@ -336,33 +334,26 @@ class TemporalRetrievalTests(unittest.IsolatedAsyncioTestCase):
         get.assert_not_called()
         self.assertNotIn("content", result[0])
 
-    async def test_current_answers_bypass_cache_and_reread_wiki_evidence(self):
-        graph._ANSWER_CACHE.clear()
+    async def test_current_answers_reread_wiki_evidence(self):
         newer = evidence()
         newer_slug = "2026-10-10-120000-new-release"
         newer["semantic_notes"] = [{"name": newer_slug, "content": "Memory uses v0.1.16."}]
-        try:
-            with mock.patch.object(graph, "_graph_ingest_watermark", new=mock.AsyncMock(return_value="unchanged")) as watermark, \
-                 mock.patch.object(graph, "_assemble_packet", new=mock.AsyncMock(side_effect=[evidence(), newer])) as assemble, \
-                 mock.patch.object(graph, "_distill", new=mock.AsyncMock(side_effect=[
-                     answer("Memory uses v0.1.15.", [LATEST]),
-                     answer("Memory uses v0.1.16.", [newer_slug]),
-                 ])) as distill, mock.patch.object(graph, "_record_query") as record:
-                first = await graph._graph_answer_impl(QUESTION)
-                second = await graph._graph_answer_impl(QUESTION)
-            self.assertIn("v0.1.15", first["answer"])
-            self.assertEqual(second["as_of"], "2026-10-10T12:00:00Z")
-            watermark.assert_not_awaited()
-            self.assertEqual(assemble.await_count, 2)
-            self.assertTrue(all(call.kwargs["current_state"] for call in assemble.await_args_list))
-            packets = [json.loads(call.args[1]) for call in distill.await_args_list]
-            self.assertTrue(all("v0.1.6" not in json.dumps(p) for p in packets))
-            events = [call.args[0] for call in record.call_args_list]
-            self.assertTrue(all(not event["cached"] for event in events))
-            self.assertTrue(all(event["temporal_mode"] == "current" for event in events))
-            self.assertEqual(graph._ANSWER_CACHE, {})
-        finally:
-            graph._ANSWER_CACHE.clear()
+        with mock.patch.object(graph, "_assemble_packet", new=mock.AsyncMock(side_effect=[evidence(), newer])) as assemble, \
+             mock.patch.object(graph, "_distill", new=mock.AsyncMock(side_effect=[
+                 answer("Memory uses v0.1.15.", [LATEST]),
+                 answer("Memory uses v0.1.16.", [newer_slug]),
+             ])) as distill, mock.patch.object(graph, "_record_query") as record:
+            first = await graph._graph_answer_impl(QUESTION)
+            second = await graph._graph_answer_impl(QUESTION)
+        self.assertIn("v0.1.15", first["answer"])
+        self.assertEqual(second["as_of"], "2026-10-10T12:00:00Z")
+        self.assertEqual(assemble.await_count, 2)
+        self.assertTrue(all(call.kwargs["current_state"] for call in assemble.await_args_list))
+        packets = [json.loads(call.args[1]) for call in distill.await_args_list]
+        self.assertTrue(all("v0.1.6" not in json.dumps(p) for p in packets))
+        events = [call.args[0] for call in record.call_args_list]
+        self.assertTrue(all("cached" not in event for event in events))
+        self.assertTrue(all(event["temporal_mode"] == "current" for event in events))
 
     async def test_no_supported_recent_evidence_abstains_without_model_call(self):
         packet = evidence()

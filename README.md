@@ -104,7 +104,6 @@ That starts:
 | `memory` | 8080 | **the one MCP server** — all `wiki_*` + `graph_*` + `memory_status` tools at `/mcp` |
 | `neo4j` | 7474/7687 (localhost) | graph storage |
 | `ingest` | — | every 15 min: pull the repo, ingest new notes into the graph |
-| `communities` | — | weekly: entity resolution + community rebuild |
 | `gaps` | — | weekly: mine the query log for memory gaps |
 | `alerts` | — | every 30 min: dead-man checks (server, ingest lag); optional Telegram notifications |
 | `healthcheck` | — | daily: deep end-to-end pipeline verification |
@@ -172,17 +171,15 @@ One server, two tool families, plus an operational status tool.
 | Tool | Use |
 |---|---|
 | `graph_answer(question)` | **use first for factual questions** — distilled `{answer, confidence, sources, escalate}` |
-| `graph_search(query, k)` | rich packet: facts (+ provenance + validity), community summary, entities, source excerpt, semantic note hits |
+| `graph_search(query, k)` | rich packet: facts (+ provenance + validity), entities, source excerpt, semantic note hits |
 | `graph_changes(subject, since_days)` | temporal diff: new facts + superseded facts — resuming a project after time away is one call |
-| `graph_current_facts(subject)` | what's true NOW (superseded excluded) |
-| `graph_entity(name)` | a known entity's summary + current facts |
 | `graph_get_note(slug)` | provenance fetch: the original source note behind any fact |
 
 **status** (operations — bounded, non-secret):
 
 | Tool / HTTP | Use |
 |---|---|
-| `memory_status` / `GET /api/status` | one operational snapshot: component readiness, index age, inbox/deferred/blocked counts, review queue, ingest pending/partial/lag, communities, recent query summary, build/version |
+| `memory_status` / `GET /api/status` | one operational snapshot: component readiness, index age, inbox/deferred/blocked counts, review queue, ingest pending/partial/lag, recent query summary, build/version |
 | `GET /metrics` | Prometheus text exposition of the same core gauges plus tool counters (see Observability) |
 | `GET /api/metrics` | JSON query-log tail used by the weekly gaps miner (not the Prometheus endpoint) |
 
@@ -212,10 +209,10 @@ See [`.env.example`](./.env.example) for the full commented list. High-level gro
 | Distiller | `DISTILL_BASE_URL`, `DISTILL_API_KEY`, `DISTILL_MODEL`, `DISTILL_MODEL_LADDER` | Optional independent overrides for `graph_answer` |
 | Wiki embeddings | `WIKI_MCP_EMBED_PROVIDER`, `WIKI_MCP_OPENAI_MODEL`, `WIKI_MCP_FASTEMBED_MODEL`, reindex/retry knobs | `openai` (default) or local `fastembed` |
 | Note drop | `WIKI_WRITE_MODE` | `auto` (default), `gitea-api`, or `git`. `auto` uses one Gitea contents API call when the host answers `GET /api/v1/version`. Otherwise the server fetches, commits, and pushes on the local clone. |
-| Cache / metrics | `CACHE_DIR`, `MCP_METRICS_PATH`, `ANSWER_CACHE_TTL`, `GRAPH_FUSION` | Feed status + gaps + Prometheus gauges |
+| Cache / metrics | `CACHE_DIR`, `MCP_METRICS_PATH`, `GRAPH_FUSION` | Feed status + gaps + Prometheus gauges |
 | Graph pool | `GROUP_ID`, `NEO4J_MAX_POOL`, `NEO4J_ACQ_TIMEOUT` | `GROUP_ID` is a Graphiti property partition, **not** a Neo4j database |
 | Optional vector retrieval | `GRAPH_VECTOR_SEARCH`, `GRAPH_VECTOR_DIMENSIONS`, `GRAPH_VECTOR_OVERFETCH`, `GRAPH_VECTOR_MAX_CANDIDATES` | Graph reads only; disabled by default. See [index administration and quality checks](server/VECTOR_RETRIEVAL.md). |
-| Alerts | `MAX_PENDING_AGE_HOURS`, `MAX_COMMUNITY_AGE_DAYS`, `ALLOW_MISSING_COMMUNITIES` | Missing communities fail by default. Set the last variable to `1` for a visible warning instead. |
+| Alerts | `MAX_PENDING_AGE_HOURS`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `NOTIFY_REPEAT_HOURS` | Pending note-to-episode lag (a quiet memory with zero pending notes is healthy) and optional Telegram notifications. |
 | Curator (memory repo CI) | `PI_API_KEY`, `PI_PROVIDER`, `PI_MODEL`, `PI_MODELS_JSON` | Set in the private memory repo's Actions secrets/variables |
 
 ## Repo map
@@ -243,8 +240,7 @@ dip.ink/
 │   ├── wiki.py             ← wiki_search / wiki_get / wiki_backlinks / wiki_note_drop
 │   ├── graph.py            ← graph_answer / graph_search / graph_changes / ...
 │   ├── ingest.py           ← notes → Graphiti episodes (resumable, crash-safe, circuit-breaker)
-│   └── loops/              ← healthcheck, gaps miner, alerts, contradiction janitor,
-│                             entity resolution, community builder
+│   └── loops/              ← healthcheck, gaps miner, alerts, contradiction janitor
 ├── curator/                ← the curator toolchain, versioned + released HERE
 │   ├── scripts/            ← wikilint, wikiindex, logrotate, wikidistill + supervisor
 │   ├── prompts/            ← headless curator prompts (baked into the image)
@@ -284,14 +280,12 @@ kubectl apply -k deploy/observability
 That pack is intentionally **not** part of `deploy/k8s` so the public quickstart does not require monitoring CRDs. It provides:
 
 - **ServiceMonitor** (`release: monitoring`) scraping the memory Service's `/metrics` endpoint
-- **PrometheusRule** alerts for server down, wiki/graph readiness, ingest lag, blocked notes, curator backlog, graph_answer grounding errors, note-drop failures, and stale communities
+- **PrometheusRule** alerts for server down, wiki/graph readiness, ingest lag, blocked notes, curator backlog, graph_answer grounding errors, and note-drop failures
 - **Grafana dashboard ConfigMap** in `monitoring` labeled `grafana_dashboard: "1"` for the dashboard sidecar
-
-The community age metric uses `+Inf` when no communities exist. The stale-community rule ignores this sentinel and alerts for finite ages above eight days.
 
 After apply, **verify the Prometheus target is ACTIVE**. A known kube-prometheus-stack sharding/relabel gotcha can drop cross-namespace ServiceMonitors even when the object exists — do not assume presence means scrape success. `memory_status` / `/api/status` and the Grafana panels should agree on core counts (inbox, blocked, ingest lag, readiness).
 
-Metric labels are bounded-cardinality only (`tool`, `outcome`, `confidence`, `cached`, `grounded`, `phase`, `version`). No raw query text, note slug, page name, or other private value is used as a label.
+Metric labels are bounded-cardinality only (`tool`, `outcome`, `confidence`, `grounded`, `phase`, `version`). No raw query text, note slug, page name, or other private value is used as a label.
 
 ## Releases and CI
 

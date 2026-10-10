@@ -1,7 +1,5 @@
 # Memory feedback loop + hygiene crons.
 #
-#  - build-communities (weekly, Sun 04:00): entity resolution (merge alias
-#    entities) then community rebuild — the "communities" retrieval layer.
 #  - memory-gaps (weekly, Mon 06:00): mines the combined server's query log for
 #    zero-hit / low-relevance queries and drops a memory-gaps report note.
 #  - contradiction-janitor (monthly, 1st 05:00, DRY_RUN first): LLM pass over
@@ -11,54 +9,6 @@
 #    set (deduplicated; reminder every NOTIFY_REPEAT_HOURS). The job also fails.
 #  - memory-healthcheck (daily, 05:30): DEEP end-to-end pipeline test; failures
 #    go to Telegram, or into the wiki inbox as a note when Telegram is unset.
----
-apiVersion: batch/v1
-kind: CronJob
-metadata:
-  name: build-communities
-  namespace: dipink
-spec:
-  schedule: "0 4 * * 0"
-  # Community rebuilds are expensive (multi-hour + thousands of LLM calls) and
-  # graphiti clears the current Community layer BEFORE computing replacements.
-  # Keep disabled. An approved operator run must both unsuspend this CronJob and
-  # add ALLOW_DESTRUCTIVE_COMMUNITY_REBUILD=1 to the job environment.
-  suspend: true
-  concurrencyPolicy: Forbid
-  successfulJobsHistoryLimit: 2
-  failedJobsHistoryLimit: 3
-  jobTemplate:
-    spec:
-      backoffLimit: 1
-      activeDeadlineSeconds: 21600
-      template:
-        spec:
-          restartPolicy: Never
-          containers:
-            - name: build
-              image: ghcr.io/d6o/dip.ink/memory:v0.1.17
-              command: ["python", "/app/loops/build_communities.py"]
-              envFrom:
-                - configMapRef:
-                    name: dipink-config
-              env:
-                - {name: MAX_CLUSTER, value: "200"}
-                - {name: COMMUNITY_CONC, value: "4"}
-                - {name: ENTITY_RESOLUTION, value: "1"}
-                - {name: PAUSE_INGEST, value: "0"}
-                - {name: NEO4J_URI, value: bolt://neo4j:7687}
-                - {name: NEO4J_USER, value: neo4j}
-                - name: NEO4J_PASSWORD
-                  valueFrom: {secretKeyRef: {name: dipink-secrets, key: NEO4J_PASSWORD}}
-                - name: OPENAI_API_KEY
-                  valueFrom: {secretKeyRef: {name: dipink-secrets, key: OPENAI_API_KEY}}
-                - name: LLM_BASE_URL
-                  valueFrom: {secretKeyRef: {name: dipink-secrets, key: LLM_BASE_URL, optional: true}}
-                - name: LLM_API_KEY
-                  valueFrom: {secretKeyRef: {name: dipink-secrets, key: LLM_API_KEY, optional: true}}
-              resources:
-                requests: {cpu: "500m", memory: 512Mi}
-                limits: {cpu: "1", memory: 1Gi}
 ---
 apiVersion: batch/v1
 kind: CronJob

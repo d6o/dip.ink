@@ -37,7 +37,6 @@ EXPECTED_METRICS = {
     "dipink_ingest_pending_notes",
     "dipink_ingest_partial_notes",
     "dipink_ingest_lag_seconds",
-    "dipink_community_age_seconds",
 }
 
 
@@ -63,10 +62,6 @@ def snapshot() -> dict:
             "pending": 6,
             "partial": 7,
             "lag_seconds": 8.0,
-        },
-        "communities": {
-            "count": 2,
-            "age_seconds": 9.0,
         },
     }
 
@@ -100,7 +95,6 @@ class ObservabilityContractTests(unittest.TestCase):
             "dipink_ingest_pending_notes": 6,
             "dipink_ingest_partial_notes": 7,
             "dipink_ingest_lag_seconds": 8,
-            "dipink_community_age_seconds": 9,
         }
         for name, expected in gauge_expectations.items():
             self.assertEqual(samples[name][0].value, expected, name)
@@ -110,7 +104,6 @@ class ObservabilityContractTests(unittest.TestCase):
             "ts": time.time(),
             "tool": "graph_answer",
             "confidence": "high",
-            "cached": False,
             "grounded": False,
             "grounding_action": "rejected",
             "assemble_ms": 10,
@@ -138,7 +131,7 @@ class ObservabilityContractTests(unittest.TestCase):
             "dipink_tool_duration_seconds": {"tool", "le"},
             "dipink_note_drop": {"outcome"},
             "dipink_graph_answer_duration_seconds": {"phase", "le"},
-            "dipink_graph_answer": {"confidence", "cached", "grounded"},
+            "dipink_graph_answer": {"confidence", "grounded"},
         }
         for sample_name, metric_samples in samples.items():
             if not sample_name.startswith("dipink_"):
@@ -177,12 +170,6 @@ class ObservabilityContractTests(unittest.TestCase):
         paths = {getattr(route, "path", "") for route in server.app.routes}
         self.assertIn("/metrics", paths)
         self.assertIn("/api/metrics", paths)
-
-    def test_missing_communities_publish_infinite_age_for_stale_alerting(self):
-        missing = snapshot()
-        missing["communities"] = {"count": 0, "age_seconds": None}
-        text = core.render_prometheus(missing).decode("utf-8")
-        self.assertIn("dipink_community_age_seconds +Inf", text)
 
 
 if __name__ == "__main__":

@@ -8,7 +8,7 @@ from pathlib import Path
 
 DATASOURCE = {"type": "prometheus", "uid": "prometheus"}
 CRONJOBS = (
-    "(graphiti-ingest|build-communities|memory-gaps|memory-alerts|"
+    "(graphiti-ingest|memory-gaps|memory-alerts|"
     "memory-healthcheck|contradiction-janitor)"
 )
 
@@ -166,16 +166,6 @@ panels = [
         6,
         unit="s",
     ),
-    timeseries(
-        9,
-        "Community age",
-        [target("max(dipink_community_age_seconds)", "community age", "A")],
-        12,
-        5,
-        12,
-        6,
-        unit="s",
-    ),
     row(10, "Inbox, curator, and ingest state", 11),
     stat(11, "Inbox notes", "max(dipink_inbox_notes)", 0, 12),
     stat(12, "Deferred notes", "max(dipink_deferred_notes)", 4, 12),
@@ -242,10 +232,9 @@ panels = [
     ),
     timeseries(
         23,
-        "graph_answer cache and grounding",
+        "graph_answer grounding",
         [
-            target("sum by (cached) (rate(dipink_graph_answer_total[5m]))", "cached={{cached}}", "A"),
-            target("sum by (grounded) (rate(dipink_graph_answer_total[5m]))", "grounded={{grounded}}", "B"),
+            target("sum by (grounded) (rate(dipink_graph_answer_total[5m]))", "grounded={{grounded}}", "A"),
         ],
         16,
         30,
@@ -393,7 +382,6 @@ required_metrics = (
     "dipink_ingest_pending_notes",
     "dipink_ingest_partial_notes",
     "dipink_ingest_lag_seconds",
-    "dipink_community_age_seconds",
 )
 missing = [metric for metric in required_metrics if metric not in payload]
 if missing:

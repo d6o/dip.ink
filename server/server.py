@@ -4,8 +4,7 @@ Assembles the two tool modules onto a single FastMCP instance + HTTP app:
 
   wiki.py   wiki_search / wiki_get / wiki_backlinks / wiki_note_drop
             (+ /api/search, /api/page, /api/backlinks, /api/reindex, /live)
-  graph.py  graph_answer / graph_search / graph_get_note / graph_entity /
-            graph_current_facts / graph_changes
+  graph.py  graph_answer / graph_search / graph_get_note / graph_changes
             (+ /api/answer, /api/graph/search, /api/graph/health)
 
 Shared here: /mcp (the single MCP transport), /health (combined readiness),
@@ -202,8 +201,8 @@ def _collect_repo_status() -> dict:
 KNOWN_USAGE_TOOLS = {
     "search", "get", "backlinks",  # legacy wiki event names
     "wiki_search", "wiki_get", "wiki_backlinks", "wiki_note_drop",
-    "graph_answer", "graph_search", "graph_get_note", "graph_entity",
-    "graph_current_facts", "graph_changes", "memory_status",
+    "graph_answer", "graph_search", "graph_get_note",
+    "graph_changes", "memory_status",
 }
 
 
@@ -211,7 +210,6 @@ def _collect_usage_status() -> dict:
     events = [event for event in core.read_metrics(1) if not event.get("test")]
     by_tool: dict[str, int] = {}
     errors = 0
-    cache_hits = 0
     confidence = {name: 0 for name in ("high", "medium", "low", "not_found", "error")}
     for event in events:
         tool = str(event.get("tool") or "other")
@@ -220,14 +218,11 @@ def _collect_usage_status() -> dict:
         conf = str(event.get("confidence") or "")
         if conf in confidence:
             confidence[conf] += 1
-        if event.get("cached") is True:
-            cache_hits += 1
         if conf == "error" or event.get("outcome") == "error" or bool(event.get("error")):
             errors += 1
     return {
         "total": len(events),
         "errors": errors,
-        "cache_hits": cache_hits,
         "by_tool": dict(sorted(by_tool.items())),
         "graph_answer_confidence": confidence,
     }
@@ -254,7 +249,7 @@ def _wiki_status() -> tuple[dict, dict]:
     return component, index
 
 
-async def _graph_status() -> tuple[dict, dict, dict]:
+async def _graph_status() -> tuple[dict, dict]:
     group_id = os.environ.get("GROUP_ID", "main")
     component = {"ready": False, "error": None}
     ingest = {
@@ -269,7 +264,6 @@ async def _graph_status() -> tuple[dict, dict, dict]:
         "watermark": None,
         "error": None,
     }
-    communities = {"count": 0, "age_seconds": None, "newest_at": None, "error": None}
     try:
         import graph
 
@@ -279,8 +273,7 @@ async def _graph_status() -> tuple[dict, dict, dict]:
     except Exception as error:  # noqa: BLE001
         component["error"] = _safe_error(error)
         ingest["error"] = "graph_unavailable"
-        communities["error"] = "graph_unavailable"
-        return component, ingest, communities
+        return component, ingest
 
     try:
         from ingest import collect_ingest_status, discover_notes, note_content_hash
@@ -312,24 +305,7 @@ async def _graph_status() -> tuple[dict, dict, dict]:
         })
     except Exception as error:  # noqa: BLE001
         ingest["error"] = _safe_error(error)
-
-    try:
-        rows, _, _ = await client.driver.execute_query(
-            "MATCH (c:Community {group_id: $group_id}) "
-            "RETURN count(c) AS count, max(c.created_at) AS newest",
-            group_id=group_id,
-            routing_="r",
-        )
-        row = rows[0] if rows else {}
-        newest = _to_datetime(row.get("newest"))
-        communities.update({
-            "count": int(row.get("count") or 0),
-            "age_seconds": _age_seconds(newest, datetime.now(timezone.utc)),
-            "newest_at": newest.isoformat() if newest else None,
-        })
-    except Exception as error:  # noqa: BLE001
-        communities["error"] = _safe_error(error)
-    return component, ingest, communities
+    return component, ingest
 
 
 async def collect_status() -> dict:
@@ -367,14 +343,13 @@ async def collect_status() -> dict:
             "newest_note": None,
         }
 
-    graph_component, ingest, communities = await _graph_status()
+    graph_component, ingest = await _graph_status()
     try:
         usage = await anyio.to_thread.run_sync(_collect_usage_status)
     except Exception as error:  # noqa: BLE001
         usage = {
             "total": 0,
             "errors": 0,
-            "cache_hits": 0,
             "by_tool": {},
             "graph_answer_confidence": {
                 name: 0 for name in ("high", "medium", "low", "not_found", "error")
@@ -395,7 +370,6 @@ async def collect_status() -> dict:
         "queues": repo["queues"],
         "notes": {"newest": repo["newest_note"]},
         "ingest": ingest,
-        "communities": communities,
         "usage_24h": usage,
         "build": {"version": DIPINK_VERSION, "revision": DIPINK_BUILD},
     }
@@ -426,8 +400,8 @@ def invalidate_status_cache() -> None:
 @core.mcp.tool()
 async def memory_status() -> dict:
     """Return a bounded operational summary of wiki, graph, queues, ingest,
-    communities, recent usage, and build version. Component failures degrade
-    independently; no raw note bodies, query text, or credentials are returned."""
+    recent usage, and build version. Component failures degrade independently;
+    no raw note bodies, query text, or credentials are returned."""
     started = time.monotonic()
     snapshot = await get_status()
     await anyio.to_thread.run_sync(lambda: core.record_query({

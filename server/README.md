@@ -18,13 +18,12 @@ One process, one MCP endpoint (`/mcp`), all tools. One image, three roles:
   `/api/reindex`, `/live`.
 - `graph.py` — the Graphiti side: `graph_answer` (distilled answers with
   deterministic provenance grounding), `graph_search` (rich packet with
-  in-process wiki fusion), `graph_get_note`, `graph_entity`,
-  `graph_current_facts`, `graph_changes`, plus `/api/answer`,
+  in-process wiki fusion), `graph_get_note`, `graph_changes`, plus `/api/answer`,
   `/api/graph/search`, `/api/graph/health`.
 - `server.py` — assembles everything onto one Starlette app and owns the
   bounded operational snapshot used by `memory_status` / `/api/status`
   (component readiness, index age, inbox/deferred/blocked, review queue,
-  ingest pending/partial/lag, communities, query summary, build/version).
+  ingest pending/partial/lag, query summary, build/version).
   It degrades component-by-component and never returns note bodies, query text,
   or credentials.
 - `core.py` also owns the bounded-cardinality Prometheus registry rendered by
@@ -79,9 +78,7 @@ Optional [indexed vector retrieval](VECTOR_RETRIEVAL.md) accelerates graph reads
 - **Distiller** (`graph_answer`): one plain chat completion, temperature 0,
   answering **only from the packet** — invented provenance is discarded, and
   unsupported answers return `not_found` + `escalate` (the no-hallucination
-  property the daily healthcheck probes). Real answers are cached for
-  `ANSWER_CACHE_TTL` (default 1h) and invalidated by ingest watermarks;
-  `not_found`/errors never are.
+  property the daily healthcheck probes). Each call assembles a new packet.
 - **Current-state answers**: an uninvalidated graph fact is not proof of the
   latest deployment or live state. For an explicit latest/current question,
   `graph_answer` keeps wiki hits within 0.1 of the top semantic score. It then
@@ -97,10 +94,8 @@ Optional [indexed vector retrieval](VECTOR_RETRIEVAL.md) accelerates graph reads
   version line at different patches; that failure returns `not_found`.
   The answer returns `as_of` (the newest cited source time), states that live
   state is not verified, sets `escalate: true`, and never has high confidence.
-  Unsupported evidence returns `not_found`. Current-state answers bypass the
-  answer cache because new wiki captures can appear before graph ingest. Query
-  events record `temporal_mode`. Dated historical questions use the normal
-  packet.
+  Unsupported evidence returns `not_found`. Query events record `temporal_mode`.
+  Dated historical questions use the normal packet.
 - **Provenance**: search edges carry episode UUIDs; a single batched Cypher
   resolves them to note slugs so every fact cites its source note.
 - **Isolation**: `GROUP_ID` is a Graphiti **property partition**, not a Neo4j
@@ -110,11 +105,9 @@ Optional [indexed vector retrieval](VECTOR_RETRIEVAL.md) accelerates graph reads
 
 | Job | Cadence | What |
 |---|---|---|
-| `memory_alerts.py` | 30 min | dead-man checks: pending note→episode lag (not wall-clock quiet), community age, server `/health`. Quiet memory with zero pending is healthy. Exit 1 = alert. |
+| `memory_alerts.py` | 30 min | dead-man checks: pending note→episode lag (not wall-clock quiet), server `/health`. Quiet memory with zero pending is healthy. Exit 1 = alert. |
 | `memory_healthcheck.py` | daily | deep end-to-end: write path (canary if quiet), per-note ingest verification, curation backlog/liveness/lag, server exposure incl. `graph_answer` correctness + no-hallucination guard, index freshness, usage counts. Failures drop a note into the inbox. |
 | `memory_gaps.py` | weekly | mines the query log for zero-hit / low-relevance / not-found queries and files a "memory gaps" report note — which gets ingested: the memory knows what it's missing. |
-| `build_communities.py` | weekly | entity resolution (below) then community rebuild, with unbounded→bounded fallback and transient-error retries. |
-| `entity_resolution.py` | (inside rebuild) | merges alias entities ("MyApp" vs "myapp.example.com") — string candidates, LLM confirmation, capped merges, DRY_RUN honored. |
 | `contradiction_janitor.py` | monthly | LLM audit of the densest entities' current facts; report-only by default (`DRY_RUN=1`). |
 
 ## Key env
@@ -135,7 +128,7 @@ Optional [indexed vector retrieval](VECTOR_RETRIEVAL.md) accelerates graph reads
 | `MCP_ALLOWED_HOSTS` | `localhost,127.0.0.1,memory` | add your ingress hostname (DNS-rebinding protection) |
 | `GROUP_ID` | `main` | Graphiti group property partition (not a Neo4j database) |
 | `NOTES_ROOT` / `INBOX_ROOTS` | `/notes/wiki/sources/notes` / `/notes/notes` | where notes live in the ingest checkout |
-| `ANSWER_CACHE_TTL` / `GRAPH_FUSION` | `3600` / `1` | answer cache TTL; wiki fusion toggle |
+| `GRAPH_FUSION` | `1` | wiki fusion toggle |
 
 ## HTTP surface
 

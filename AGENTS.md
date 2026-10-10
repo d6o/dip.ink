@@ -15,7 +15,7 @@ The operator maintains a personal, LLM-curated memory system — the canonical r
 | Family | Tools | What it's for |
 |---|---|---|
 | **wiki** | `wiki_search`, `wiki_get`, `wiki_backlinks`, `wiki_note_drop` | Semantic search over curated wiki pages + THE write path (note capture) |
-| **graph** | `graph_answer`, `graph_search`, `graph_get_note`, `graph_entity`, `graph_current_facts`, `graph_changes` | Temporal knowledge graph: direct answers, current-vs-superseded facts, what-changed diffs |
+| **graph** | `graph_answer`, `graph_search`, `graph_get_note`, `graph_changes` | Temporal knowledge graph: direct answers, current-vs-superseded facts, what-changed diffs |
 | **status** | `memory_status` | Bounded operational snapshot (readiness, backlog, ingest lag, version) — never contains note bodies or secrets |
 
 Storage is a private git repo of markdown notes and wiki pages. You generally don't clone it — you go through MCP — but knowing the data lives in git matters when something seems out of date.
@@ -33,8 +33,8 @@ If the tools aren't in your tool list and registration fails, you are not on the
 ## Which tool when
 
 - **Factual question** ("what port does X use?", "what did I decide about Y?") → `graph_answer` FIRST. It returns a distilled `{answer, confidence, sources, escalate}` (~150 tokens) instead of a fat search packet. If it returns `escalate: true` or `not_found`, fall back to `graph_search`.
-- **Broad/exploratory context** ("what do I know about X?") → `graph_search` (facts + community summary + entities + source excerpt + semantic note hits) or `wiki_search` (curated pages).
-- **What's true NOW** (excluding superseded facts) → `graph_current_facts` or `graph_entity`.
+- **Broad/exploratory context** ("what do I know about X?") → `graph_search` (facts + entities + source excerpt + semantic note hits) or `wiki_search` (curated pages).
+- **What's true NOW** (excluding superseded facts) → `graph_answer`. It already handles current and latest questions.
 - **Resuming after time away** → `graph_changes(subject, since_days)` — one call instead of five searches.
 - **Provenance** — every graph fact carries a `source_slug`; fetch the original note with `graph_get_note(slug)`.
 - **Reading a curated page in full** → `wiki_get(name)` after `wiki_search`.

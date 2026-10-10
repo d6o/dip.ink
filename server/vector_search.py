@@ -1,6 +1,6 @@
 """Neo4j 5.26 vector retrieval for graph reads, never ingestion matching.
 
-Fulltext, BFS, community search, parsers, and RRF remain upstream implementations.
+Fulltext, BFS, parsers, and RRF remain upstream implementations.
 Indexes are managed explicitly by vector_indexes.py, not by request handlers.
 """
 from __future__ import annotations
@@ -168,7 +168,7 @@ class IndexedReadSearchInterface(SearchInterface):
     """Bridge the Graphiti 0.29.2 legacy interface to indexed read operations.
 
     Fulltext methods are required and use the upstream Neo4j operations.
-    Optional BFS, community, embedding, and reranker methods retain the base
+    Optional BFS, embedding, and reranker methods retain the base
     NotImplementedError contract, so search_utils uses its unchanged legacy
     implementations. Operations rerankers return nodes, not the legacy tuple.
     """
