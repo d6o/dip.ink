@@ -82,6 +82,9 @@ def aggregate(rows: list[dict]) -> dict:
         sum(r.get("llm_sum_s") or 0 for r in rows) / (sum(r.get("llm_wall_s") or 0 for r in rows) or 1), 2
     )
     out["truncated_calls"] = sum(r.get("llm_truncated") or 0 for r in rows)
+    out_tok = sum(r.get("llm_out_tok") or 0 for r in rows)
+    out["reasoning_share_of_out_tok"] = round(
+        sum(r.get("llm_reason_tok") or 0 for r in rows) / out_tok, 2) if out_tok else None
     out["episode_retries"] = sum(r.get("episode_retries") or 0 for r in rows)
 
     prompts: dict[str, dict] = defaultdict(lambda: Counter())
@@ -90,7 +93,7 @@ def aggregate(rows: list[dict]) -> dict:
     for r in rows:
         for name, p in (r.get("by_prompt") or {}).items():
             agg = prompts[name]
-            for k in ("calls", "s", "fail", "in_tok", "out_tok"):
+            for k in ("calls", "s", "fail", "in_tok", "out_tok", "reason_tok"):
                 agg[k] += p.get(k) or 0
             agg["max_out_tok"] = max(agg["max_out_tok"], p.get("max_out_tok") or 0)
         for name, m in (r.get("by_model") or {}).items():
@@ -106,6 +109,7 @@ def aggregate(rows: list[dict]) -> dict:
         "fail_rate": round(p["fail"] / p["calls"], 3) if p["calls"] else None,
         "mean_in_tok": round(p["in_tok"] / p["calls"]) if p["calls"] else None,
         "mean_out_tok": round(p["out_tok"] / p["calls"]) if p["calls"] else None,
+        "reasoning_share_of_out": round(p["reason_tok"] / p["out_tok"], 2) if p["out_tok"] else None,
         "max_out_tok": p["max_out_tok"],
     } for name, p in prompts.items()), key=lambda x: -x["share_of_llm_s"])
     out["models"] = sorted(({

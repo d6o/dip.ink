@@ -221,6 +221,8 @@ class CompactSchemaClient(OpenAIGenericClient):
 def _record_llm_call(metrics, model, started, response, max_tokens, outcome) -> None:
     usage = getattr(response, "usage", None)
     choice = (getattr(response, "choices", None) or [None])[0]
+    out_details = getattr(usage, "completion_tokens_details", None)
+    in_details = getattr(usage, "prompt_tokens_details", None)
     metrics.record_llm(
         # The router may answer with another model; record the one it reports.
         model=str(getattr(response, "model", "") or model),
@@ -231,6 +233,8 @@ def _record_llm_call(metrics, model, started, response, max_tokens, outcome) -> 
         completion_tokens=getattr(usage, "completion_tokens", None),
         finish_reason=getattr(choice, "finish_reason", None),
         max_tokens=max_tokens,
+        reasoning_tokens=getattr(out_details, "reasoning_tokens", None),
+        cached_tokens=getattr(in_details, "cached_tokens", None),
     )
 
 

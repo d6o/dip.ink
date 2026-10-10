@@ -119,6 +119,8 @@ class NoteMetrics:
         completion_tokens: int | None = None,
         finish_reason: str | None = None,
         max_tokens: int | None = None,
+        reasoning_tokens: int | None = None,
+        cached_tokens: int | None = None,
     ) -> None:
         self.llm_calls.append({
             "prompt": prompt_name(),
@@ -128,6 +130,9 @@ class NoteMetrics:
             "outcome": outcome,
             "in_tok": prompt_tokens,
             "out_tok": completion_tokens,
+            # Reasoning tokens are part of out_tok; they do not reach the JSON.
+            "reason_tok": reasoning_tokens,
+            "cached_tok": cached_tokens,
             "finish": finish_reason,
             "max_tok": max_tokens,
         })
@@ -151,7 +156,8 @@ class NoteMetrics:
         embed_iv = [(a, b) for a, b, _ in self.embed]
         busy = _union_seconds(llm_iv + embed_iv + self.neo4j)
         by_prompt: dict[str, dict] = defaultdict(lambda: {
-            "calls": 0, "s": 0.0, "fail": 0, "in_tok": 0, "out_tok": 0, "max_out_tok": 0,
+            "calls": 0, "s": 0.0, "fail": 0, "in_tok": 0, "out_tok": 0, "reason_tok": 0,
+            "max_out_tok": 0,
         })
         by_model: dict[str, dict] = defaultdict(lambda: {"calls": 0, "s": 0.0, "fail": 0})
         failures: dict[str, int] = defaultdict(int)
@@ -165,6 +171,7 @@ class NoteMetrics:
             m["s"] += call["s"]
             p["in_tok"] += call["in_tok"] or 0
             p["out_tok"] += call["out_tok"] or 0
+            p["reason_tok"] += call.get("reason_tok") or 0
             p["max_out_tok"] = max(p["max_out_tok"], call["out_tok"] or 0)
             if call["finish"] == "length":
                 truncated += 1
@@ -191,6 +198,8 @@ class NoteMetrics:
             "llm_wall_s": round(_union_seconds(llm_iv), 1),
             "llm_in_tok": sum(c["in_tok"] or 0 for c in self.llm_calls),
             "llm_out_tok": sum(c["out_tok"] or 0 for c in self.llm_calls),
+            "llm_reason_tok": sum(c.get("reason_tok") or 0 for c in self.llm_calls),
+            "llm_cached_tok": sum(c.get("cached_tok") or 0 for c in self.llm_calls),
             "llm_truncated": truncated,
             "llm_failures": dict(failures),
             "embed_calls": len(self.embed),
@@ -228,7 +237,7 @@ def emit(record: dict) -> None:
 _SCALARS = (
     "slug", "at", "job", "version", "attempt", "outcome", "error_kind", "error", "body_chars",
     "wall_s", "llm_calls", "llm_sum_s", "llm_wall_s", "llm_in_tok", "llm_out_tok",
-    "llm_truncated", "embed_calls", "embed_inputs", "embed_wall_s", "neo4j_queries",
+    "llm_reason_tok", "llm_cached_tok", "llm_truncated", "embed_calls", "embed_inputs", "embed_wall_s", "neo4j_queries",
     "neo4j_wall_s", "idle_s", "episode_retries", "nodes", "edges",
 )
 

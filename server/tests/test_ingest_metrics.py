@@ -21,6 +21,8 @@ from loops import ingest_report  # noqa: E402
 class Usage:
     prompt_tokens = 1200
     completion_tokens = 300
+    completion_tokens_details = SimpleNamespace(reasoning_tokens=250)
+    prompt_tokens_details = SimpleNamespace(cached_tokens=128)
 
 
 def completion(text: str, finish: str = "stop"):
@@ -88,6 +90,10 @@ class ClientInstrumentationTests(unittest.TestCase):
         self.assertEqual(call["model"], "router-picked")
         self.assertEqual(call["outcome"], "ok")
         self.assertEqual((call["in_tok"], call["out_tok"], call["finish"]), (1200, 300, "stop"))
+        self.assertEqual((call["reason_tok"], call["cached_tok"]), (250, 128))
+        summary = metrics.summary(outcome="ok")
+        self.assertEqual(summary["llm_reason_tok"], 250)
+        self.assertEqual(summary["by_prompt"]["extract_nodes"]["reason_tok"], 250)
 
     def test_truncated_json_is_recorded_and_still_raised(self):
         metrics = ingest_metrics.NoteMetrics(slug="s", body_chars=10)
