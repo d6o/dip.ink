@@ -72,17 +72,43 @@ class GroundingValidationTests(unittest.TestCase):
         self.assertEqual(result["sources"], [VALID_SLUG])
         self.assertEqual(result["confidence"], "high")
 
-    def test_high_confidence_with_only_semantic_hit_is_downgraded(self):
-        result, grounded, action = graph._validate_distilled_answer({
-            "answer": "indirect answer",
-            "confidence": "high",
-            "sources": [SEMANTIC_SLUG],
-            "escalate": False,
-        }, packet())
+    def test_answer_from_only_a_semantic_name_is_rejected(self):
+        # dip.ink#7: a medium answer cited only a semantic hit (name and
+        # description, no text) and invented a HookFork revocation claim.
+        for confidence in ("high", "medium", "low"):
+            with self.subTest(confidence=confidence):
+                result, grounded, action = graph._validate_distilled_answer({
+                    "answer": "Claim revocation does not affect unresolved deliveries.",
+                    "confidence": confidence,
+                    "sources": [SEMANTIC_SLUG],
+                    "escalate": False,
+                }, packet())
+                self.assertTrue(grounded)
+                self.assertEqual(action, "weak_only")
+                self.assertIsNone(result["answer"])
+                self.assertEqual(result["confidence"], "not_found")
+                self.assertTrue(result["escalate"])
+                self.assertIn(SEMANTIC_SLUG, result["superseded_note"])
 
-        self.assertTrue(grounded)
+    def test_semantic_hit_with_text_is_readable_evidence(self):
+        p = packet()
+        p["semantic_notes"] = [{"name": SEMANTIC_SLUG, "content": "Claim revocation pauses unresolved work."}]
+        result, _, action = graph._validate_distilled_answer({
+            "answer": "It pauses unresolved work.", "confidence": "high",
+            "sources": [SEMANTIC_SLUG], "escalate": False,
+        }, p)
+        self.assertEqual(action, "accepted")
+        self.assertEqual(result["confidence"], "high")
+
+    def test_superseded_fact_still_answers_history_with_lower_confidence(self):
+        p = packet()
+        p["facts"][0]["current"] = False
+        result, _, action = graph._validate_distilled_answer({
+            "answer": "42", "confidence": "high", "sources": [VALID_SLUG], "escalate": False,
+        }, p)
         self.assertEqual(action, "downgraded")
         self.assertEqual(result["confidence"], "medium")
+        self.assertEqual(result["answer"], "42")
 
     def test_not_found_remains_a_grounded_abstention(self):
         result, grounded, action = graph._validate_distilled_answer({

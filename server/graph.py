@@ -74,6 +74,7 @@ GROUNDING_COUNTS = {
     "rejected": 0,
     "abstained": 0,
     "date_mismatch": 0,
+    "weak_only": 0,
     "error": 0,
 }
 
@@ -663,7 +664,8 @@ def _allowed_provenance(packet: dict) -> dict[str, str]:
             if hit.get("content"):
                 allowed[slug] = "strong"
             elif slug not in allowed:
-                allowed[slug] = "weak"
+                # Only a name and a description: no readable evidence.
+                allowed[slug] = "name_only"
     return allowed
 
 
@@ -730,6 +732,22 @@ def _validate_distilled_answer(
             "escalate": True,
             "superseded_note": mismatch[:500],
         }, True, "date_mismatch"
+
+    if all(allowed[source] == "name_only" for source in sources):
+        # dip.ink#7: every cited source was a semantic hit with only a name
+        # and a description. Superseded facts stay valid for dated history. The distiller then
+        # answered without readable evidence and invented a claim. Do not
+        # return such an answer; point the caller to the candidate notes.
+        return {
+            "answer": None,
+            "confidence": "not_found",
+            "sources": [],
+            "escalate": True,
+            "superseded_note": (
+                "No readable evidence answers this. Candidate notes matched by name only: "
+                + ", ".join(sources[:5]) + ". Read them with wiki_get before you rely on them."
+            )[:500],
+        }, True, "weak_only"
 
     action = "filtered" if invented else "accepted"
     if conf == "high" and not any(allowed[source] == "strong" for source in sources):
