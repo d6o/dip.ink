@@ -86,6 +86,10 @@ def aggregate(rows: list[dict]) -> dict:
     out["reasoning_share_of_out_tok"] = round(
         sum(r.get("llm_reason_tok") or 0 for r in rows) / out_tok, 2) if out_tok else None
     out["episode_retries"] = sum(r.get("episode_retries") or 0 for r in rows)
+    out["vector_audits"] = sum(r.get("vector_audits") or 0 for r in rows)
+    out["vector_audit_mismatches"] = sum(r.get("vector_audit_mismatches") or 0 for r in rows)
+    recalls = [r["vector_audit_min_recall"] for r in rows if r.get("vector_audit_min_recall") is not None]
+    out["vector_audit_min_recall"] = min(recalls) if recalls else None
 
     prompts: dict[str, dict] = defaultdict(lambda: Counter())
     models: dict[str, dict] = defaultdict(lambda: Counter())

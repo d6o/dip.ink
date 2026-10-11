@@ -171,6 +171,19 @@ class QueryKindTests(unittest.TestCase):
         self.assertEqual((out["n"], out["s"], out["max_s"]), (2, 3.0, 2.0))
 
 
+class VectorAuditMetricTests(unittest.TestCase):
+    def test_audits_are_counted_per_note(self):
+        m = ingest_metrics.NoteMetrics(slug="s", body_chars=1)
+        token = ingest_metrics._current.set(m)
+        try:
+            ingest_metrics.record_vector_audit("NODE", True, 1.0)
+            ingest_metrics.record_vector_audit("RELATIONSHIP", False, 0.9)
+        finally:
+            ingest_metrics._current.reset(token)
+        out = m.summary(outcome="ok")
+        self.assertEqual((out["vector_audits"], out["vector_audit_mismatches"], out["vector_audit_min_recall"]), (2, 1, 0.9))
+
+
 class ReportTests(unittest.TestCase):
     def test_aggregate(self):
         rows = [

@@ -983,6 +983,17 @@ async def status() -> None:
     print(f"[status] progress: {pct:.1f}%")
 
 
+def _install_ingest_vector_search(g) -> None:
+    from vector_search import install_ingest_search
+
+    adapter = install_ingest_search(g.driver, on_audit=ingest_metrics.record_vector_audit)
+    if adapter is not None:
+        print(
+            f"[cron] ingest vector search on: overfetch={adapter.overfetch} "
+            f"max_candidates={adapter.max_candidates} audit_rate={adapter.audit_rate}"
+        )
+
+
 def _cancel_on_sigterm() -> None:
     """Turn SIGTERM (Job deadline, pod delete) into task cancellation.
 
@@ -1018,6 +1029,7 @@ async def cron() -> None:
         return
 
     g = build_graphiti_on_group(group_id)
+    _install_ingest_vector_search(g)
     _cancel_on_sigterm()
     try:
         await g.build_indices_and_constraints()

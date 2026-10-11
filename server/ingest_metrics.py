@@ -104,6 +104,16 @@ class NoteMetrics:
     embed: list[tuple[float, float, int]] = field(default_factory=list)
     neo4j: list[tuple[float, float]] = field(default_factory=list)
     neo4j_kinds: dict = field(default_factory=dict)
+    vector_audits: int = 0
+    vector_audit_mismatches: int = 0
+    vector_audit_min_recall: float | None = None
+
+    def record_vector_audit(self, kind: str, matched: bool, recall: float) -> None:
+        self.vector_audits += 1
+        if not matched:
+            self.vector_audit_mismatches += 1
+        if self.vector_audit_min_recall is None or recall < self.vector_audit_min_recall:
+            self.vector_audit_min_recall = round(recall, 3)
     episode_retries: int = 0
 
     def _offset(self, t: float) -> float:
@@ -217,12 +227,22 @@ class NoteMetrics:
             # waits, Python work, and unmeasured Neo4j session writes.
             "idle_s": round(max(0.0, wall - busy), 1),
             "episode_retries": self.episode_retries,
+            "vector_audits": self.vector_audits,
+            "vector_audit_mismatches": self.vector_audit_mismatches,
+            "vector_audit_min_recall": self.vector_audit_min_recall,
             "nodes": nodes,
             "edges": edges,
             "by_prompt": dict(by_prompt),
             "by_model": dict(by_model),
             "slowest_calls": slowest,
         }
+
+
+def record_vector_audit(kind: str, matched: bool, recall: float) -> None:
+    """Callback for the ingest vector adapter: add to the current note."""
+    metrics = current()
+    if metrics is not None:
+        metrics.record_vector_audit(kind, matched, recall)
 
 
 def query_kind(cypher: str) -> str:
@@ -265,6 +285,7 @@ _SCALARS = (
     "wall_s", "llm_calls", "llm_sum_s", "llm_wall_s", "llm_in_tok", "llm_out_tok",
     "llm_reason_tok", "llm_cached_tok", "llm_truncated", "embed_calls", "embed_inputs", "embed_wall_s", "neo4j_queries",
     "neo4j_wall_s", "idle_s", "episode_retries", "nodes", "edges",
+    "vector_audits", "vector_audit_mismatches", "vector_audit_min_recall",
 )
 
 

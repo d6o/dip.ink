@@ -5,7 +5,7 @@ This optional adapter supports Neo4j 5.26.2 Community. It uses `db.index.vector.
 ## Scope and safety
 
 - `GRAPH_VECTOR_SEARCH=0` is the default and rollback setting. Restart the memory server after a change.
-- `graph._get_graph` installs the adapter only for graph reads. `ingest.build_graphiti` retains upstream exact matching and temporal invalidation.
+- `graph._get_graph` installs the adapter for graph reads. The ingest CronJob uses upstream exact matching unless `INGEST_VECTOR_SEARCH=1` (see "Ingest matching").
 - Graphiti 0.29.2 routes `search_` through `driver.search_interface`, not `driver.search_ops`. A per-instance bridge connects that interface to indexed read operations.
 - Optional interface methods retain legacy fallback. In particular, legacy rerankers return UUID/score tuples, whereas operations rerankers return nodes.
 - Fulltext, BFS, RRF, provenance parsing, and response packets remain unchanged.
@@ -86,3 +86,16 @@ The real suite also calls `Graphiti.search_` through `graph._get_graph` with a f
 The real suite creates fixture groups and global managed indexes. It refuses pre-existing managed indexes, and removes only its fixture data and indexes. CI supplies a disposable database. The offline-state test simulates `POPULATING` metadata over real Neo4j exact queries; it does not depend on a population race.
 
 Reference: [Neo4j vector index documentation](https://neo4j.com/docs/cypher-manual/current/indexes/semantic-indexes/vector-indexes/). This implementation uses only the procedures and DDL available in 5.26.2.
+
+## Ingest matching (opt-in)
+
+`INGEST_VECTOR_SEARCH=1` installs the same adapter on the ingest client (`ingest.py cron`). It uses separate settings, so read tuning never changes ingest matching:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `INGEST_VECTOR_SEARCH` | `0` | `1` enables indexed candidates for ingest. `0` rolls back to exact scans. |
+| `INGEST_VECTOR_OVERFETCH` | `100` | ANN candidates = limit × overfetch, bounded by the next setting. |
+| `INGEST_VECTOR_MAX_CANDIDATES` | `2000` | Upper bound on ANN candidates per search. |
+| `INGEST_VECTOR_AUDIT_RATE` | `0.02` | Share of indexed searches that also run the exact search. On a difference the exact result wins, and the note's ingest measurement records the audit (`vector_audits`, `vector_audit_mismatches`, `vector_audit_min_recall`). |
+
+Graphiti 0.29.2 ingest runs node dedupe (cosine, indexed), related edges (`edge_uuids` filter, always exact and cheap), and invalidation candidates (hybrid; the cosine branch is indexed). The evaluation in `docs/eval/2026-10-11-ingest-vector-recall.md` found the same final candidates as exact search on 400 real queries at overfetch 100, at 10–30 times lower latency. Repeat it when a second large group or a new embedding model comes into use.

@@ -182,3 +182,47 @@ class VectorSearchTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             await manage(executor, dimensions=2)
         self.assertTrue(all(call.args[0].startswith("SHOW") for call in executor.execute_query.call_args_list))
+
+
+class IngestVectorSearchTests(unittest.IsolatedAsyncioTestCase):
+    def test_install_is_separate_from_read_settings(self):
+        from vector_search import install_ingest_search
+        driver = SimpleNamespace(_search_ops=Neo4jSearchOperations(), search_interface=None)
+        with patch.dict(os.environ, {"GRAPH_VECTOR_SEARCH": "1", "INGEST_VECTOR_SEARCH": "0"}):
+            self.assertIsNone(install_ingest_search(driver))
+        self.assertIsNone(driver.search_interface)
+        with patch.dict(os.environ, {"INGEST_VECTOR_SEARCH": "1", "GRAPH_VECTOR_OVERFETCH": "20"}):
+            adapter = install_ingest_search(driver)
+        self.assertEqual((adapter.overfetch, adapter.max_candidates, adapter.audit_rate), (100, 2000, 0.02))
+        self.assertIs(driver._search_ops, adapter)
+
+    def ann_executor(self, ann_rows, exact_rows):
+        return SimpleNamespace(execute_query=AsyncMock(side_effect=[
+            result([metadata(NODE_INDEX, 2)]), result(ann_rows), result(exact_rows),
+        ]))
+
+    async def test_audit_match_keeps_indexed_result(self):
+        seen = []
+        adapter = IndexedReadSearch(overfetch=100, audit_rate=1.0, on_audit=lambda *a: seen.append(a))
+        executor = self.ann_executor([{"u": "a"}, {"u": "b"}], [{"u": "b"}, {"u": "a"}])
+        with patch("vector_search.entity_node_from_record", side_effect=lambda r: SimpleNamespace(uuid=r["u"])):
+            out = await adapter.node_similarity_search(executor, [1., 0.], SearchFilters(), ["g"], 2)
+        self.assertEqual([o.uuid for o in out], ["a", "b"])
+        self.assertEqual(seen, [("NODE", True, 1.0)])
+
+    async def test_audit_mismatch_returns_exact_result(self):
+        seen = []
+        adapter = IndexedReadSearch(overfetch=100, audit_rate=1.0, on_audit=lambda *a: seen.append(a))
+        executor = self.ann_executor([{"u": "a"}, {"u": "c"}], [{"u": "a"}, {"u": "b"}])
+        with patch("vector_search.entity_node_from_record", side_effect=lambda r: SimpleNamespace(uuid=r["u"])):
+            out = await adapter.node_similarity_search(executor, [1., 0.], SearchFilters(), ["g"], 2)
+        self.assertEqual([o.uuid for o in out], ["a", "b"])
+        self.assertEqual(seen, [("NODE", False, 0.5)])
+
+    async def test_no_audit_runs_one_ann_query(self):
+        adapter = IndexedReadSearch(overfetch=100, audit_rate=0.0)
+        executor = SimpleNamespace(execute_query=AsyncMock(side_effect=[
+            result([metadata(NODE_INDEX, 2)]), result([{"u": "a"}])]))
+        with patch("vector_search.entity_node_from_record", side_effect=lambda r: SimpleNamespace(uuid=r["u"])):
+            await adapter.node_similarity_search(executor, [1., 0.], SearchFilters(), ["g"], 1)
+        self.assertEqual(executor.execute_query.await_count, 2)

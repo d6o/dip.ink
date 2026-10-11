@@ -1,4 +1,7 @@
-"""Neo4j 5.26 vector retrieval for graph reads, never ingestion matching.
+"""Neo4j 5.26 vector retrieval for graph reads, and opt-in for ingest matching.
+
+Ingest matching uses the index only with INGEST_VECTOR_SEARCH=1, a high
+overfetch, and a sampled exact audit (see install_ingest_search).
 
 Fulltext, BFS, parsers, and RRF remain upstream implementations.
 Indexes are managed explicitly by vector_indexes.py, not by request handlers.
@@ -7,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import os
+import random
 from dataclasses import dataclass
 
 from graphiti_core.driver.driver import GraphProvider
@@ -75,14 +79,22 @@ class IndexedReadSearch(Neo4jSearchOperations):
     A full result set is still approximate: quality evaluation gates rollout.
     """
 
-    def __init__(self, *, overfetch=20, max_candidates=2000, dimensions=None):
+    def __init__(self, *, overfetch=20, max_candidates=2000, dimensions=None,
+                 audit_rate=0.0, on_audit=None):
         if not 1 <= overfetch <= 100 or not 1 <= max_candidates <= 10000:
             raise ValueError("Invalid vector candidate bounds")
         if dimensions is not None and not 1 <= dimensions <= 4096:
             raise ValueError("Invalid vector dimensions")
+        if not 0.0 <= audit_rate <= 1.0:
+            raise ValueError("Invalid audit rate")
         self.overfetch = overfetch
         self.max_candidates = max_candidates
         self.dimensions = dimensions
+        # Share of indexed searches that also run the exact search. On a
+        # difference the exact result wins, so an audited search is never
+        # less complete than the upstream search.
+        self.audit_rate = audit_rate
+        self.on_audit = on_audit
 
     async def _similarity(self, executor, spec, vector, filters, groups, limit,
                           min_score, source=None, target=None):
@@ -150,7 +162,25 @@ class IndexedReadSearch(Neo4jSearchOperations):
         if len(rows) < limit:
             return await exact("underfilled")
         log.info("vector retrieval kind=%s mode=indexed candidates=%d", spec.entity_type, candidates)
-        return [parser(row) for row in rows]
+        indexed = [parser(row) for row in rows]
+        if self.audit_rate and random.random() < self.audit_rate:
+            exact_result = await exact("audit")
+            want = [item.uuid for item in exact_result]
+            got = {item.uuid for item in indexed}
+            found = sum(1 for uuid in want if uuid in got)
+            recall = found / len(want) if want else 1.0
+            matched = found == len(want)
+            if not matched:
+                log.warning("vector audit mismatch kind=%s recall=%.3f exact=%d indexed=%d",
+                            spec.entity_type, recall, len(want), len(got))
+            if self.on_audit is not None:
+                try:
+                    self.on_audit(spec.entity_type, matched, recall)
+                except Exception:  # noqa: BLE001 - metrics must not break a search
+                    pass
+            if not matched:
+                return exact_result
+        return indexed
 
     async def node_similarity_search(self, executor, search_vector, search_filter,
                                      group_ids=None, limit=10, min_score=0.6):
@@ -213,3 +243,26 @@ def install_read_search(driver):
     # attributes; ingestion drivers retain the class-level None interface.
     driver.search_interface = IndexedReadSearchInterface(operations=adapter)
     driver._search_ops = adapter
+
+
+def install_ingest_search(driver, on_audit=None):
+    """Opt in the ingest client. Disabled means unchanged upstream matching.
+
+    Evaluation (docs/eval/2026-10-11-ingest-vector-recall.md): at overfetch
+    100 the indexed node dedupe and invalidation candidates matched the exact
+    search on 400 real queries. Read settings (GRAPH_VECTOR_*) do not apply
+    here; INGEST_VECTOR_SEARCH=0 rolls back with one variable.
+    """
+    if os.environ.get("INGEST_VECTOR_SEARCH", "0").lower() not in {"1", "true", "yes"}:
+        return None
+    raw_dimensions = os.environ.get("GRAPH_VECTOR_DIMENSIONS", "").strip()
+    adapter = IndexedReadSearch(
+        overfetch=int(os.environ.get("INGEST_VECTOR_OVERFETCH", "100")),
+        max_candidates=int(os.environ.get("INGEST_VECTOR_MAX_CANDIDATES", "2000")),
+        dimensions=int(raw_dimensions) if raw_dimensions else None,
+        audit_rate=float(os.environ.get("INGEST_VECTOR_AUDIT_RATE", "0.02")),
+        on_audit=on_audit,
+    )
+    driver.search_interface = IndexedReadSearchInterface(operations=adapter)
+    driver._search_ops = adapter
+    return adapter
