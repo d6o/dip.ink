@@ -113,6 +113,50 @@ class ClientInstrumentationTests(unittest.TestCase):
         self.assertEqual(result, {"b": 2})
 
 
+class OutageWaitTests(unittest.TestCase):
+    def client(self, replies):
+        return ClientInstrumentationTests.make_client(None, replies)
+
+    def test_provider_503_is_waited_out_on_the_same_call(self):
+        err = Exception("all batch routes are cooling down")
+        err.status_code = 503
+        client = self.client([err, err, completion('{"ok": true}')])
+        metrics = ingest_metrics.NoteMetrics(slug="s", body_chars=1)
+        sleeps = []
+
+        async def fake_sleep(s):
+            sleeps.append(s)
+
+        async def go():
+            token = ingest_metrics._current.set(metrics)
+            try:
+                return await client._generate_response([SimpleNamespace(role="user", content="hi")])
+            finally:
+                ingest_metrics._current.reset(token)
+
+        with mock.patch.object(ingest, "LLM_RETRY_WAITS", (15.0, 30.0, 60.0)), \
+             mock.patch.object(ingest.asyncio, "sleep", fake_sleep):
+            self.assertEqual(asyncio.run(go()), {"ok": True})
+        self.assertEqual(sleeps, [15.0, 30.0])
+        summary = metrics.summary(outcome="ok")
+        self.assertEqual((summary["llm_outage_waits"], summary["llm_outage_wait_s"]), (2, 45.0))
+
+    def test_non_recoverable_error_is_not_retried(self):
+        err = Exception("bad request")
+        err.status_code = 400
+        client = self.client([err])
+        with mock.patch.object(ingest.asyncio, "sleep") as sleep:
+            with self.assertRaises(Exception):
+                asyncio.run(client._generate_response([SimpleNamespace(role="user", content="hi")]))
+        sleep.assert_not_called()
+
+    def test_wait_schedule_parsing(self):
+        with mock.patch.dict(os.environ, {"X_WAITS": "1, 2,3"}):
+            self.assertEqual(ingest._wait_schedule("X_WAITS", "9"), (1.0, 2.0, 3.0))
+        with mock.patch.dict(os.environ, {"X_WAITS": "bad"}):
+            self.assertEqual(ingest._wait_schedule("X_WAITS", "9,8"), (9.0, 8.0))
+
+
 class IngestNoteRecordTests(unittest.TestCase):
     def test_success_and_failure_each_emit_and_persist_one_record(self):
         with tempfile.TemporaryDirectory() as tmp:

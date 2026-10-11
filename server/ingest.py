@@ -31,7 +31,7 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
-from chat_fallback import OrderedModelFallback, parse_model_ladder
+from chat_fallback import OrderedModelFallback, is_recoverable_provider_error, parse_model_ladder
 import ingest_metrics
 
 from graphiti_core import Graphiti
@@ -160,6 +160,26 @@ class CompactSchemaClient(OpenAIGenericClient):
             finally:
                 ingest_metrics.reset_prompt(prompt_token)
 
+    async def _run_with_outage_waits(self, call):
+        """Run the ladder; wait out recoverable provider errors before failing."""
+        for attempt in range(len(LLM_RETRY_WAITS) + 1):
+            try:
+                return await self.model_ladder.run(call)
+            except Exception as error:
+                if attempt >= len(LLM_RETRY_WAITS) or not is_recoverable_provider_error(error):
+                    raise
+                wait = LLM_RETRY_WAITS[attempt]
+                metrics = ingest_metrics.current()
+                if metrics is not None:
+                    metrics.llm_outage_waits += 1
+                    metrics.llm_outage_wait_s = round(metrics.llm_outage_wait_s + wait, 1)
+                log.warning(
+                    "llm provider error %s; retry %d/%d in %.0fs",
+                    type(error).__name__, attempt + 1, len(LLM_RETRY_WAITS), wait,
+                )
+                await asyncio.sleep(wait)
+        raise RuntimeError("unreachable")
+
     async def _generate_response(
         self,
         messages,
@@ -199,7 +219,7 @@ class CompactSchemaClient(OpenAIGenericClient):
             return parsed
 
         try:
-            result = await self.model_ladder.run(call)
+            result = await self._run_with_outage_waits(call)
         except Exception as error:
             # Preserve graphiti-core's retry behavior after the ladder exhausts.
             if "429" in str(error) or type(error).__name__ == "RateLimitError":
@@ -307,6 +327,23 @@ SLUG_TS_RE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})-(\d{2})(\d{2})(\d{2})-")
 # doesn't fail an otherwise-fine note. Non-transient errors (schema, etc.) raise
 # immediately. Bounded so a genuinely-down upstream still trips the circuit breaker.
 ADD_EPISODE_RETRIES = int(os.environ.get("ADD_EPISODE_RETRIES", "4"))
+
+
+def _wait_schedule(name: str, default: str) -> tuple[float, ...]:
+    raw = os.environ.get(name, default)
+    try:
+        waits = tuple(max(0.0, float(part)) for part in raw.split(",") if part.strip())
+    except ValueError:
+        waits = tuple(float(part) for part in default.split(","))
+    return waits or (0.0,)
+
+
+# A provider outage ("all batch routes are cooling down", connection resets)
+# usually lasts 1-5 minutes. Short waits (1, 2, 4, 8 s) failed the note, and
+# the note then entered the graph after newer notes. Each LLM call now waits
+# out an outage first; a whole-note restart is the last resort.
+LLM_RETRY_WAITS = _wait_schedule("INGEST_LLM_RETRY_WAITS", "15,30,60,120")
+EPISODE_RETRY_WAITS = _wait_schedule("INGEST_EPISODE_RETRY_WAITS", "30,60,120,240")
 _TRANSIENT = (
     "APIConnectionError", "APITimeoutError", "APIStatusError",
     "RateLimitError", "RouterRateLimitError", "InternalServerError",
@@ -330,7 +367,7 @@ async def add_episode_with_retry(g, **kw):
             )
             if not transient or attempt == ADD_EPISODE_RETRIES:
                 raise
-            wait = min(2 ** attempt, 20)
+            wait = EPISODE_RETRY_WAITS[min(attempt, len(EPISODE_RETRY_WAITS) - 1)]
             metrics = ingest_metrics.current()
             if metrics is not None:
                 metrics.episode_retries += 1

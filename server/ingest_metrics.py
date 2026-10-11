@@ -115,6 +115,8 @@ class NoteMetrics:
         if self.vector_audit_min_recall is None or recall < self.vector_audit_min_recall:
             self.vector_audit_min_recall = round(recall, 3)
     episode_retries: int = 0
+    llm_outage_waits: int = 0
+    llm_outage_wait_s: float = 0.0
 
     def _offset(self, t: float) -> float:
         return t - self.started
@@ -227,6 +229,8 @@ class NoteMetrics:
             # waits, Python work, and unmeasured Neo4j session writes.
             "idle_s": round(max(0.0, wall - busy), 1),
             "episode_retries": self.episode_retries,
+            "llm_outage_waits": self.llm_outage_waits,
+            "llm_outage_wait_s": self.llm_outage_wait_s,
             "vector_audits": self.vector_audits,
             "vector_audit_mismatches": self.vector_audit_mismatches,
             "vector_audit_min_recall": self.vector_audit_min_recall,
@@ -284,7 +288,7 @@ _SCALARS = (
     "slug", "at", "job", "version", "attempt", "outcome", "error_kind", "error", "body_chars",
     "wall_s", "llm_calls", "llm_sum_s", "llm_wall_s", "llm_in_tok", "llm_out_tok",
     "llm_reason_tok", "llm_cached_tok", "llm_truncated", "embed_calls", "embed_inputs", "embed_wall_s", "neo4j_queries",
-    "neo4j_wall_s", "idle_s", "episode_retries", "nodes", "edges",
+    "neo4j_wall_s", "idle_s", "episode_retries", "llm_outage_waits", "llm_outage_wait_s", "nodes", "edges",
     "vector_audits", "vector_audit_mismatches", "vector_audit_min_recall",
 )
 
