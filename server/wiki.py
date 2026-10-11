@@ -115,6 +115,9 @@ _reindex_wake = threading.Event()
 # An immediate retry with the same payload returns already_exists and does
 # not create a second commit. The map is process-local and bounded.
 _api_drop_lock = threading.Lock()
+# One ChangeFiles request at a time from this process (see PushOutOfDate).
+_api_write_lock = threading.Lock()
+GITEA_PUSH_RETRIES = int(os.environ.get("WIKI_GITEA_PUSH_RETRIES", "4"))
 _api_drop_cache: dict[str, dict] = {}
 _API_DROP_CACHE_MAX = 256
 # auto mode probes the host once. None means "not probed yet".
@@ -758,7 +761,7 @@ def _verify_gitea_source_note(
     except (urllib.error.URLError, TimeoutError, OSError) as error:
         raise GiteaAmbiguousError(type(error).__name__) from error
     if status == 404:
-        return {"ok": False, "error": "gitea write did not create the note"}
+        return {"ok": False, "write_state": "not_written", "error": "gitea write did not create the note"}
     if status != 200:
         raise GiteaAmbiguousError(f"verify status {status}")
     found_hash = _capture_hash_from_note(_decode_gitea_content(payload))
@@ -839,44 +842,69 @@ def _wiki_note_drop_via_gitea(
         "committer": {"name": GIT_USER_NAME, "email": GIT_USER_EMAIL},
     }
     url = f"{api_base}/contents"
-    try:
-        status, response_body = _gitea_request("POST", url, body=payload)
-    except (urllib.error.URLError, TimeoutError, OSError) as error:
+
+    def pushed(result: dict) -> dict:
+        _remember_api_drop(capture_hash, result)
+        _reindex_wake.set()
+        log.info(
+            "wiki_note_drop pushed slug=%s folder=%s sha=%s duration=%.2fs",
+            slug, folder_name, str(result.get("commit") or "")[:12], time.monotonic() - started,
+        )
+        return result
+
+    def verify_after(reason: str) -> dict:
+        """Read the note back after a failed or unknown write."""
         try:
             verified = _verify_gitea_source_note(api_base, folder_name, capture_hash)
         except GiteaAmbiguousError:
             return {
                 "ok": False,
+                "write_state": "ambiguous",
                 "error": _bounded_error(
-                    "gitea write result is ambiguous: the request was sent and the follow-up read failed"
+                    f"gitea write result is ambiguous ({reason}); the follow-up read failed. "
+                    "Do not retry blindly; check notes/ for the folder first"
                 ),
+                "folder": folder_name,
             }
         if verified.get("ok"):
-            _remember_api_drop(capture_hash, verified)
-            _reindex_wake.set()
-            log.info(
-                "wiki_note_drop pushed slug=%s folder=%s sha=%s duration=%.2fs",
-                slug, folder_name, str(verified.get("commit") or "")[:12], time.monotonic() - started,
-            )
+            return pushed(verified)
         return verified
 
-    if status in (200, 201):
-        sha = ""
-        try:
-            parsed = json.loads(response_body.decode("utf-8", errors="replace") or "{}")
-            commit = parsed.get("commit") if isinstance(parsed, dict) else None
-            if isinstance(commit, dict) and isinstance(commit.get("sha"), str):
-                sha = commit["sha"]
-        except json.JSONDecodeError:
+    attempt = 0
+    while True:
+        attempt += 1
+        # Serialize API writes in this process. Concurrent ChangeFiles calls
+        # on one branch make Gitea fail with PushOutOfDate.
+        with _api_write_lock:
+            try:
+                status, response_body = _gitea_request("POST", url, body=payload)
+            except (urllib.error.URLError, TimeoutError, OSError) as error:
+                return verify_after(type(error).__name__)
+
+        if status in (200, 201):
             sha = ""
-        result = note_drop_result(folder_name, sha)
-        _remember_api_drop(capture_hash, result)
-        _reindex_wake.set()
-        log.info(
-            "wiki_note_drop pushed slug=%s folder=%s sha=%s duration=%.2fs",
-            slug, folder_name, sha[:12], time.monotonic() - started,
-        )
-        return result
+            try:
+                parsed = json.loads(response_body.decode("utf-8", errors="replace") or "{}")
+                commit = parsed.get("commit") if isinstance(parsed, dict) else None
+                if isinstance(commit, dict) and isinstance(commit.get("sha"), str):
+                    sha = commit["sha"]
+            except json.JSONDecodeError:
+                sha = ""
+            return pushed(note_drop_result(folder_name, sha))
+
+        message = _gitea_error_message(response_body)
+        if status >= 500 and _is_push_out_of_date(message) and attempt <= GITEA_PUSH_RETRIES:
+            # Another commit reached the branch between Gitea's temporary
+            # checkout and its push. Gitea pushes atomically, so nothing was
+            # written. The same request is safe to send again.
+            delay = 0.5 * attempt
+            log.warning(
+                "wiki_note_drop gitea push out of date slug=%s attempt=%d; retry in %.1fs",
+                slug, attempt, delay,
+            )
+            time.sleep(delay)
+            continue
+        break
 
     if status in (401, 403):
         # The token cannot write through the API (for example a token
@@ -885,15 +913,44 @@ def _wiki_note_drop_via_gitea(
         return None
 
     if status in (409, 422):
-        message = _gitea_error_message(response_body).lower()
-        if "already exist" in message or "already exists" in message or not message:
+        lowered = message.lower()
+        if "already exist" in lowered or not message:
             return {
                 "ok": False,
+                "write_state": "not_written",
                 "error": f"folder {folder_name!r} already exists; retry with a different slug",
             }
-        return {"ok": False, "error": _bounded_error(f"gitea rejected the note ({status})")}
+        return {
+            "ok": False,
+            "write_state": "not_written",
+            "error": _bounded_error(f"gitea rejected the note ({status})"),
+        }
 
-    return {"ok": False, "error": _bounded_error(f"gitea write failed ({status})")}
+    if status >= 500:
+        # A server error can come after the commit. Read the note back so the
+        # caller gets a receipt or a definite "not written".
+        result = verify_after(f"HTTP {status}")
+        if not result.get("ok") and result.get("write_state") != "ambiguous" and "already exists" not in result.get("error", ""):
+            return {
+                "ok": False,
+                "write_state": "not_written",
+                "error": _bounded_error(
+                    f"gitea write failed ({status}{': PushOutOfDate' if _is_push_out_of_date(message) else ''}); "
+                    "the note was not written and a retry is safe"
+                ),
+            }
+        return result
+
+    return {
+        "ok": False,
+        "write_state": "not_written",
+        "error": _bounded_error(f"gitea write failed ({status})"),
+    }
+
+
+def _is_push_out_of_date(message: str) -> bool:
+    lowered = (message or "").lower()
+    return "pushoutofdate" in lowered or "push out of date" in lowered or "out of date" in lowered
 
 
 # --- In-memory index ---

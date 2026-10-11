@@ -37,6 +37,8 @@ class FakeGitea:
         self.version = {"version": "1.25.4"}
         self.post_status = 201
         self.post_error = "file already exists [path]"
+        # Optional per-request (status, message) pairs; used before post_status.
+        self.post_script: list[tuple[int, str]] = []
         self.hold_post = threading.Event()
         self.release_post = threading.Event()
         self.release_post.set()
@@ -120,20 +122,23 @@ class FakeGitea:
                         "authorization": self.headers.get("Authorization"),
                         "body": body,
                     })
-                if owner.post_status in (200, 201):
+                status, error_message = owner.post_status, owner.post_error
+                if owner.post_script:
+                    status, error_message = owner.post_script.pop(0)
+                if status in (200, 201):
                     for item in body.get("files") or []:
                         content = item.get("content") or ""
                         owner.files[item["path"]] = base64.b64decode(content)
                     payload = {"commit": {"sha": owner.commit_sha}, "files": []}
                     raw = json.dumps(payload).encode("utf-8")
-                    self.send_response(owner.post_status)
+                    self.send_response(status)
                     self.send_header("Content-Type", "application/json")
                     self.send_header("Content-Length", str(len(raw)))
                     self.end_headers()
                     self.wfile.write(raw)
                     return
-                raw = json.dumps({"message": owner.post_error}).encode("utf-8")
-                self.send_response(owner.post_status)
+                raw = json.dumps({"message": error_message}).encode("utf-8")
+                self.send_response(status)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(raw)))
                 self.end_headers()
@@ -248,6 +253,53 @@ class GiteaNoteDropTests(unittest.TestCase):
                 self.assertLessEqual(len(result["error"]), 300)
                 self.assertNotIn(SECRET_TOKEN, result["error"])
                 self.assertEqual(len(self.fake.posts), before + 1)
+
+    def test_push_out_of_date_is_retried_until_written(self) -> None:
+        # dip.ink#3: Gitea answered 500 PushOutOfDate when another commit
+        # reached main during the write. Nothing was written; retry is safe.
+        out_of_date = (500, "PushOutOfDate Error: exit status 1 - To /data/git/gitea-repositories/ai-agent/mykg.git")
+        self.fake.post_script = [out_of_date, out_of_date]
+        with mock.patch.object(wiki.time, "sleep"):
+            result = self._drop(slug="out-of-date")
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(len(self.fake.posts), 3)
+        self.assertEqual(len({p["body"]["files"][0]["path"] for p in self.fake.posts}), 1)
+
+    def test_persistent_push_out_of_date_is_a_definite_no_write(self) -> None:
+        self.fake.post_status = 500
+        self.fake.post_error = "PushOutOfDate Error: exit status 1"
+        with mock.patch.object(wiki.time, "sleep"):
+            result = self._drop(slug="always-out-of-date")
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["write_state"], "not_written")
+        self.assertIn("retry is safe", result["error"])
+        self.assertEqual(len(self.fake.posts), wiki.GITEA_PUSH_RETRIES + 1)
+
+    def test_other_500_reads_back_and_reports_not_written(self) -> None:
+        self.fake.post_status = 500
+        self.fake.post_error = "internal error"
+        result = self._drop(slug="server-error")
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["write_state"], "not_written")
+        self.assertEqual(len(self.fake.posts), 1)
+        self.assertTrue(any("/contents/notes/" in g for g in self.fake.gets))
+
+    def test_500_after_the_commit_returns_a_receipt(self) -> None:
+        # The server stored the files but answered 500: the read-back finds
+        # the note with the same capture hash, so the caller gets a receipt.
+        real_request = wiki._gitea_request
+
+        def late_failure(method, url, **kw):
+            if method == "POST":
+                for item in kw["body"]["files"]:
+                    self.fake.files[item["path"]] = base64.b64decode(item["content"])
+                return 500, b'{"message": "internal error after commit"}'
+            return real_request(method, url, **kw)
+
+        with mock.patch.object(wiki, "_gitea_request", side_effect=late_failure):
+            result = self._drop(slug="late-500")
+        self.assertTrue(result["ok"], result)
+        self.assertFalse(result["already_exists"])
 
     def test_refused_token_falls_back_to_git(self) -> None:
         for status in (401, 403):
