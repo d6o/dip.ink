@@ -76,7 +76,9 @@ The three workflows (`curator` hourly, `synthesis` weekly, `reviewqueue` daily) 
 
 ### 2. Deploy the memory stack
 
-Public runtime images use **immutable tags**, not a moving `latest` tag. The current public release pin is v0.1.26.
+Public runtime images use **immutable tags**, not a moving `latest` tag. The current public release pin is v0.1.27.
+
+Release v0.1.27 repairs common note-header mistakes (a misplaced indented key, unquoted colons) without changing any value, waits out provider outages during ingest (per LLM call 15–120 s, per note 30–240 s), and adds regression probes from wrong-answer tickets to the daily healthcheck.
 
 Release v0.1.26 rejects a `graph_answer` that copies a path, URL, or long id about a named project from a source that does not mention that project.
 
@@ -244,7 +246,7 @@ dip.ink/
 │   ├── claude-code/        ← skill + PreCompact hook
 │   └── pi/                 ← memory extension (native tools), /recordnotes prompt,
 │                             compact/exit gate extension
-├── docker-compose.yml      ← the whole stack on one host (pinned v0.1.26 images)
+├── docker-compose.yml      ← the whole stack on one host (pinned v0.1.27 images)
 ├── .env.example
 ├── .github/workflows/      ← required CI + immutable image publication
 ├── ci/                     ← CI helpers (YAML/k8s/contracts, Neo4j integration runner, Pi typecheck)
@@ -272,7 +274,7 @@ dip.ink/
 
 ## Production (k8s)
 
-`deploy/k8s/` mirrors the compose stack for a cluster: Neo4j Deployment + PVC, the memory-server Deployment, the 15-min ingest CronJob, and the maintenance CronJobs. Images are published to GHCR by this repo's CI and **pinned to `v0.1.26`**.
+`deploy/k8s/` mirrors the compose stack for a cluster: Neo4j Deployment + PVC, the memory-server Deployment, the 15-min ingest CronJob, and the maintenance CronJobs. Images are published to GHCR by this repo's CI and **pinned to `v0.1.27`**.
 
 The Secret example lives **outside** the apply set so a directory apply cannot overwrite real credentials with placeholders:
 
@@ -309,9 +311,9 @@ Metric labels are bounded-cardinality only (`tool`, `outcome`, `confidence`, `gr
 
 - Required CI (`.github/workflows/ci.yml`) gates server unit tests, a real Neo4j 5.26.2 integration job, curator supervisor tests, template wikilint/index, workflow/YAML/kustomize smoke, Pi extension typecheck, and both Docker image builds.
 - Image publication (`.github/workflows/images.yml`) runs on `main` (moving `main` + immutable full-git-SHA tags) and on `v*` tags (semver + SHA). It does **not** publish `latest`.
-- Public manifests and template workflows pin `ghcr.io/d6o/dip.ink/{memory,pi-runner}:v0.1.26`.
+- Public manifests and template workflows pin `ghcr.io/d6o/dip.ink/{memory,pi-runner}:v0.1.27`.
 
-Release sequence for maintainers: push main → wait CI green → tag `v0.1.26` → wait image publication green → sync private instances / deploy.
+Release sequence for maintainers: push main → wait CI green → tag `v0.1.27` → wait image publication green → sync private instances / deploy.
 
 ## Operational notes (learned the hard way)
 

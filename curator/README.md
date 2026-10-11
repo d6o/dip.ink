@@ -31,7 +31,7 @@ concurrency:
 ```
 
 so they never race on `wiki/log.md` or other shared pages. Public images are
-pinned to `ghcr.io/d6o/dip.ink/pi-runner:v0.1.26`.
+pinned to `ghcr.io/d6o/dip.ink/pi-runner:v0.1.27`.
 
 ## pi-runner (this directory)
 
