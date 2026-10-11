@@ -403,7 +403,7 @@ class DipInkNeo4jDriver(Neo4jDriver):
         try:
             return await super().execute_query(cypher_query_, **kwargs)
         finally:
-            metrics.record_neo4j(started, time.monotonic())
+            metrics.record_neo4j(started, time.monotonic(), ingest_metrics.query_kind(cypher_query_))
 
 
 def build_graphiti() -> Graphiti:

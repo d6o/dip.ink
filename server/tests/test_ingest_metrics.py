@@ -154,6 +154,23 @@ class IngestNoteRecordTests(unittest.TestCase):
         self.assertEqual(len(emitted), 2)
 
 
+class QueryKindTests(unittest.TestCase):
+    def test_kinds(self):
+        k = ingest_metrics.query_kind
+        self.assertEqual(k("MATCH (n:Entity)-[e:RELATES_TO]->(m:Entity) WITH e, vector.similarity.cosine(e.fact_embedding, $v) AS s"), "cosine_scan_edges")
+        self.assertEqual(k("MATCH (n:Entity) WITH n, vector.similarity.cosine(n.name_embedding, $v) AS s"), "cosine_scan_nodes")
+        self.assertEqual(k("CALL db.index.fulltext.queryRelationships('edge_name_and_fact', $q)"), "fulltext")
+        self.assertEqual(k("UNWIND $edges AS edge MERGE (a)-[r:RELATES_TO]->(b)"), "write")
+        self.assertEqual(k("MATCH (e:Episodic) RETURN e"), "read_episodes")
+
+    def test_summary_groups_by_kind(self):
+        m = ingest_metrics.NoteMetrics(slug="s", body_chars=1)
+        m.record_neo4j(m.started, m.started + 2.0, "cosine_scan_edges")
+        m.record_neo4j(m.started, m.started + 1.0, "cosine_scan_edges")
+        out = m.summary(outcome="ok")["neo4j_by_kind"]["cosine_scan_edges"]
+        self.assertEqual((out["n"], out["s"], out["max_s"]), (2, 3.0, 2.0))
+
+
 class ReportTests(unittest.TestCase):
     def test_aggregate(self):
         rows = [

@@ -119,6 +119,17 @@ def aggregate(rows: list[dict]) -> dict:
         "fail_rate": round(m["fail"] / m["calls"], 3) if m["calls"] else None,
     } for name, m in models.items()), key=lambda x: -x["calls"])
     out["llm_failure_kinds"] = llm_failures
+    kinds: dict[str, Counter] = defaultdict(Counter)
+    for r in rows:
+        for name, k in (r.get("neo4j_by_kind") or {}).items():
+            kinds[name]["n"] += k.get("n") or 0
+            kinds[name]["s"] += k.get("s") or 0
+            kinds[name]["max_s"] = max(kinds[name]["max_s"], k.get("max_s") or 0)
+    total_neo = sum(k["s"] for k in kinds.values()) or 1
+    out["neo4j_by_kind"] = sorted(({
+        "kind": name, "queries": k["n"], "share_of_neo4j_s": round(k["s"] / total_neo, 3),
+        "mean_s": round(k["s"] / k["n"], 2) if k["n"] else None, "max_s": round(k["max_s"], 1),
+    } for name, k in kinds.items()), key=lambda x: -x["share_of_neo4j_s"])
     buckets: dict[str, list[float]] = defaultdict(list)
     for r in ok:
         size = r.get("body_chars") or 0

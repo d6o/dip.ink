@@ -103,6 +103,7 @@ class NoteMetrics:
     llm_calls: list[dict] = field(default_factory=list)
     embed: list[tuple[float, float, int]] = field(default_factory=list)
     neo4j: list[tuple[float, float]] = field(default_factory=list)
+    neo4j_kinds: dict = field(default_factory=dict)
     episode_retries: int = 0
 
     def _offset(self, t: float) -> float:
@@ -140,8 +141,12 @@ class NoteMetrics:
     def record_embed(self, started: float, ended: float, count: int) -> None:
         self.embed.append((self._offset(started), self._offset(ended), count))
 
-    def record_neo4j(self, started: float, ended: float) -> None:
+    def record_neo4j(self, started: float, ended: float, kind: str = "other") -> None:
         self.neo4j.append((self._offset(started), self._offset(ended)))
+        entry = self.neo4j_kinds.setdefault(kind, {"n": 0, "s": 0.0, "max_s": 0.0})
+        entry["n"] += 1
+        entry["s"] = round(entry["s"] + (ended - started), 2)
+        entry["max_s"] = round(max(entry["max_s"], ended - started), 2)
 
     def summary(
         self,
@@ -207,6 +212,7 @@ class NoteMetrics:
             "embed_wall_s": round(_union_seconds(embed_iv), 1),
             "neo4j_queries": len(self.neo4j),
             "neo4j_wall_s": round(_union_seconds(self.neo4j), 1),
+            "neo4j_by_kind": dict(self.neo4j_kinds),
             # Time with no LLM, embedding, or Neo4j work in flight: retry
             # waits, Python work, and unmeasured Neo4j session writes.
             "idle_s": round(max(0.0, wall - busy), 1),
@@ -217,6 +223,26 @@ class NoteMetrics:
             "by_model": dict(by_model),
             "slowest_calls": slowest,
         }
+
+
+def query_kind(cypher: str) -> str:
+    """A coarse, stable class for a Cypher query. No parameters are read."""
+    q = " ".join(str(cypher).split()).lower()
+    if "db.index.vector" in q:
+        return "vector_index"
+    if "vector.similarity.cosine" in q:
+        if ":relates_to" in q:
+            return "cosine_scan_edges"
+        if ":entity" in q:
+            return "cosine_scan_nodes"
+        return "cosine_scan_other"
+    if "db.index.fulltext" in q:
+        return "fulltext"
+    if any(word in q for word in (" merge ", " create ", " set ", " delete ", "unwind")):
+        return "write"
+    if ":episodic" in q:
+        return "read_episodes"
+    return "read_other"
 
 
 def start(slug: str, body_chars: int, attempt: int) -> tuple[NoteMetrics, contextvars.Token]:
@@ -246,7 +272,8 @@ async def persist(driver, record: dict) -> None:
     """Store one record. A failure here never fails the ingest."""
     props = {k: record.get(k) for k in _SCALARS}
     props["detail"] = json.dumps({
-        k: record[k] for k in ("llm_failures", "by_prompt", "by_model", "slowest_calls")
+        k: record[k] for k in ("llm_failures", "by_prompt", "by_model", "slowest_calls", "neo4j_by_kind")
+        if k in record
     }, separators=(",", ":"))
     try:
         await driver.client.execute_query(
