@@ -288,6 +288,27 @@ class NoteFrontmatterValidationTests(unittest.TestCase):
         fm, _ = wiki.read_frontmatter_and_body(note, strict=True)
         self.assertEqual((fm["session"], fm["topic"]), ("fix: the thing", "`ui` pass"))
 
+    def test_moved_key_that_duplicates_a_value_is_rejected(self):
+        # dip.ink#9 case 1: the repair must not keep only the second topic.
+        note = "---\ncaptured: 2026-10-11\nsession: s\ntopic: first topic\n topic: second topic\n---\nbody"
+        self.assert_rejected_without_changes(note, "Invalid YAML")
+
+    def test_other_indented_word_colon_continues_the_value(self):
+        # dip.ink#9 case 2: only capture keys move; "note:" stays in session.
+        note = "---\ncaptured: 2026-10-11\nsession: Fix the deploy. Root cause\n  note: the token expired\ntopic: t\n---\nbody"
+        fm, _ = wiki.read_frontmatter_and_body(note, strict=True)
+        self.assertEqual(fm["session"], "Fix the deploy. Root cause note: the token expired")
+        self.assertEqual(fm["topic"], "t")
+        self.assertNotIn("note", fm)
+
+    def test_repaired_keys_are_reported(self):
+        self.assertEqual(wiki.frontmatter_repaired_keys("---\nsession: s\n topic: t\n---\nb"), ["topic"])
+        self.assertEqual(wiki.frontmatter_repaired_keys("---\nsession: s\ntopic: t\n---\nb"), [])
+        with mock.patch.object(wiki, "_wiki_note_drop_impl", return_value={"ok": True, "folder": "f"}), \
+             mock.patch.object(wiki, "_record_query"):
+            res = wiki._wiki_note_drop_recorded("s", "---\nsession: s\n topic: t\n---\nb", None, None)
+        self.assertEqual(res["frontmatter_repaired"], ["topic"])
+
     def test_unrepairable_yaml_is_still_rejected(self):
         note = "---\nsession: s\ntopic: [value, x: : invalid\n---\nbody"
         self.assert_rejected_without_changes(note, "Invalid YAML")

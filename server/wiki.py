@@ -308,6 +308,11 @@ def is_skipped(p: Path) -> bool:
 
 
 _TOP_KEY_RE = re.compile(r"^([A-Za-z_][\w.-]*):[ \t]*(.*)$")
+# Only these keys move from an indented line to the top level (dip.ink#9).
+# Any other indented "word: text" line continues the value above it.
+_CAPTURE_KEYS = frozenset({
+    "captured", "session", "topic", "capture-captured", "capture-session", "capture-topic",
+})
 
 
 def _line_parses(line: str) -> bool:
@@ -349,7 +354,8 @@ def _repair_frontmatter(raw: str) -> tuple[str, list[str]]:
         misplaced: list[str] = []
         while j < len(lines) and re.match(r"^[ \t]+\S", lines[j]) and not re.match(r"^[ \t]+-[ \t]", lines[j]):
             stripped = lines[j].strip()
-            if _TOP_KEY_RE.match(stripped) and re.match(r"^[A-Za-z_][\w.-]*:(?:[ \t]|$)", stripped):
+            moved = re.match(r"^([A-Za-z_][\w.-]*):(?:[ \t]|$)", stripped)
+            if moved and moved.group(1) in _CAPTURE_KEYS:
                 misplaced.append(stripped)
             elif misplaced:
                 misplaced[-1] += " " + stripped
@@ -367,7 +373,35 @@ def _repair_frontmatter(raw: str) -> tuple[str, list[str]]:
             lines[j:j] = misplaced
             repaired.extend(m.split(":", 1)[0] for m in misplaced)
         i = j
+    # A moved key must not replace a value that the note already has. PyYAML
+    # keeps the last duplicate key, so a duplicate would lose a value
+    # silently (dip.ink#9). Then no repair applies and the note is rejected.
+    top_keys = [m.group(1) for m in (_TOP_KEY_RE.match(line) for line in out) if m]
+    if len(top_keys) != len(set(top_keys)) and any(top_keys.count(k) > 1 for k in set(repaired)):
+        return raw, []
     return "\n".join(out), repaired
+
+
+def frontmatter_repaired_keys(content: str) -> list[str]:
+    """Key names that the strict parser repaired in this note (empty if none)."""
+    normalized = content.removeprefix("\ufeff").replace("\r\n", "\n")
+    opening = re.match(r"^---[ \t]*(?:\n|$)", normalized)
+    if not opening:
+        return []
+    closing = re.search(r"^---[ \t]*(?:\n|$)", normalized[opening.end():], re.MULTILINE)
+    if not closing:
+        return []
+    raw = normalized[opening.end():opening.end() + closing.start()]
+    try:
+        yaml.safe_load(raw)
+        return []
+    except (yaml.YAMLError, RecursionError):
+        pass
+    fixed, keys = _repair_frontmatter(raw)
+    try:
+        return sorted(set(keys)) if keys and isinstance(yaml.safe_load(fixed), dict) else []
+    except (yaml.YAMLError, RecursionError):
+        return []
 
 
 def read_frontmatter_and_body(content: str, *, strict: bool = False) -> tuple[dict, str]:
@@ -1933,6 +1967,11 @@ def _wiki_note_drop_recorded(
 ) -> dict:
     started = time.monotonic()
     result = _wiki_note_drop_impl(slug, note_md, attachments, binary_attachments)
+    if result.get("ok"):
+        repaired = frontmatter_repaired_keys(note_md)
+        if repaired:
+            # Tell the calling agent so it can fix its frontmatter template.
+            result = {**result, "frontmatter_repaired": repaired}
     outcome = (
         "already_exists" if result.get("ok") and result.get("already_exists")
         else "ok" if result.get("ok")
