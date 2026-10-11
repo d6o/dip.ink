@@ -273,13 +273,24 @@ class NoteFrontmatterValidationTests(unittest.TestCase):
             self.assertEqual(before, sorted(p.relative_to(root) for p in root.rglob("*")))
             self.assertEqual(lock.read_text(encoding="utf-8"), "keep")
 
-    def test_indented_topic_is_rejected_before_side_effects(self):
+    def test_indented_topic_is_repaired_with_its_value(self):
+        # 27 of 265 drops failed with this shape (line 4, column 7). The
+        # repair keeps the submitted topic; mykg#1 forbids losing metadata.
         note = "---\ncaptured: 2026-10-09T04:17:59Z\nsession: batomon release\n topic: sync diagnosis\n---\nbody"
-        self.assert_rejected_without_changes(note, "note line 4, column 7")
+        fm, body = wiki.read_frontmatter_and_body(note, strict=True)
+        self.assertEqual((fm["session"], fm["topic"]), ("batomon release", "sync diagnosis"))
+        out = wiki.source_note_markdown("2026-10-09-120000-example", note)
+        written, _ = wiki.read_frontmatter_and_body(out, strict=True)
+        self.assertEqual((written["session"], written["topic"]), ("batomon release", "sync diagnosis"))
 
-    def test_unquoted_colon_has_actionable_error(self):
-        note = "---\nsession: fix: the thing\n---\nbody"
-        self.assert_rejected_without_changes(note, "quote values")
+    def test_unquoted_colon_and_backtick_values_keep_exact_text(self):
+        note = "---\nsession: fix: the thing\ntopic: `ui` pass\n---\nbody"
+        fm, _ = wiki.read_frontmatter_and_body(note, strict=True)
+        self.assertEqual((fm["session"], fm["topic"]), ("fix: the thing", "`ui` pass"))
+
+    def test_unrepairable_yaml_is_still_rejected(self):
+        note = "---\nsession: s\ntopic: [value, x: : invalid\n---\nbody"
+        self.assert_rejected_without_changes(note, "Invalid YAML")
 
     def test_non_mapping_frontmatter_is_rejected(self):
         for raw in ("- captured\n- session", "text", "null", "false", "42", "!!set {a: null}"):
@@ -292,11 +303,13 @@ class NoteFrontmatterValidationTests(unittest.TestCase):
                 self.assert_rejected_without_changes(note, "closing '---' line")
 
     def test_crlf_and_bom_do_not_bypass_validation(self):
-        note = "---\nsession: s\n topic: t\n---\nbody"
+        note = "---\nsession: s\ntopic: [a, b: : c\n---\nbody"
         self.assert_rejected_without_changes("\ufeff" + note.replace("\n", "\r\n"), "Invalid YAML")
+        fm, _ = wiki.read_frontmatter_and_body("\ufeff---\r\nsession: s\r\n topic: t\r\n---\r\nbody", strict=True)
+        self.assertEqual(fm["topic"], "t")
 
     def test_large_invalid_value_does_not_echo_the_note(self):
-        note = "---\nsession: " + "sensitive-content " * 1000 + ": invalid\n---\nbody"
+        note = "---\nsession: [" + "sensitive-content " * 1000 + ": : invalid\n---\nbody"
         self.assert_rejected_without_changes(note, "Invalid YAML")
         with self.assertRaisesRegex(ValueError, "Invalid YAML") as error:
             wiki.source_note_markdown("2026-10-09-120000-example", note)

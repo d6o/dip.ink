@@ -307,6 +307,69 @@ def is_skipped(p: Path) -> bool:
     return False
 
 
+_TOP_KEY_RE = re.compile(r"^([A-Za-z_][\w.-]*):[ \t]*(.*)$")
+
+
+def _line_parses(line: str) -> bool:
+    try:
+        return isinstance(yaml.safe_load(line), dict)
+    except (yaml.YAMLError, RecursionError):
+        return False
+
+
+def _repair_frontmatter(raw: str) -> tuple[str, list[str]]:
+    """Repair the common agent mistakes in one-line frontmatter values.
+
+    The repair runs only after a strict parse fails, and it keeps the exact
+    text of every value:
+    - An indented `key: value` line after a scalar value is a misplaced top
+      key (for example ` topic: x` with a leading space). It moves to the
+      top level, so its value is kept (dip.ink: 27 of 265 drops failed so).
+    - Other indented lines after a scalar value continue that value.
+    - A one-line value that YAML cannot read (`fix: foo`, a leading backtick)
+      goes into a JSON string, which is valid YAML.
+    Lists, mappings, quoted values, and block scalars stay unchanged.
+    Returns the new text and the names of repaired keys.
+    """
+    lines = raw.split("\n")
+    out: list[str] = []
+    repaired: list[str] = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        match = _TOP_KEY_RE.match(line)
+        value = match.group(2) if match else ""
+        if not match or not value or value[0] in "[{|>\"'":
+            out.append(line)
+            i += 1
+            continue
+        key = match.group(1)
+        j = i + 1
+        continued: list[str] = []
+        misplaced: list[str] = []
+        while j < len(lines) and re.match(r"^[ \t]+\S", lines[j]) and not re.match(r"^[ \t]+-[ \t]", lines[j]):
+            stripped = lines[j].strip()
+            if _TOP_KEY_RE.match(stripped) and re.match(r"^[A-Za-z_][\w.-]*:(?:[ \t]|$)", stripped):
+                misplaced.append(stripped)
+            elif misplaced:
+                misplaced[-1] += " " + stripped
+            else:
+                continued.append(stripped)
+            j += 1
+        if continued or not _line_parses(line):
+            joined = " ".join([value.strip(), *continued]).strip()
+            out.append(f"{key}: {json.dumps(joined, ensure_ascii=False)}")
+            repaired.append(key)
+        else:
+            out.append(line)
+        if misplaced:
+            # Repair the moved keys with the same rules on the next pass.
+            lines[j:j] = misplaced
+            repaired.extend(m.split(":", 1)[0] for m in misplaced)
+        i = j
+    return "\n".join(out), repaired
+
+
 def read_frontmatter_and_body(content: str, *, strict: bool = False) -> tuple[dict, str]:
     """Parse capture input strictly; tolerate damaged pages for index reads."""
     normalized = content.removeprefix("\ufeff").replace("\r\n", "\n")
@@ -330,6 +393,21 @@ def read_frontmatter_and_body(content: str, *, strict: bool = False) -> tuple[di
             ) from None
         return {}, body
     except yaml.YAMLError as exc:
+        if strict and not isinstance(exc, (yaml.constructor.ConstructorError, yaml.composer.ComposerError)):
+            fixed, keys = _repair_frontmatter(raw)
+            if keys:
+                try:
+                    repaired_fm = yaml.safe_load(fixed)
+                except (yaml.YAMLError, RecursionError):
+                    repaired_fm = None
+                if isinstance(repaired_fm, dict):
+                    mark = getattr(exc, "problem_mark", None)
+                    # Key names only: values can contain note text.
+                    log.warning(
+                        "frontmatter repaired keys=%s first_error_line=%s",
+                        ",".join(sorted(set(keys)))[:120], (mark.line + 2) if mark else "?",
+                    )
+                    return repaired_fm, body
         if strict:
             mark = getattr(exc, "problem_mark", None)
             location = f" at note line {mark.line + 2}, column {mark.column + 1}" if mark else ""
