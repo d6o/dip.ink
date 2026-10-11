@@ -82,6 +82,28 @@ MCP_EXT = os.environ.get("MCP_BASE", os.environ.get("WIKI_MCP_BASE", "http://mem
 MCP_INT = os.environ.get("MCP_INTERNAL", MCP_EXT).rstrip("/")
 ANSWER_PROBE = os.environ.get("ANSWER_PROBE", "what is this memory system's note inbox called")
 NEGATIVE_PROBE = "what is the name of the operator's pet unicorn's favorite constellation"
+
+# Regression probes from real wrong answers (dip.ink tickets). The memory may
+# answer these questions once correct notes are ingested, so a probe fails
+# only when the answer or its sources repeat the known wrong content.
+REGRESSION_PROBES = (
+    ("dip.ink#1",
+     "What are the latest dip.ink release tags and deployed revisions for the memory server and pi-runner?",
+     (r"\bv0\.1\.6\b", r"pi-runner\W+v0\.1\.11\b")),
+    ("dip.ink#2",
+     "What is the latest confirmed recovery state and release-retry hold for the October 11 k3s incident "
+     "affecting batomon.com Gitea runners?",
+     (r"2026-07-30-231415-k3s-recovery-final-state", r"\b668ff93\b", r"\brun 74\b")),
+    ("dip.ink#7",
+     "What is HookFork's policy for retaining ownership claims on inactive Stripe Prices after an app "
+     "reprices its catalog, and what does claim revocation do to historical or unresolved deliveries?",
+     (r"(?i)unresolved[^.]*\bunaffected\b", r"(?i)\bunaffected\b[^.]*unresolved",
+      r"(?i)does not affect[^.]*unresolved")),
+    ("dip.ink#8",
+     "What did Diego authorize for the scheduled October 11 retirement of batomon.com's old home k3s storage, "
+     "and where is the approval record?",
+     (r"eee-native-retirement\.md",)),
+)
 FRESH_WRITE_H = float(os.environ.get("FRESH_WRITE_HOURS", "48"))
 INGEST_GRACE_H = float(os.environ.get("INGEST_GRACE_HOURS", "2"))
 CURATION_MAX_AGE_H = float(os.environ.get("CURATION_MAX_AGE_HOURS", "24"))
@@ -377,6 +399,8 @@ def check_exposing() -> None:
         except Exception as e:
             failures.append(f"graph_answer negative probe errored: {e}")
 
+        check_regressions(gbase)
+
     if wbase:
         try:
             res = _get_json(f"{wbase}/api/search?q={urllib.parse.quote(_known_query())}&k=3", timeout=60)
@@ -387,6 +411,25 @@ def check_exposing() -> None:
         except Exception as e:
             failures.append(f"wiki_search errored: {e}")
     return
+
+
+def check_regressions(base: str) -> None:
+    """Fail when a known wrong answer comes back (see REGRESSION_PROBES)."""
+    for ticket, question, forbidden in REGRESSION_PROBES:
+        try:
+            ans = _get_json(f"{base}/api/answer?q={urllib.parse.quote(question)}&test=1", timeout=90)
+        except Exception as e:  # noqa: BLE001
+            failures.append(f"regression {ticket}: probe errored: {e}")
+            continue
+        if ans.get("confidence") == "error":
+            failures.append(f"regression {ticket}: graph_answer returned error")
+            continue
+        text = " ".join([str(ans.get("answer") or ""), *map(str, ans.get("sources") or [])])
+        hits = [pattern for pattern in forbidden if re.search(pattern, text)]
+        if hits:
+            failures.append(f"regression {ticket}: a known wrong answer came back ({len(hits)} pattern(s))")
+        else:
+            print(f"[D] regression {ticket} OK ({ans.get('confidence')})")
 
 
 # ---------------------------------------------------------------- E: indexing
