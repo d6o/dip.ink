@@ -1,0 +1,27 @@
+{
+  "method": "One evaluator (agent resolve-edge-model-test) read the new fact and every disputed fact of each case and applied the rules of the resolve_edge prompt: duplicate = identical factual information; contradiction = the new fact updates, supersedes, or is incompatible with the fact. A newer measurement, version, state, or count of the same thing counts as an update. Verdicts: baseline = base1 is right, candidate = the candidate is right, unclear = both answers are defensible. Reasons are abstract because the facts come from the private graph.",
+  "judgments": [
+    {"config": "sol-low", "id": "C004", "verdict": "unclear", "reason": "Two facts mention the old CPU limit only as a qualifier of a workload description. The baseline invalidates them, the candidate does not."},
+    {"config": "sol-low", "id": "C009", "verdict": "candidate", "reason": "The extra idx of base1 is about a server, not about the changed route. base2 agrees with the candidate."},
+    {"config": "sol-low", "id": "C012", "verdict": "candidate", "reason": "Same document version with a different commit id: an update. base2 agrees with the candidate."},
+    {"config": "sol-low", "id": "C016", "verdict": "candidate", "reason": "Two older facts say that a page does not exist; the new fact says that it exists. base1 misses them, base2 and the candidate invalidate them."},
+    {"config": "sol-low", "id": "C017", "verdict": "baseline", "reason": "The count of stranded drafts changed from three to four. The candidate keeps the old counts current."},
+    {"config": "sol-low", "id": "C026", "verdict": "baseline", "reason": "A newer build of the same site with new page counts. The baseline invalidates all older build snapshots; the candidate keeps 4 of 10 current without a clear rule."},
+    {"config": "sol-low", "id": "C042", "verdict": "baseline", "reason": "Newer search metrics for one page. The candidate keeps two older snapshots current."},
+    {"config": "sol-low", "id": "C043", "verdict": "baseline", "reason": "A new public release replaces the old one. The candidate keeps the fact that the public pointer targets the old release."},
+    {"config": "sol-low", "id": "D009", "verdict": "candidate", "reason": "Newer 28-day analytics. base1 misses two older snapshots; base2 and the candidate invalidate them."},
+    {"config": "sol-low", "id": "D016", "verdict": "candidate", "reason": "Different credentials live in different stores. They do not contradict each other."},
+    {"config": "sol-low", "id": "D042", "verdict": "baseline", "reason": "The new fact says that one item was released; the old fact says that this item is still a gap. The candidate misses it."},
+    {"config": "sol-low", "id": "R009", "verdict": "unclear", "reason": "New test file layout versus one older single-file suite. The new layout can replace or add to the old one."},
+    {"config": "sol-low", "id": "R010", "verdict": "baseline", "reason": "The new fact says that a meaning page exists; the old fact says that only a glossary entry exists. The candidate misses it."},
+    {"config": "sol-low", "id": "R036", "verdict": "unclear", "reason": "The old fact names one single reason why payments are closed; the new fact adds a second gate."},
+    {"config": "sol-low", "id": "R046", "verdict": "baseline", "reason": "The new fact reports a successful render; the old fact says that the new render failed. The candidate misses it."},
+    {"config": "sol-low", "id": "R061", "verdict": "candidate", "reason": "The new fact is a subset of the related fact, not identical information. base1 marks a duplicate; base2 and the candidate do not."},
+    {"config": "sol-low", "id": "R066", "verdict": "candidate", "reason": "base1 invalidates a fact about a different product. base2 and the candidate do not."},
+    {"config": "sol-low", "id": "R073", "verdict": "unclear", "reason": "The new fact is a subset of a related fact. base1 and base2 merge it; the candidate keeps it as a new edge. No information is lost in either case."},
+    {"config": "luna-low", "id": "R064", "verdict": "baseline", "reason": "The new fact says that ad code exists and can be switched off; three old facts say that no ad code exists yet. luna-low misses all three."},
+    {"config": "luna-low", "id": "R054", "verdict": "baseline", "reason": "A new deployed image digest. luna-low keeps three older image pins current."},
+    {"config": "luna-low", "id": "R052", "verdict": "baseline", "reason": "Redirect rules replace an older alias setup. luna-low misses both old facts."},
+    {"config": "luna-low", "id": "C028", "verdict": "baseline", "reason": "luna-low marks two consistent facts as contradicted: one says the same thing, the other is about a different branch."}
+  ]
+}
