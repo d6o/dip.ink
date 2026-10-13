@@ -12,6 +12,7 @@ reads" or "credential reader for Service" syntax. Other word orders can fail.
 This is not a general entailment or grammatical parser.
 """
 import re
+from collections.abc import Mapping, Sequence
 
 CREDENTIAL_METHOD_REASON = (
     "The cited text does not establish the stated approved live method for "
@@ -152,7 +153,7 @@ def _delivered(clause: str, service: str, method: str, required: str) -> bool:
     )
 
 
-def credential_method_problem(question: str, answer: str, source_texts: list[str]) -> str | None:
+def credential_method_problem(question: str, answer: str, source_texts: Mapping[str, str] | Sequence[str]) -> str | None:
     """Refuse an unsupported positive method selection for the named services.
 
     A safely negative answer can pass. The caller must supply escalation and
@@ -163,7 +164,8 @@ def credential_method_problem(question: str, answer: str, source_texts: list[str
     if not services:
         return None
     claims = _clauses(answer)
-    evidence = [clause for text in source_texts for clause in _clauses(text)]
+    values = source_texts.values() if isinstance(source_texts, Mapping) else source_texts
+    evidence = [clause for text in values for clause in _clauses(text)]
     selections = [clause for clause in claims
                   if (_SELECT.search(clause) or _operation_services(clause))
                   and not (_ABSENCE.search(clause) and not _method_names(clause))]

@@ -38,6 +38,7 @@ from starlette.routing import Route
 # the roomy Neo4j pool).
 from chat_fallback import OrderedModelFallback, is_recoverable_provider_error, parse_model_ladder
 from answer_qualifiers import copy_state_supporting_sources, operational_supporting_sources, qualifier_problem, qualifier_requirements
+from credential_method_qualifiers import credential_method_problem, credential_services
 from ingest import DEFAULT_GROUP_ID, build_graphiti
 from vector_search import install_read_search
 from graphiti_core.search.search_config_recipes import COMBINED_HYBRID_SEARCH_RRF
@@ -320,10 +321,12 @@ def _answer_subjects(question: str) -> list[str]:
     TokenBook and HookFork qualify; CPU, JSON, and sentence-initial words do
     not. This is a conservative lexical guard, not a full entity resolver.
     """
-    return list(dict.fromkeys(
-        token.casefold()
-        for token in re.findall(r"(?<![\w])([A-Z][A-Za-z0-9]*[a-z][A-Z][A-Za-z0-9]*)(?![\w])", question)
-    ))
+    products = [token.casefold() for token in re.findall(
+        r"(?<![\w])([A-Z][A-Za-z0-9]*[a-z][A-Z][A-Za-z0-9]*)(?![\w])", question,
+    )]
+    # Credential-read methods need a service relationship even when the
+    # service has one capital letter (Infisical), not a CamelCase name.
+    return list(dict.fromkeys(products + [service.casefold() for service in credential_services(question)]))
 
 
 def _mentions_subject(text: str, subject: str) -> bool:
@@ -734,6 +737,13 @@ async def _wiki_semantic_hits(
                 hit["relevant"] = True
             dated = [hit for hit in hits if _source_time(hit["name"])]
             dated.sort(key=lambda hit: _source_time(hit["name"]), reverse=True)
+            services = credential_services(query)
+            if services:
+                # Read service-specific evidence before similarly worded UA
+                # receipts from another client. Keep dates within each group.
+                dated.sort(key=lambda hit: not any(_mentions_subject(
+                    hit["name"] + " " + hit["description"], service.casefold(),
+                ) for service in services))
             for hit in dated[:3]:
                 page = wiki.idx.get(hit["name"])
                 body = _answer_body_excerpt((page or {}).get("body") or "", query)
@@ -900,6 +910,8 @@ You will get a QUESTION and a RETRIEVAL PACKET (JSON with facts, entities, a sou
 21. Instructions, goals, permission, and desired state are not completed effects. "No backups should remain" never means "no backups remain". A source plan, metadata receipt, producer stop, and serving-target deletion do not prove retained-copy erasure. Preserve incomplete/blocked states and zero-removal receipts exactly; say what is retained or unverified. Do not invent absence or clearance.
 22. Different gates and ticket numbers need their own evidence. A revoked inference client does not lift a workload rollout hold. If no verified new evidence is present for a requested gate, say that the packet provides none; do not infer that the gate cleared.
 
+23. A method must explicitly support the requested service and operation. User-Agent fixture compliance for Kubernetes metadata does not prove Infisical credential-read support. An internal credential loader is not an approved client. Reviewed source, a patch draft, or a published audit is not an installed native method or live header proof. If installed supported capability is absent or unverified, report that boundary rather than recommending a neighboring tool or the failing CLI behavior.
+
 Reply with ONLY a JSON object:
 {"answer": "..." | null, "confidence": "high|medium|low|not_found", "sources": ["slug", ...], "superseded_note": "..." (omit if none), "escalate": true|false}"""
 
@@ -1064,8 +1076,9 @@ def _validate_distilled_answer(
         }, True, "weak_only"
 
     readable = _readable_source_texts(packet)
-    qualifier_error = qualifier_problem(
-        question, answer, {source: readable.get(source, "") for source in cited_sources},
+    cited_texts = {source: readable.get(source, "") for source in cited_sources}
+    qualifier_error = credential_method_problem(question, answer, cited_texts) or qualifier_problem(
+        question, answer, cited_texts,
     )
     if qualifier_error:
         return {
@@ -1145,6 +1158,12 @@ def _validate_distilled_answer(
 
     elif observation_dates is not None:
         _qualify_snapshot(result, observation_dates)
+        action = "downgraded" if conf == "high" else action
+
+    if credential_services(question):
+        # A memory capability record is not current caller authorization.
+        result["escalate"] = True
+        result["confidence"] = "medium" if result["confidence"] == "high" else result["confidence"]
         action = "downgraded" if conf == "high" else action
 
     note = parsed.get("superseded_note")

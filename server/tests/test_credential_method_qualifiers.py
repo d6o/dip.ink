@@ -257,5 +257,17 @@ class MethodSupportTests(unittest.TestCase):
         self.reject("See the source.", SUPPORT)
 
 
+class ReadableMappingValuesTests(unittest.TestCase):
+    def test_cited_mapping_uses_values_not_source_keys(self):
+        self.assertIsNone(credential_method_problem(QUESTION, POSITIVE, {"source-note": SUPPORT}))
+        self.assertEqual(credential_method_problem(QUESTION, POSITIVE, {SUPPORT: "Metadata only."}),
+                         CREDENTIAL_METHOD_REASON)
+
+    def test_safe_absence_mapping_has_service_bound_negative_text(self):
+        self.assertIsNone(credential_method_problem(QUESTION, ABSENT, {"source-note": ABSENT}))
+        self.assertEqual(credential_method_problem(QUESTION, ABSENT, {ABSENT: "No relevant source text."}),
+                         CREDENTIAL_METHOD_REASON)
+
+
 if __name__ == "__main__":
     unittest.main()

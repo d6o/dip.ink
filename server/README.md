@@ -103,6 +103,9 @@ Optional [indexed vector retrieval](VECTOR_RETRIEVAL.md) accelerates graph reads
   Removal-status excerpts preserve closing zero-removal and retention receipts within the existing body limit. Copy-state answers carry source dates and escalation.
   Rollout and workload holds need an explicit operational predicate for the named project. Ambiguous prose returns `not_found` with escalation.
   These checks are conservative and lexical; they do not provide general entailment verification. Source text must state the relationship directly.
+- **Credential-method scope**: named credential-read method questions require readable clause-local support for the service, operation, named method, and delivered capability.
+  Metadata-client User-Agent fixtures and reviewed source-only drafts cannot establish a live credential method. Internal loaders are not public fallback methods.
+  These answers request escalation and do not authorize credential access. Single-capital service names also constrain answer evidence for this intent.
 - **Distiller** (`graph_answer`): one plain chat completion, temperature 0,
   answering **only from the packet** — invented provenance is discarded, and
   unsupported answers return `not_found` + `escalate` (the no-hallucination
