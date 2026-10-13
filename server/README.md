@@ -108,6 +108,7 @@ Optional [indexed vector retrieval](VECTOR_RETRIEVAL.md) accelerates graph reads
   These answers request escalation and do not authorize credential access. Single-capital service names also constrain answer evidence for this intent.
   Credential-method validation uses complete coherent indexed source bodies, not just truncated model excerpts. Contrary late clauses cannot disappear behind the excerpt cap.
   Full validation text stays server-side and is excluded from both model packets and graph-search responses. Missing full source text fails closed.
+  Every raw cited source needs nonempty full text, including citations beyond the display cap. Uncited candidates do not block complete cited support.
 - **Distiller** (`graph_answer`): one plain chat completion, temperature 0,
   answering **only from the packet** — invented provenance is discarded, and
   unsupported answers return `not_found` + `escalate` (the no-hallucination
