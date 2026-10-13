@@ -55,6 +55,27 @@ class RegressionProbeTests(unittest.TestCase):
         for ticket in WRONG:
             self.assertTrue(any(ticket in f for f in failures), ticket)
 
+    def test_reverse_metadata_recommendation_and_cli_failure_alert(self):
+        for text in (
+            "The installed devbox-kube-read with its owned kubeconfig is the approved Infisical method. No live Infisical method is approved.",
+            "The current approved method for Infisical credential reads is that the pinned Infisical CLI filters custom headers. No live method is approved yet.",
+        ):
+            with self.subTest(text=text):
+                failures = self.run_with({"dip.ink#15": {"answer": text, "confidence": "medium", "sources": []}})
+                self.assertEqual(len(failures), 1)
+                self.assertIn("dip.ink#15", failures[0])
+
+    def test_safe_credential_boundaries_do_not_alert(self):
+        for text in (
+            "No approved live Infisical method exists. devbox-kube-read reads Kubernetes metadata only.",
+            "Do not use devbox-kube-read for Infisical credentials. No approved method exists.",
+            "The installed devbox-kube-read is not an approved Infisical method.",
+            "The approved method is not Infisical CLI filtering. The pinned CLI discards custom headers.",
+            "The method for Kubernetes metadata is devbox-kube-read; no live Infisical method is approved.",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(self.run_with({"dip.ink#15": {"answer": text, "confidence": "medium", "sources": []}}), [])
+
     def test_request_unit_confusion_is_detected(self):
         failures = self.run_with({"dip.ink#10": {
             "answer": "Request limits are defined by the contract: 10,000 input tokens per unit.",

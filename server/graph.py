@@ -775,6 +775,37 @@ async def _wiki_semantic_hits(
         return []
 
 
+async def _credential_validation_context(packet: dict) -> dict[str, str]:
+    """Read coherent indexed source bodies for credential-method validation.
+
+    The packet already bounds the number of source identities. This does not
+    scan files, follow paths, access a credential store, or add a model call.
+    Full text stays server-side so excerpt truncation cannot hide a contrary
+    capability statement. Missing full source text fails closed.
+    """
+    names = list(_allowed_provenance(packet))
+
+    def fetch():
+        import wiki
+        return {name: str((wiki.idx.get(name) or {}).get("body") or "") for name in names}
+
+    try:
+        return await asyncio.to_thread(fetch)
+    except Exception as error:
+        log.warning("credential source validation unavailable error_type=%s", type(error).__name__)
+        return {name: "" for name in names}
+
+
+def _credential_cited_texts(packet: dict, sources: list[str]) -> dict[str, str]:
+    full = packet.get("credential_validation_texts")
+    if full is not None:
+        return {source: str(full.get(source) or "") for source in sources}
+    # Direct pure-function fixtures use supplied readable text. Production
+    # answer assembly always supplies the complete indexed validation map.
+    readable = _readable_source_texts(packet)
+    return {source: readable.get(source, "") for source in sources}
+
+
 async def _assemble_packet(
     query: str,
     k: int,
@@ -812,7 +843,7 @@ async def _assemble_packet(
         **_valid_at_window(e),
     } for e in edges]
 
-    return {
+    packet = {
         "query": query,
         "facts": facts,
         "entities": [{
@@ -829,6 +860,9 @@ async def _assemble_packet(
         # graph_get_note using the name.
         "semantic_notes": semantic_notes,
     }
+    if answer_evidence and credential_services(query):
+        packet["credential_validation_texts"] = await _credential_validation_context(packet)
+    return packet
 
 
 # --- Distiller (graph_answer) ---
@@ -1077,7 +1111,7 @@ def _validate_distilled_answer(
 
     readable = _readable_source_texts(packet)
     cited_texts = {source: readable.get(source, "") for source in cited_sources}
-    qualifier_error = credential_method_problem(question, answer, cited_texts) or qualifier_problem(
+    qualifier_error = credential_method_problem(question, answer, _credential_cited_texts(packet, cited_sources)) or qualifier_problem(
         question, answer, cited_texts,
     )
     if qualifier_error:
@@ -1206,7 +1240,7 @@ async def _graph_answer_impl(question: str, is_test: bool = False) -> dict:
         if current_state:
             packet["temporal_context"] = _temporal_context(packet)
         distill_packet = _current_evidence_packet(packet) if current_state else {
-            key: value for key, value in packet.items() if key != "temporal_candidates"
+            key: value for key, value in packet.items() if key not in {"temporal_candidates", "credential_validation_texts"}
         }
         packet_json = json.dumps(distill_packet, ensure_ascii=False)
         packet_tokens_est = len(packet_json) // 4

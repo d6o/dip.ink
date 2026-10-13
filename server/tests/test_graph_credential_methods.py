@@ -69,9 +69,9 @@ class CredentialMethodAnswerPathTests(unittest.IsolatedAsyncioTestCase):
                  'answer':text,'confidence':'high','sources':[DRAFT],'escalate':False,
              })), mock.patch.object(graph,'_record_query'):
             result=await graph._graph_answer_impl(QUESTION)
-        if result.get('answer'):
-            self.assertIn('No approved installed method',result['answer'])
-            self.assertNotIn('devbox-kube-read',result['answer'])
+        self.assertIsNotNone(result.get('answer'))
+        self.assertIn('No approved installed method',result['answer'])
+        self.assertNotIn('devbox-kube-read',result['answer'])
         self.assertTrue(result['escalate'])
 
 
@@ -91,3 +91,54 @@ class CredentialMethodAnswerPathTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result['sources'], [source])
         self.assertEqual(result['confidence'], 'medium')
         self.assertTrue(result['escalate'])
+
+
+class FullCredentialSourceContradictionTests(unittest.IsolatedAsyncioTestCase):
+    SOURCE = '2026-10-13-120000-infisical-method-source'
+    POSITIVE = '`vault-reader` is the supported installed live exact-User-Agent method for Infisical credential reads.'
+    NEGATIVE = 'Infisical has no approved installed live credential-read method.'
+    DRAFT = 'Use `vault-reader` for live Infisical credential reads.'
+
+    async def test_long_source_contradiction_rejects_actual_answer_without_model_expansion(self):
+        from types import SimpleNamespace
+        body = '## Durable claims\n\n' + self.POSITIVE + '\n\n## Context\n\n' + ('Background context. ' * 180) + '\n\n' + self.NEGATIVE
+        self.assertGreater(len(body), 2500)
+        g = SimpleNamespace(search_=mock.AsyncMock(return_value=SimpleNamespace(nodes=[], edges=[], episodes=[])))
+        with mock.patch.object(graph,'_get_graph',new=mock.AsyncMock(return_value=g)), \
+             mock.patch.object(graph,'_resolve_episode_slugs',new=mock.AsyncMock(return_value={})), \
+             mock.patch.object(graph,'FUSION',True), \
+             mock.patch.object(wiki.idx,'search',return_value=[{'name':self.SOURCE,'score':.7}]), \
+             mock.patch.object(wiki.idx,'get',return_value={'body':body}), \
+             mock.patch.object(graph,'_distill',new=mock.AsyncMock(return_value={
+                 'answer':self.DRAFT,'confidence':'high','sources':[self.SOURCE],'escalate':False,
+             })) as distill, mock.patch.object(graph,'_record_query'):
+            result = await graph._graph_answer_impl('What approved exact-User-Agent method supports Infisical credential reads?')
+        self.assertIsNone(result['answer'])
+        self.assertTrue(result['escalate'])
+        sent = distill.call_args.args[1]
+        self.assertNotIn('credential_validation_texts',sent)
+        self.assertNotIn(self.NEGATIVE,sent)
+        self.assertNotIn('Background context. Background context.',sent)
+        self.assertLess(len(sent), 4000)
+
+    def test_missing_full_validation_body_cannot_use_positive_excerpt_fallback(self):
+        p = {'facts':[], 'entities':[], 'source_excerpt':None,
+             'semantic_notes':[{'name':self.SOURCE,'content':self.POSITIVE}],
+             'credential_validation_texts':{self.SOURCE:''}}
+        result,_,_=graph._validate_distilled_answer({
+            'answer':self.DRAFT,'confidence':'high','sources':[self.SOURCE],
+        }, p, QUESTION)
+        self.assertIsNone(result['answer'])
+
+    def test_complete_source_scope_only_uses_raw_cited_keys(self):
+        p = {'credential_validation_texts':{self.SOURCE:self.POSITIVE,'unused':self.NEGATIVE}}
+        self.assertEqual(graph._credential_cited_texts(p,[self.SOURCE]),{self.SOURCE:self.POSITIVE})
+        self.assertEqual(graph._credential_cited_texts(p,['unknown']),{'unknown':''})
+
+    async def test_current_distiller_packet_also_excludes_server_validation_text(self):
+        p = {'facts':[], 'entities':[], 'source_excerpt':None,
+             'semantic_notes':[{'name':self.SOURCE,'content':self.POSITIVE}],
+             'credential_validation_texts':{self.SOURCE:self.POSITIVE}}
+        p['temporal_context']=graph._temporal_context(p)
+        text = str(graph._current_evidence_packet(p))
+        self.assertNotIn('credential_validation_texts',text)

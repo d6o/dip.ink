@@ -106,6 +106,8 @@ Optional [indexed vector retrieval](VECTOR_RETRIEVAL.md) accelerates graph reads
 - **Credential-method scope**: named credential-read method questions require readable clause-local support for the service, operation, named method, and delivered capability.
   Metadata-client User-Agent fixtures and reviewed source-only drafts cannot establish a live credential method. Internal loaders are not public fallback methods.
   These answers request escalation and do not authorize credential access. Single-capital service names also constrain answer evidence for this intent.
+  Credential-method validation uses complete coherent indexed source bodies, not just truncated model excerpts. Contrary late clauses cannot disappear behind the excerpt cap.
+  Full validation text stays server-side and is excluded from both model packets and graph-search responses. Missing full source text fails closed.
 - **Distiller** (`graph_answer`): one plain chat completion, temperature 0,
   answering **only from the packet** — invented provenance is discarded, and
   unsupported answers return `not_found` + `escalate` (the no-hallucination

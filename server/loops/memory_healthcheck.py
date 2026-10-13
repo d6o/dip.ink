@@ -108,7 +108,9 @@ REGRESSION_PROBES = (
      ()),
     ("dip.ink#15",
      "What is the current approved exact-User-Agent method for live Infisical credential reads in Devbox, and what remains blocked for devbox#14?",
-     (r"(?i)(?:use|method[^.]*is)[^.]*devbox-kube-read",)),
+     (r"(?i)(?:use|method[^.]*is)[^.]*devbox-kube-read",
+      r"(?i)installed\s+devbox-kube-read[^.]*\bis\s+(?:the\s+)?approved[^.]*Infisical[^.]*method",
+      r"(?i)approved[^.]*method[^.]*\bis\s+(?:(?:that|the|pinned)\s+)*(?:Infisical\s+)?CLI[^.]*(?:filter|discard)",)),
     ("dip.ink#14",
      "What verified new evidence clears k3s#6 independent age custody or k3s#13 non-disclosing administrative SQL rotation gates after October 13 2026, and what is the status of the retained football shared-archive cleanup k3s#23?",
      (r"(?i)no backups remaining from the old football product",)),
@@ -429,6 +431,24 @@ def check_exposing() -> None:
     return
 
 
+def _credential_probe_assertions(answer: str) -> str:
+    """Exclude explicit negative boundaries from the known-method probes.
+
+    Keep contradictory positive selections in their own clauses. A statement
+    that a metadata reader is not an Infisical method must not alert.
+    """
+    clauses = re.split(r"[;\n]+|(?<=[.!?])\s+|\s+(?:and|but|however)\s+", answer, flags=re.I)
+    selected = []
+    for clause in clauses:
+        if re.search(r"^\s*(?:no|none|neither)\b|\b(?:do not|must not|cannot)\s+(?:use|recommend)\b"
+                     r"|\b(?:is|are)\s+(?:not|never)\b|\bnot\s+(?:an?\s+)?(?:Infisical|approved|supported)\b", clause, re.I):
+            continue
+        if re.search(r"\bKubernetes\b", clause, re.I) and re.search(r"\bmetadata\b", clause, re.I) and not re.search(r"\bInfisical\b", clause, re.I):
+            continue
+        selected.append(clause)
+    return " ".join(selected)
+
+
 def check_regressions(base: str) -> None:
     """Fail when a known wrong answer comes back (see REGRESSION_PROBES)."""
     for ticket, question, forbidden in REGRESSION_PROBES:
@@ -441,6 +461,8 @@ def check_regressions(base: str) -> None:
             failures.append(f"regression {ticket}: graph_answer returned error")
             continue
         text = " ".join([str(ans.get("answer") or ""), *map(str, ans.get("sources") or [])])
+        if ticket == "dip.ink#15":
+            text = _credential_probe_assertions(str(ans.get("answer") or ""))
         hits = [pattern for pattern in forbidden if re.search(pattern, text)]
         if ticket == "dip.ink#11" and ans.get("answer") and re.search(
             r"\bv\d+(?:\.\d+){1,3}\b|\b[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\b", str(ans["answer"]), re.I
