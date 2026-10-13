@@ -10,6 +10,8 @@ os.environ.setdefault("OPENAI_API_KEY", "test-only")
 from loops import memory_healthcheck as hc  # noqa: E402
 
 WRONG = {
+    "dip.ink#14": {"answer": "Cleanup k3s#23 is active, with no backups remaining from the old football product.",
+                   "confidence": "high", "sources": []},
     "dip.ink#11": {"answer": "TokenBook deploys Worker version 12345678-1234-1234-1234-123456789abc.",
                    "confidence": "high", "sources": []},
     "dip.ink#13": {"answer": "The current k3s project lead address is gpuhours.voa.sh/worker~session:123.",

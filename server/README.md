@@ -90,6 +90,8 @@ Optional [indexed vector retrieval](VECTOR_RETRIEVAL.md) accelerates graph reads
   Per-unit allowances do not supply per-request bounds. Message counts, bytes, and tokens remain distinct dimensions.
   Native lead addresses need a direct project/role binding and a matching project prefix.
   All qualifier checks inspect the complete draft before the answer display limit applies.
+  Copy-removal claims require observational support. Instructions, source retirement, and serving-target deletion do not establish retained-copy absence.
+  Removal-status excerpts preserve closing zero-removal and retention receipts within the existing body limit. Copy-state answers carry source dates and escalation.
   Rollout and workload holds need an explicit operational predicate for the named project. Ambiguous prose returns `not_found` with escalation.
   These checks are conservative and lexical; they do not provide general entailment verification. Source text must state the relationship directly.
 - **Distiller** (`graph_answer`): one plain chat completion, temperature 0,

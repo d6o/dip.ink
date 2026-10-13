@@ -9,6 +9,7 @@ import re
 REQUEST_REASON = "The cited text does not establish the requested per-request bounds and units."
 LEAD_REASON = "The cited text does not bind the complete address to the requested project lead."
 HOLD_REASON = "The cited text does not establish the requested project-specific operational hold."
+ERASURE_REASON = "The cited text does not establish completed removal or verified absence of the retained copies."
 
 _NAME = r"[A-Za-z0-9][A-Za-z0-9._-]*"
 _ADDRESS = re.compile(rf"(?<![\w./~-])({_NAME})/({_NAME})~({_NAME}):([0-9]+)(?![\w:~/-])")
@@ -23,6 +24,67 @@ _MEASURE = re.compile(
     r"(?P<label>(?:(?:input|output|prompt|completion|response|UTF-8|text)\s+)*)"
     r"(?P<unit>tokens?|bytes?|characters?|messages?|KiB|MiB|KB|MB)\b", re.I)
 _DIRECTION = re.compile(r"\b(input|output|prompt|completion|response)\b", re.I)
+
+
+# Requests and plans are not observations. Group copy words, but do not
+# equate copies with a serving target, metadata receipt, or producer stop.
+_COPY = r"(?:backups?|archives?|copies|copy)"
+_COPY_RE = re.compile(r"(?<!\w)" + _COPY + r"(?!\w)", re.I)
+_ERASURE_INTENT = re.compile(
+    r"\b(?:should|must|shall|would|could|may|might|requested?|instruct(?:ion|ed)?|"
+    r"desired|intended|intend|planned?|proposed|goal|requires?|requirement|prohibits?|"
+    r"permission|authorized?|unverified|unconfirmed)\b|\b(?:do not|not verified)\b", re.I
+)
+_ERASURE_NEGATIVE = re.compile(
+    r"\b(?:zero|0|no)\s+(?:(?:dedicated|backup|retained|shared)\s+){0,3}"
+    + _COPY + r"\s+(?:(?:were|are|have been|was|is)\s+)?(?:removed|deleted|erased)\b"
+    r"|\b(?:not|never|no)\s+(?:complete(?:d)?|removed|deleted|erased)\b"
+    r"|\b(?:incomplete|pending|blocked)\b"
+    r"|\b(?:copies|archives?|backups?)\s+(?:are |were |still |remain |remains )*(?:retained|present|remain|remains)\b",
+    re.I,
+)
+_ERASURE_ABSENCE = re.compile(
+    r"\b(?:no|zero|0)\s+(?:(?:old|retained|shared|remaining|dedicated)\s+){0,4}"
+    + _COPY + r"\s+(?:(?:are|were|is|was|still)\s+)?(?:remain(?:ing|s)?|left|present|exist(?:s)?)\b"
+    r"|\b(?:all|every)\s+(?:(?:old|retained|shared|dedicated)\s+){0,4}"
+    + _COPY + r"\s+(?:(?:are|were|have been|was|is)\s+)?(?:removed|deleted|erased|gone)\b"
+    r"|\b(?:backup|archive|copy)\s+(?:cleanup|removal|erasure)\s+(?:(?:is|was|has been)\s+)?complete(?:d)?\b",
+    re.I,
+)
+
+
+def _erasure_conflict(clause: str) -> bool:
+    # "No backups remain" is an absence statement, not positive retention.
+    # Mask absence spans before testing for contrary observations.
+    remainder = _ERASURE_ABSENCE.sub("", clause)
+    return bool(_COPY_RE.search(remainder) and _ERASURE_NEGATIVE.search(remainder))
+
+
+def _completed_erasure(clause: str) -> bool:
+    return bool(_ERASURE_ABSENCE.search(clause) and not _ERASURE_INTENT.search(clause)
+                and not _erasure_conflict(clause))
+
+
+def _erasure_problem(question: str, answer: str, evidence: list[str]) -> bool:
+    """Refuse a completed-copy-removal claim without observational support.
+
+    A strict whole-scope absence statement needs a corresponding cited
+    observation. An instruction, source retirement, or empty serving target
+    does not establish it. Conflicting retention evidence fails closed.
+    """
+    claims = [clause for clause in _clauses(answer) if _ERASURE_ABSENCE.search(clause)
+              and not _ERASURE_INTENT.search(clause)]
+    if not claims:
+        return False
+    observations = [clause for clause in evidence if _completed_erasure(clause)]
+    if not observations:
+        return True
+    # Do not transfer a narrow service observation to another ticket/object.
+    for claim in claims:
+        ids = re.findall(r"\b[a-z0-9._-]+#\d+\b", claim, re.I)
+        if ids and not any(all(_mentions(source, item) for item in ids) for source in observations):
+            return True
+    return any(_erasure_conflict(clause) for clause in evidence)
 
 
 def qualifier_requirements(question: str) -> tuple[str, ...]:
@@ -184,9 +246,9 @@ def qualifier_problem(question: str, answer: str, source_texts: dict[str, str]) 
     The caller must separately check provenance, subject identity, and dates.
     """
     requirements = qualifier_requirements(question)
-    if not requirements:
-        return None
     evidence = [clause for text in source_texts.values() for clause in _clauses(text)]
+    if _erasure_problem(question, answer, evidence):
+        return ERASURE_REASON
     if "request_limits" in requirements and _request_problem(question, answer, evidence):
         return REQUEST_REASON
     if "project_lead" in requirements and _lead_problem(question, answer, evidence):
@@ -216,3 +278,15 @@ def operational_supporting_sources(question: str, answer: str, source_texts: dic
             return {}
         result[requirement] = supporters
     return result
+
+
+def copy_state_supporting_sources(source_texts: dict[str, str]) -> list[str]:
+    """Citations with observed absence or explicit retained/zero-removal state.
+
+    Instructions and serving-target results alone do not provide a date for
+    retained-copy status. The return value is evidence identity, not permission.
+    """
+    return [source for source, text in source_texts.items() if any(
+        _completed_erasure(clause) or (_erasure_conflict(clause) and not _ERASURE_INTENT.search(clause))
+        for clause in _clauses(text)
+    )]

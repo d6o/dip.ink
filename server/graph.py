@@ -37,7 +37,7 @@ from starlette.routing import Route
 # Reuse the ingest client wiring (Graphiti extraction LLM, OpenAI embedder,
 # the roomy Neo4j pool).
 from chat_fallback import OrderedModelFallback, is_recoverable_provider_error, parse_model_ladder
-from answer_qualifiers import operational_supporting_sources, qualifier_problem, qualifier_requirements
+from answer_qualifiers import copy_state_supporting_sources, operational_supporting_sources, qualifier_problem, qualifier_requirements
 from ingest import DEFAULT_GROUP_ID, build_graphiti
 from vector_search import install_read_search
 from graphiti_core.search.search_config_recipes import COMBINED_HYBRID_SEARCH_RRF
@@ -466,7 +466,9 @@ def _snapshot_dates(question: str, answer: str, packet: dict, sources: list[str]
     """
     values = _SNAPSHOT_ID_RE.findall(answer) if _DEPLOYMENT_WORD_RE.search(question + " " + answer) else []
     role_query = bool(_OPERATIONAL_ROLE_RE.search(question))
-    if not values and not role_query:
+    copy_state_query = bool(re.search(r"\b(?:backups?|archives?|copies|copy)\b", question, re.I)
+                            and re.search(r"\b(?:status|remaining|gone|removed|retained)\b", question, re.I))
+    if not values and not role_query and not copy_state_query:
         return None
     texts = _readable_source_texts(packet)
     dates = {}
@@ -488,6 +490,14 @@ def _snapshot_dates(question: str, answer: str, packet: dict, sources: list[str]
         for supporters in support.values():
             for source in supporters:
                 dates[source] = _iso(_source_time(source))
+    if copy_state_query:
+        dated_texts = {source: texts[source] for source in sources
+                       if _source_time(source) and texts.get(source)}
+        supporters = copy_state_supporting_sources(dated_texts)
+        if not supporters:
+            return {}
+        for source in supporters:
+            dates[source] = _iso(_source_time(source))
     return dates
 
 
@@ -536,6 +546,40 @@ def _current_body_excerpt(body: str, limit: int = CURRENT_BODY_CHARS) -> str:
             parts.append(line)
     text = "\n".join(parts).strip() or body
     return text[:limit]
+
+
+def _answer_body_excerpt(body: str, query: str, limit: int = CURRENT_BODY_CHARS) -> str:
+    """Keep observed copy state visible in bounded removal-status evidence.
+
+    Durable claims alone can describe instructions or ownership. A long
+    note's concluding receipt can say that no removal occurred. Prefer
+    those observational paragraphs for copy-removal questions, verbatim,
+    before the usual excerpt. Do not read archive contents or follow paths.
+    """
+    if not re.search(r"\b(?:backup|archive|copies|copy)\b", query, re.I):
+        return _current_body_excerpt(body, limit)
+    if not re.search(r"\b(?:removal|removed|erasure|cleanup|retained|delete|status)\b", query, re.I):
+        return _current_body_excerpt(body, limit)
+    paragraphs = re.split(r"\n\s*\n", str(body or "").strip())
+    copy_word = re.compile(r"\b(?:backups?|archives?|copies|copy)\b", re.I)
+    observed = re.compile(r"\b(?:zero|0)\s+(?:dedicated\s+)?(?:copies|backups?)\b"
+                          r"|\b(?:known|shared|retained)\b.{0,100}\b(?:remain|remains|retained|incomplete|blocked)\b"
+                          r"|\b(?:copies|archives?|backups?)\b.{0,100}\b(?:removed|deleted|retained|remain|remains)\b", re.I)
+    selected = [paragraph.strip() for paragraph in paragraphs
+                if copy_word.search(paragraph) and observed.search(paragraph)]
+    # A small bounded priority region prevents long inventories from hiding
+    # the last status receipt. Keep the latest closing observations first.
+    fragments = []
+    used = 0
+    for paragraph in reversed(selected):
+        if used + len(paragraph) + 2 <= min(1600, limit):
+            fragments.append(paragraph)
+            used += len(paragraph) + 2
+    if not fragments:
+        return _current_body_excerpt(body, limit)
+    priority = "\n\n".join(fragments)
+    remainder = max(0, limit - len(priority) - 2)
+    return (priority + "\n\n" + _current_body_excerpt(body, remainder))[:limit]
 
 
 def _release_values(text: str) -> set[str]:
@@ -692,7 +736,7 @@ async def _wiki_semantic_hits(
             dated.sort(key=lambda hit: _source_time(hit["name"]), reverse=True)
             for hit in dated[:3]:
                 page = wiki.idx.get(hit["name"])
-                body = _current_body_excerpt((page or {}).get("body") or "")
+                body = _answer_body_excerpt((page or {}).get("body") or "", query)
                 if body:
                     hit["content"] = body
         elif answer_evidence and hits:
@@ -709,7 +753,7 @@ async def _wiki_semantic_hits(
                 ))
             for hit in relevant[:3]:
                 page = wiki.idx.get(hit["name"])
-                body = _current_body_excerpt((page or {}).get("body") or "")
+                body = _answer_body_excerpt((page or {}).get("body") or "", query)
                 if body:
                     hit["content"] = body
         return hits
@@ -767,7 +811,8 @@ async def _assemble_packet(
         } for n in nodes],
         "source_excerpt": {
             "slug": getattr(episodes[0], "name", "") if episodes else "",
-            "content": (getattr(episodes[0], "content", "") or "")[:excerpt_chars] if episodes else "",
+            "content": _answer_body_excerpt(getattr(episodes[0], "content", "") or "", query, excerpt_chars)
+            if episodes and answer_evidence else (getattr(episodes[0], "content", "") or "")[:excerpt_chars] if episodes else "",
         } if episodes else None,
         # Fusion: the wiki index's semantic hits (pages AND notes, incl. curated
         # graphiti doesn't have). Fetch a full page/note via wiki_get or
@@ -851,6 +896,9 @@ You will get a QUESTION and a RETRIEVAL PACKET (JSON with facts, entities, a sou
 18. Preserve the scope and unit of every limit. A per-unit allowance is not a per-request cap. Byte counts and token counts are not interchangeable. If the requested scope is absent, return not_found rather than substituting a related value.
 19. A project lead address must explicitly belong to the requested lead role. A peer address mentioned near the project does not establish that role. A gateway retirement is not a workload admission or rollout hold. Notes are not live authority to run an operation.
 20. For procedural deployment questions, do not volunteer release identifiers. If an identifier is necessary, it describes dated recorded evidence, not an independently verified current deployment.
+
+21. Instructions, goals, permission, and desired state are not completed effects. "No backups should remain" never means "no backups remain". A source plan, metadata receipt, producer stop, and serving-target deletion do not prove retained-copy erasure. Preserve incomplete/blocked states and zero-removal receipts exactly; say what is retained or unverified. Do not invent absence or clearance.
+22. Different gates and ticket numbers need their own evidence. A revoked inference client does not lift a workload rollout hold. If no verified new evidence is present for a requested gate, say that the packet provides none; do not infer that the gate cleared.
 
 Reply with ONLY a JSON object:
 {"answer": "..." | null, "confidence": "high|medium|low|not_found", "sources": ["slug", ...], "superseded_note": "..." (omit if none), "escalate": true|false}"""
@@ -1050,7 +1098,10 @@ def _validate_distilled_answer(
     # Role and hold dates must come from their own supporting evidence in
     # both modes. Temporal eligibility alone does not establish a relation.
     observation_dates = None
-    if temporal.get("mode") != "current" or _OPERATIONAL_ROLE_RE.search(question):
+    if temporal.get("mode") != "current" or _OPERATIONAL_ROLE_RE.search(question) or (
+        re.search(r"\b(?:backups?|archives?|copies|copy)\b", question, re.I)
+        and re.search(r"\b(?:status|remaining|gone|removed|retained)\b", question, re.I)
+    ):
         observation_dates = _snapshot_dates(question, answer, packet, cited_sources)
         if observation_dates == {}:
             return {
