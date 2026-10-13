@@ -93,6 +93,7 @@ Optional [indexed vector retrieval](VECTOR_RETRIEVAL.md) accelerates graph reads
   Copy-removal claims require observational support. Instructions, source retirement, and serving-target deletion do not establish retained-copy absence.
   Positive erasure support must match copy kind and explicit scope modifiers; a dedicated backup result cannot prove shared-archive absence.
   Counted historical removals are not whole-scope absence, and positive observation dates require the same scoped support.
+  Contrary retention evidence vetoes only compatible copy objects. Dedicated backups can be absent while shared archives remain.
   Removal-status excerpts preserve closing zero-removal and retention receipts within the existing body limit. Copy-state answers carry source dates and escalation.
   Rollout and workload holds need an explicit operational predicate for the named project. Ambiguous prose returns `not_found` with escalation.
   These checks are conservative and lexical; they do not provide general entailment verification. Source text must state the relationship directly.
