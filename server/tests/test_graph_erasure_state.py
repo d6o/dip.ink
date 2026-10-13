@@ -48,7 +48,7 @@ class ErasureQualifierTests(unittest.TestCase):
         self.assertEqual(result, ERASURE_REASON)
 
     def test_retention_state_does_not_reject_correct_incomplete_answer(self):
-        self.assertIsNone(qualifier_problem(QUERY, RIGHT, {BOUNDARY: STATUS, BINDINGS: RETAINED}))
+        self.assertIsNone(qualifier_problem(QUERY, RIGHT, {BOUNDARY: SERVING + " " + STATUS, BINDINGS: RETAINED}))
 
     def test_direct_verified_positive_observation_can_support_absence(self):
         text = 'Verified: no backups remain. All copies were removed.'
@@ -361,3 +361,51 @@ class MultiplePredicateAndZeroScopeTests(unittest.IsolatedAsyncioTestCase):
     def test_instruction_only_source_cannot_make_a_second_predicate_observed(self):
         self.assertEqual(qualifier_problem('What is retained copy status?', 'All retained copies are gone.',
             {'fixture': 'The plan requires cleanup and all retained copies are gone.'}), ERASURE_REASON)
+
+
+class BoundedCountCannotBorrowRetentionTests(unittest.IsolatedAsyncioTestCase):
+    SOURCE = '2026-10-13-120000-removal-receipt'
+    OTHER = '2026-10-13-130000-retention-receipt'
+    OBSERVED = 'k3s#23 deleted two dedicated backup copies.'
+    WRONG = 'k3s#23 deleted three dedicated backup copies.'
+    QUERY = 'What is the status of dedicated backup removal k3s#23?'
+
+    def packet(self, notes):
+        return {'facts': [], 'entities': [], 'source_excerpt': None,
+                'semantic_notes': [{'name': key, 'content': text} for key, text in notes.items()]}
+
+    def test_guard_rejects_wrong_count_with_same_source_retention(self):
+        from answer_qualifiers import BOUNDED_REMOVAL_REASON
+        self.assertEqual(qualifier_problem(self.QUERY, self.WRONG, {
+            self.SOURCE: self.OBSERVED + ' Shared archives remain.',
+        }), BOUNDED_REMOVAL_REASON)
+
+    async def test_actual_answer_path_rejects_wrong_count_with_retention(self):
+        with mock.patch.object(graph,'_assemble_packet',new=mock.AsyncMock(return_value=self.packet({
+            self.SOURCE: self.OBSERVED + ' Shared archives remain.',
+        }))), mock.patch.object(graph,'_distill',new=mock.AsyncMock(return_value={
+            'answer': self.WRONG,'confidence':'high','sources':[self.SOURCE],'escalate':False,
+        })), mock.patch.object(graph,'_record_query'):
+            result=await graph._graph_answer_impl(self.QUERY)
+        self.assertIsNone(result['answer'])
+        self.assertTrue(result['escalate'])
+
+    def test_date_helper_requires_direct_bounded_support(self):
+        from answer_qualifiers import copy_state_supporting_sources
+        self.assertEqual(copy_state_supporting_sources(self.QUERY,self.WRONG,{
+            self.SOURCE:self.OBSERVED+' Shared archives remain.',
+        }), [])
+
+    def test_correct_count_preserved_but_other_retention_cannot_refresh_its_date(self):
+        p=self.packet({self.SOURCE:self.OBSERVED,self.OTHER:'Shared archives remain.'})
+        result,_,_=graph._validate_distilled_answer({
+            'answer':self.OBSERVED,'confidence':'high','sources':[self.SOURCE,self.OTHER],
+        },p,self.QUERY)
+        self.assertIsNotNone(result['answer'])
+        self.assertEqual(result['observation_dates'],{self.SOURCE:'2026-10-13T12:00:00Z'})
+
+    def test_valid_first_result_does_not_hide_a_second_changed_count(self):
+        from answer_qualifiers import BOUNDED_REMOVAL_REASON
+        self.assertEqual(qualifier_problem(self.QUERY,self.OBSERVED+' '+self.WRONG,{
+            self.SOURCE:self.OBSERVED+' Shared archives remain.',
+        }), BOUNDED_REMOVAL_REASON)

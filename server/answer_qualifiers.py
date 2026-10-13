@@ -10,6 +10,7 @@ REQUEST_REASON = "The cited text does not establish the requested per-request bo
 LEAD_REASON = "The cited text does not bind the complete address to the requested project lead."
 HOLD_REASON = "The cited text does not establish the requested project-specific operational hold."
 ERASURE_REASON = "The cited text does not establish completed removal or verified absence of the retained copies."
+BOUNDED_REMOVAL_REASON = "The cited text does not establish the stated bounded removal result."
 
 _NAME = r"[A-Za-z0-9][A-Za-z0-9._-]*"
 _ADDRESS = re.compile(rf"(?<![\w./~-])({_NAME})/({_NAME})~({_NAME}):([0-9]+)(?![\w:~/-])")
@@ -328,6 +329,16 @@ def _hold_problem(question: str, answer: str, evidence: list[str]) -> bool:
     return not found
 
 
+def _normalized_removal_clause(clause: str) -> str:
+    """Ignore case, final periods, and a completed-ticket label only.
+
+    The operation, complete task identity, copy scope, count, and any
+    retained-copy qualifier remain unchanged.
+    """
+    text = clause.strip().removesuffix('.').casefold()
+    return re.sub(r"^(?:completed|historical)\s+(?=[a-z0-9._-]+#\d+\b)", "", text)
+
+
 def qualifier_problem(question: str, answer: str, source_texts: dict[str, str]) -> str | None:
     """Return a static reason for unsupported qualifiers, or None.
 
@@ -339,6 +350,12 @@ def qualifier_problem(question: str, answer: str, source_texts: dict[str, str]) 
     evidence = [clause for text in source_texts.values() for clause in _clauses(text)]
     if _erasure_problem(question, answer, evidence):
         return ERASURE_REASON
+    # A retention sentence cannot validate a changed removal count, even
+    # when both occur in the same source and the overall date is known.
+    known_clauses = {_normalized_removal_clause(clause) for clause in evidence}
+    if any(_normalized_removal_clause(clause) not in known_clauses for clause in _clauses(answer)
+           if _bounded_removal_statement(clause)):
+        return BOUNDED_REMOVAL_REASON
     if "request_limits" in requirements and _request_problem(question, answer, evidence):
         return REQUEST_REASON
     if "project_lead" in requirements and _lead_problem(question, answer, evidence):
@@ -395,16 +412,19 @@ def copy_state_supporting_sources(question: str, answer: str, source_texts: dict
     answer_clauses = _clauses(answer)
     copy_clauses = [clause for clause in answer_clauses
                     if _COPY_RE.search(clause) or _SERVING_SCOPE.search(clause)]
-    normalized = {clause.casefold() for clause in copy_clauses}
+    normalized = {_normalized_removal_clause(clause) for clause in copy_clauses}
+    bounded = {_normalized_removal_clause(clause) for clause in copy_clauses if _bounded_removal_statement(clause)}
     supporters = []
     for source, text in source_texts.items():
         evidence = _clauses(text)
         if _erasure_problem(question, answer, evidence):
             continue
+        if bounded and not bounded.issubset({_normalized_removal_clause(clause) for clause in evidence}):
+            continue
         for clause in evidence:
             if any(_different_explicit_tickets(question, claim, clause) for claim in copy_clauses):
                 continue
-            exact_bounded = clause.casefold() in normalized and _bounded_removal_statement(clause)
+            exact_bounded = _normalized_removal_clause(clause) in normalized and _bounded_removal_statement(clause)
             observed = _completed_erasure(clause) or (_erasure_conflict(clause) and not _ERASURE_INTENT.search(clause))
             if exact_bounded or observed:
                 supporters.append(source)
