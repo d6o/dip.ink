@@ -21,7 +21,7 @@ _UNCERTAIN = re.compile(r"\b(?:no|not|never|unknown|unconfirmed|unsupported|migh
 _MEASURE = re.compile(
     r"(?<![\w.-])(?P<number>\d+(?:,\d{3})*(?:\.\d+)?)\s*"
     r"(?P<label>(?:(?:input|output|prompt|completion|response|UTF-8|text)\s+)*)"
-    r"(?P<unit>tokens?|bytes?|characters?|KiB|MiB|KB|MB)\b", re.I)
+    r"(?P<unit>tokens?|bytes?|characters?|messages?|KiB|MiB|KB|MB)\b", re.I)
 _DIRECTION = re.compile(r"\b(input|output|prompt|completion|response)\b", re.I)
 
 
@@ -194,3 +194,25 @@ def qualifier_problem(question: str, answer: str, source_texts: dict[str, str]) 
     if "workload_hold" in requirements and _hold_problem(question, answer, evidence):
         return HOLD_REASON
     return None
+
+
+def operational_supporting_sources(question: str, answer: str, source_texts: dict[str, str]) -> dict[str, list[str]]:
+    """Map each requested role or hold to sources that establish it directly.
+
+    Use this with dated sources only when assigning observation dates. A
+    source that merely mentions a product cannot lend its date to an
+    undated role binding. Require independent support for each requested
+    relationship; ambiguous split clauses fail closed.
+    """
+    checks = {"project_lead": _lead_problem, "workload_hold": _hold_problem}
+    result = {}
+    for requirement in qualifier_requirements(question):
+        check = checks.get(requirement)
+        if check is None:
+            continue
+        supporters = [source for source, text in source_texts.items()
+                      if not check(question, answer, _clauses(text))]
+        if not supporters:
+            return {}
+        result[requirement] = supporters
+    return result

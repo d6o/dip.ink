@@ -77,3 +77,73 @@ class QualifierIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["escalate"])
         self.assertIn("2026-10-13T04:01:27Z", result["answer"])
         self.assertIn("Live state is not verified", result["answer"])
+
+
+class RawDraftAndRoleDateTests(unittest.IsolatedAsyncioTestCase):
+    ROLE_QUERY = "What is the k3s project lead address and what rollout hold affects TokenBook?"
+    LEAD = "The k3s project lead address is k3s/test-worker~test-session:123."
+    HOLD = "k3s holds app rollouts for TokenBook."
+    DATED = "2026-10-13-061000-tokenbook-other-fact"
+    ROLE_DATED = "2026-10-12-120000-tokenbook-role"
+    HOLD_DATED = "2026-10-12-130000-tokenbook-hold"
+
+    def role_packet(self, notes):
+        return {"facts": [], "entities": [], "source_excerpt": None,
+                "semantic_notes": [{"name": name, "content": text} for name, text in notes.items()]}
+
+    def validate_role(self, notes):
+        return graph._validate_distilled_answer({
+            "answer": self.LEAD + " " + self.HOLD, "sources": list(notes), "confidence": "high", "escalate": False,
+        }, self.role_packet(notes), self.ROLE_QUERY)
+
+    def test_unrelated_dated_citation_cannot_date_an_undated_role_and_hold(self):
+        notes = {"TokenBook": self.LEAD + " " + self.HOLD,
+                 self.DATED: "TokenBook uses a local server."}
+        result, _, action = self.validate_role(notes)
+        self.assertIsNone(result["answer"])
+        self.assertEqual(action, "qualifier_mismatch")
+
+    def test_each_requested_relation_needs_dated_evidence(self):
+        for notes in (
+            {"TokenBook": self.HOLD, self.ROLE_DATED: self.LEAD + " TokenBook has a service."},
+            {"TokenBook": self.LEAD + " TokenBook has a service.", self.HOLD_DATED: self.HOLD},
+        ):
+            with self.subTest(notes=notes):
+                result, _, _ = self.validate_role(notes)
+                self.assertIsNone(result["answer"])
+
+    def test_only_supporting_role_and_hold_sources_supply_observation_dates(self):
+        notes = {self.ROLE_DATED: self.LEAD + " TokenBook has a service.",
+                 self.HOLD_DATED: self.HOLD, self.DATED: "TokenBook uses a local server."}
+        result, _, _ = self.validate_role(notes)
+        self.assertIsNotNone(result["answer"])
+        self.assertEqual(result["observation_dates"], {
+            self.ROLE_DATED: "2026-10-12T12:00:00Z", self.HOLD_DATED: "2026-10-12T13:00:00Z",
+        })
+        self.assertNotIn("2026-10-13T06:10:00Z", result["answer"])
+
+    async def test_actual_answer_path_rejects_wrong_limit_after_display_boundary(self):
+        draft = CAPS + " " + ("Supporting context. " * 110)
+        self.assertGreater(len(draft), 2000)
+        draft += " TokenBook request limits are 10,000 input tokens and 2,000 output tokens per unit."
+        with mock.patch.object(graph, "_assemble_packet", new=mock.AsyncMock(return_value=evidence(CAPS + " " + ALLOWANCE))), \
+             mock.patch.object(graph, "_distill", new=mock.AsyncMock(return_value={
+                 "answer": draft, "confidence": "high", "sources": [SOURCE], "escalate": False,
+             })), mock.patch.object(graph, "_record_query"):
+            result = await graph._graph_answer_impl(REQUEST)
+        self.assertIsNone(result["answer"])
+        self.assertTrue(result["escalate"])
+
+    def test_valid_long_answer_keeps_output_bound(self):
+        draft = "TokenBook uses its own service. " * 100
+        result, _, _ = graph._validate_distilled_answer({
+            "answer": draft, "sources": [SOURCE], "confidence": "high", "escalate": False,
+        }, evidence("TokenBook uses its own service."), "What service does TokenBook use?")
+        self.assertEqual(len(result["answer"]), 2000)
+
+    def test_wrong_message_count_cannot_hide_beside_correct_byte_and_token_caps(self):
+        source = "TokenBook per-request caps are 8 messages, 6,000 UTF-8 text bytes and 512 output tokens."
+        result, _, _ = graph._validate_distilled_answer({
+            "answer": source.replace("8 messages", "99 messages"), "sources": [SOURCE], "confidence": "high",
+        }, evidence(source), REQUEST)
+        self.assertIsNone(result["answer"])

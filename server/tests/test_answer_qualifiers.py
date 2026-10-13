@@ -223,5 +223,20 @@ class HoldTests(unittest.TestCase):
         self.assertNotIn("sensitive", result)
 
 
+class AdditionalDimensionAndDateSupportTests(unittest.TestCase):
+    def test_message_count_is_a_separate_bound(self):
+        cap = "TokenBook per-request caps are 8 messages, 2,048 UTF-8 text bytes and 96 output tokens."
+        self.assertIsNone(qualifier_problem(REQUEST_QUESTION, cap, {"note": cap}))
+        for bad in (cap.replace("8 messages", "99 messages"), cap.replace("8 messages", "8 tokens")):
+            self.assertEqual(qualifier_problem(REQUEST_QUESTION, bad, {"note": cap}), REQUEST_REASON)
+
+    def test_role_support_is_independent_of_source_titles_and_other_facts(self):
+        from answer_qualifiers import operational_supporting_sources
+        notes = {"role": LEAD, "hold": HOLD, "noise": "TokenBook uses a local server."}
+        support = operational_supporting_sources(LEAD_HOLD_QUESTION, LEAD + " " + HOLD, notes)
+        self.assertEqual(support, {"project_lead": ["role"], "workload_hold": ["hold"]})
+        self.assertEqual(operational_supporting_sources(LEAD_HOLD_QUESTION, LEAD + " " + HOLD,
+                         {"noise": notes["noise"]}), {})
+
 if __name__ == "__main__":
     unittest.main()

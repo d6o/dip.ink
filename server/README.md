@@ -84,8 +84,11 @@ Optional [indexed vector retrieval](VECTOR_RETRIEVAL.md) accelerates graph reads
 - **Observation qualifiers**: a deployment UUID, version, or commit in an ordinary answer must have a dated cited source.
   The answer lists the dates of the sources that contain those identifiers and requests escalation. A newer unrelated citation cannot refresh an older identifier.
   Operational role and hold answers also describe recorded evidence, not live authority.
+  Every requested role or hold needs its own dated supporting source. An unrelated dated note cannot qualify an undated relationship.
 - **Qualifier guards**: request caps require clause-local evidence with the same numeric values, units, and direction.
-  Per-unit allowances do not supply per-request bounds. Native lead addresses need a direct project/role binding and a matching project prefix.
+  Per-unit allowances do not supply per-request bounds. Message counts, bytes, and tokens remain distinct dimensions.
+  Native lead addresses need a direct project/role binding and a matching project prefix.
+  All qualifier checks inspect the complete draft before the answer display limit applies.
   Rollout and workload holds need an explicit operational predicate for the named project. Ambiguous prose returns `not_found` with escalation.
   These checks are conservative and lexical; they do not provide general entailment verification. Source text must state the relationship directly.
 - **Distiller** (`graph_answer`): one plain chat completion, temperature 0,

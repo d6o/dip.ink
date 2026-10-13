@@ -37,7 +37,7 @@ from starlette.routing import Route
 # Reuse the ingest client wiring (Graphiti extraction LLM, OpenAI embedder,
 # the roomy Neo4j pool).
 from chat_fallback import OrderedModelFallback, is_recoverable_provider_error, parse_model_ladder
-from answer_qualifiers import qualifier_problem, qualifier_requirements
+from answer_qualifiers import operational_supporting_sources, qualifier_problem, qualifier_requirements
 from ingest import DEFAULT_GROUP_ID, build_graphiti
 from vector_search import install_read_search
 from graphiti_core.search.search_config_recipes import COMBINED_HYBRID_SEARCH_RRF
@@ -480,10 +480,14 @@ def _snapshot_dates(question: str, answer: str, packet: dict, sources: list[str]
             for source in holders:
                 dates[source] = _iso(_source_time(source))
     if role_query:
-        for source in sources:
-            when = _source_time(source)
-            if when and texts.get(source):
-                dates[source] = _iso(when)
+        dated_texts = {source: texts[source] for source in sources
+                       if _source_time(source) and texts.get(source)}
+        support = operational_supporting_sources(question, answer, dated_texts)
+        if not support:
+            return {}
+        for supporters in support.values():
+            for source in supporters:
+                dates[source] = _iso(_source_time(source))
     return dates
 
 
@@ -935,7 +939,9 @@ def _validate_distilled_answer(
     if conf not in ("high", "medium", "low", "not_found"):
         conf = "low"
     answer = parsed.get("answer")
-    answer = None if answer in (None, "", "null") else str(answer)[:2000]
+    # Safety guards inspect the complete draft. Truncate only its final
+    # display, so an unsupported claim after character 2000 cannot escape.
+    answer = None if answer in (None, "", "null") else str(answer)
 
     if conf == "not_found" or answer is None:
         result = {
@@ -1086,6 +1092,7 @@ def _validate_distilled_answer(
     note = parsed.get("superseded_note")
     if note and str(note).strip().lower() not in ("none", "null", "n/a"):
         result["superseded_note"] = str(note)[:500]
+    result["answer"] = result["answer"][:2000]
     return result, True, action
 
 
