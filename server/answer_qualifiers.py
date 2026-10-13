@@ -434,8 +434,10 @@ def _bounded_result_supported(question: str, claim: str, evidence: list[str]) ->
                          r"(?:(?:dedicated|shared|retained|old|local|new|backup)\s+){0,4}" + _COPY, claim, re.I)
     if not zero_objects or positive:
         return False
+    subjects = list(dict.fromkeys(_subjects(question) + _subjects(claim)))
     return all(any(obj in _zero_removal_objects(source) and _bounded_removal_statement(source)
                    and not _different_explicit_tickets(question, claim, source)
+                   and (not subjects or _scoped(source, subjects))
                    for source in evidence) for obj in zero_objects)
 
 

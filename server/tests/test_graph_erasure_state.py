@@ -465,3 +465,42 @@ class ZeroIsARemovalCountTests(unittest.IsolatedAsyncioTestCase):
         draft = 'Zero shared archive copies were removed and three dedicated backup copies were deleted.'
         text = 'Zero shared archive copies were removed and two dedicated backup copies were deleted.'
         self.assertEqual(qualifier_problem('What is backup removal status?',draft,{'fixture':text}),BOUNDED_REMOVAL_REASON)
+
+
+class ZeroProductScopeMustBeClauseLocalTests(unittest.IsolatedAsyncioTestCase):
+    SOURCE = '2026-10-13-120000-copy-state'
+    QUERY = 'What is the TargetApp backup removal status?'
+    DRAFT = 'TargetApp: zero dedicated backup copies were removed.'
+
+    async def answer(self, draft, text):
+        p={'facts':[],'entities':[],'source_excerpt':None,
+           'semantic_notes':[{'name':self.SOURCE,'content':text}]}
+        with mock.patch.object(graph,'_assemble_packet',new=mock.AsyncMock(return_value=p)), \
+             mock.patch.object(graph,'_distill',new=mock.AsyncMock(return_value={
+                 'answer':draft,'confidence':'high','sources':[self.SOURCE],'escalate':False,
+             })), mock.patch.object(graph,'_record_query'):
+            return await graph._graph_answer_impl(self.QUERY)
+
+    async def test_nearby_product_mention_does_not_supply_zero_relation(self):
+        result=await self.answer(self.DRAFT,
+            'TargetApp cleanup remains pending. OtherApp: zero dedicated backup copies were removed.')
+        self.assertIsNone(result['answer'])
+        self.assertTrue(result['escalate'])
+
+    async def test_correct_product_voice_match_retains_date(self):
+        result=await self.answer(self.DRAFT,'TargetApp deleted zero dedicated backup copies.')
+        self.assertIsNotNone(result['answer'])
+        self.assertEqual(result['observation_dates'],{self.SOURCE:'2026-10-13T12:00:00Z'})
+
+    def test_direct_guard_rejects_other_product_and_comparison_support(self):
+        from answer_qualifiers import BOUNDED_REMOVAL_REASON
+        for text in ('OtherApp: zero dedicated backup copies were removed.',
+                     'TargetApp works with OtherApp: zero dedicated backup copies were removed.'):
+            with self.subTest(text=text):
+                self.assertEqual(qualifier_problem(self.QUERY,self.DRAFT,{'fixture':text}),BOUNDED_REMOVAL_REASON)
+
+    def test_date_helper_does_not_borrow_other_product_zero_state(self):
+        from answer_qualifiers import copy_state_supporting_sources
+        self.assertEqual(copy_state_supporting_sources(self.QUERY,self.DRAFT,{
+            self.SOURCE:'TargetApp cleanup remains pending. OtherApp: zero dedicated backup copies were removed.',
+        }),[])
