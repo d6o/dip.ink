@@ -309,3 +309,55 @@ class BoundedRemovalDatesAndTicketScopeTests(unittest.TestCase):
         result, _, _ = self.validate('What is the status of dedicated backup removal k3s#23?',
                                     'k3s#23 deleted two dedicated backup copies.', {self.DATE: text})
         self.assertIsNone(result['answer'])
+
+
+class MultiplePredicateAndZeroScopeTests(unittest.IsolatedAsyncioTestCase):
+    SOURCE = '2026-10-13-120000-copy-result'
+
+    def packet(self, text):
+        return {'facts': [], 'entities': [], 'source_excerpt': None,
+                'semantic_notes': [{'name': self.SOURCE, 'content': text}]}
+
+    async def answer(self, draft, text):
+        with mock.patch.object(graph, '_assemble_packet', new=mock.AsyncMock(return_value=self.packet(text))), \
+             mock.patch.object(graph, '_distill', new=mock.AsyncMock(return_value={
+                 'answer': draft, 'confidence': 'high', 'sources': [self.SOURCE], 'escalate': False,
+             })), mock.patch.object(graph, '_record_query'):
+            return await graph._graph_answer_impl('What is the status of retained shared-archive cleanup k3s#23?')
+
+    async def test_counted_predicate_does_not_hide_later_total_claim(self):
+        result = await self.answer('Two copies were removed and all shared copies are gone.',
+                                   'k3s#23: two copies were removed. Shared copies remain.')
+        self.assertIsNone(result['answer'])
+        self.assertEqual(result['superseded_note'], ERASURE_REASON)
+
+    async def test_zero_predicate_does_not_hide_later_total_claim(self):
+        result = await self.answer('Zero copies were removed and all retained copies are gone.',
+                                   'k3s#23: zero copies were removed. Retained copies remain.')
+        self.assertIsNone(result['answer'])
+
+    def test_instruction_predicate_does_not_hide_later_total_claim(self):
+        self.assertEqual(qualifier_problem('What is retained copy status?',
+            'No backups should remain and all retained copies are gone.',
+            {'fixture': 'No backups should remain. Retained copies remain.'}), ERASURE_REASON)
+
+    async def test_backup_and_local_zero_masks_preserve_observed_nonremoval(self):
+        for text in ('Zero backup copies were removed. Shared archives remain.',
+                     'Zero local copies were removed. Shared archives remain.'):
+            with self.subTest(text=text):
+                self.assertIsNone(qualifier_problem('What is retained copy status?', text, {'fixture': text}))
+                result = await self.answer(text, 'k3s#23: ' + text)
+                self.assertIsNotNone(result['answer'])
+                self.assertIn(text, result['answer'])
+                self.assertEqual(result['confidence'], 'medium')
+                self.assertTrue(result['escalate'])
+
+    def test_zero_scoped_copy_observations_still_veto_affirmative_erasure(self):
+        for modifier in ('backup', 'local', 'old', 'new'):
+            with self.subTest(modifier=modifier):
+                self.assertEqual(qualifier_problem('What is retained copy status?', 'The retained copies are gone.',
+                    {'fixture': f'Zero {modifier} copies were removed. Retained copies remain.'}), ERASURE_REASON)
+
+    def test_instruction_only_source_cannot_make_a_second_predicate_observed(self):
+        self.assertEqual(qualifier_problem('What is retained copy status?', 'All retained copies are gone.',
+            {'fixture': 'The plan requires cleanup and all retained copies are gone.'}), ERASURE_REASON)

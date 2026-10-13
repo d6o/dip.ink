@@ -36,7 +36,7 @@ _ERASURE_INTENT = re.compile(
     r"permission|authorized?|unverified|unconfirmed|not|never)\b|\b(?:do not|not verified)\b", re.I
 )
 _ERASURE_NEGATIVE = re.compile(
-    r"\b(?:zero|0|no)\s+(?:(?:dedicated|backup|retained|shared)\s+){0,3}"
+    r"\b(?:zero|0|no)\s+(?:(?:dedicated|backup|retained|shared|local|old|new|remaining)\s+){0,3}"
     + _COPY + r"\s+(?:(?:were|are|have been|was|is)\s+)?(?:removed|deleted|erased)\b"
     r"|\b(?:not|never|no)\s+(?:complete(?:d)?|removed|deleted|erased)\b"
     r"|\b(?:incomplete|pending|blocked)\b"
@@ -57,7 +57,7 @@ _ERASURE_ABSENCE = re.compile(
 def _erasure_conflict(clause: str) -> bool:
     # "No backups remain" is an absence statement, not positive retention.
     # Mask absence spans before testing for contrary observations.
-    if re.search(r"\b(?:zero|0|no)\s+(?:(?:dedicated|shared|retained|backup)\s+){0,3}"
+    if re.search(r"\b(?:zero|0|no)\s+(?:(?:dedicated|shared|retained|backup|local|old|new|remaining)\s+){0,3}"
                  + _COPY + r"\s+(?:(?:were|are|have been|was|is)\s+)?(?:removed|deleted|erased)\b", clause, re.I):
         return True
     remainder = _ERASURE_ABSENCE.sub("", clause)
@@ -116,27 +116,31 @@ def _copy_conflict_overlaps(claim: str, conflict: str) -> bool:
 
 def _erasure_claims(text: str) -> list[str]:
     claims = []
+    separator = r",|\b(?:and|or|yet|while|however)\b"
     for clause in _clauses(text):
-        match = _ERASURE_ABSENCE.search(clause)
-        if not match or _ERASURE_INTENT.search(clause):
-            continue
-        # Direct predicates also match 'zero copies were removed'. That is
-        # explicitly no effect, not a positive completion claim.
-        prefix = clause[:match.start()]
-        if re.search(r"\b(?:zero|0|no)\s+(?:(?:dedicated|shared|retained)\s+){0,3}$", prefix, re.I):
-            continue
-        # A counted subset can be removed while other copies remain. This
-        # total-erasure guard does not relabel that bounded historical result.
-        if re.search(r"\b(?:[1-9]\d*|one|two|three|four|five|some|several|a|an)\s+"
-                     r"(?:(?:dedicated|shared|retained|old|local|new)\s+){0,3}$", prefix, re.I):
-            continue
-        claims.append(clause)
+        # Every predicate matters. A counted or zero-effect predicate at the
+        # start must not hide a later total-erasure predicate in the clause.
+        for match in _ERASURE_ABSENCE.finditer(clause):
+            prefix = clause[:match.start()]
+            local_prefix = re.split(separator, prefix, flags=re.I)[-1]
+            local_tail = re.split(separator, clause[match.start():], flags=re.I)[0]
+            if _ERASURE_INTENT.search(local_prefix + local_tail):
+                continue
+            if re.search(r"\b(?:zero|0|no)\s+"
+                         r"(?:(?:dedicated|shared|retained|backup|local|old|new|remaining)\s+){0,4}$", prefix, re.I):
+                continue
+            # A counted subset is a bounded result, not total absence.
+            if re.search(r"\b(?:[1-9]\d*|one|two|three|four|five|some|several|a|an)\s+"
+                         r"(?:(?:dedicated|shared|retained|backup|old|local|new|remaining)\s+){0,4}$", prefix, re.I):
+                continue
+            claims.append(clause)
+            break
     return claims
 
 
 def _completed_erasure(clause: str) -> bool:
-    return bool(_erasure_claims(clause) and not _erasure_conflict(clause)
-                and not _SERVING_SCOPE.search(clause))
+    return bool(_erasure_claims(clause) and not _ERASURE_INTENT.search(clause)
+                and not _erasure_conflict(clause) and not _SERVING_SCOPE.search(clause))
 
 
 def _erasure_problem(question: str, answer: str, evidence: list[str]) -> bool:
