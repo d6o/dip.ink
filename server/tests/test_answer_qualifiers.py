@@ -230,6 +230,10 @@ class AdditionalDimensionAndDateSupportTests(unittest.TestCase):
         for bad in (cap.replace("8 messages", "99 messages"), cap.replace("8 messages", "8 tokens")):
             self.assertEqual(qualifier_problem(REQUEST_QUESTION, bad, {"note": cap}), REQUEST_REASON)
 
+    def test_message_count_absent_from_source_is_rejected(self):
+        draft = "TokenBook per-request caps are 99 messages, 2,048 UTF-8 text bytes and 96 output tokens."
+        self.assertEqual(qualifier_problem(REQUEST_QUESTION, draft, {"note": CAP}), REQUEST_REASON)
+
     def test_role_support_is_independent_of_source_titles_and_other_facts(self):
         from answer_qualifiers import operational_supporting_sources
         notes = {"role": LEAD, "hold": HOLD, "noise": "TokenBook uses a local server."}
