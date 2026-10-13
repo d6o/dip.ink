@@ -352,8 +352,7 @@ def qualifier_problem(question: str, answer: str, source_texts: dict[str, str]) 
         return ERASURE_REASON
     # A retention sentence cannot validate a changed removal count, even
     # when both occur in the same source and the overall date is known.
-    known_clauses = {_normalized_removal_clause(clause) for clause in evidence}
-    if any(_normalized_removal_clause(clause) not in known_clauses for clause in _clauses(answer)
+    if any(not _bounded_result_supported(question, clause, evidence) for clause in _clauses(answer)
            if _bounded_removal_statement(clause)):
         return BOUNDED_REMOVAL_REASON
     if "request_limits" in requirements and _request_problem(question, answer, evidence):
@@ -395,12 +394,49 @@ def _bounded_removal_statement(clause: str) -> bool:
     """
     if any(match.group(0).casefold() not in ('not', 'never') for match in _ERASURE_INTENT.finditer(clause)):
         return False
-    if not re.search(r"\b(?:deleted|removed|erased)\b", clause, re.I):
+    if clause.rstrip().endswith('?') or not re.search(r"\b(?:deleted|removed|erased)\b", clause, re.I):
         return False
-    counted = re.search(r"\b(?:[1-9]\d*|one|two|three|four|five|some|several)\s+"
+    counted = re.search(r"\b(?:\d+|zero|no|one|two|three|four|five|some|several)\s+"
                         r"(?:(?:dedicated|shared|retained|old|local|new|backup)\s+){0,4}"
                         + _COPY + r"\b", clause, re.I)
     return bool(counted or re.search(r"\bserving[- ]targets?\b", clause, re.I))
+
+
+def _zero_removal_objects(clause: str) -> set[tuple[str, tuple[str, ...]]]:
+    """Scope of explicit zero-effect removal statements in either voice.
+
+    "Zero copies were removed" and "deleted zero copies" both report no
+    effect. Other counts must never obtain support from these statements.
+    """
+    scope = r"(?P<scope>(?:(?:dedicated|shared|retained|old|local|new|remaining|backup)\s+){0,4})"
+    kind = r"(?P<kind>backups?|archives?|copies|copy)(?!\w)"
+    zero = r"\b(?:zero|0|no)\s+" + scope + kind
+    patterns = (zero + r"\s+(?:(?:are|were|was|is|have been|has been)\s+)?(?:removed|deleted|erased)\b",
+                r"\b(?:removed|deleted|erased)\s+" + zero)
+    objects = set()
+    for pattern in patterns:
+        for match in re.finditer(pattern, clause, re.I):
+            name = match['kind'].casefold()
+            name = 'copy' if name in ('copy', 'copies') else name.removesuffix('s')
+            objects.add((name, tuple(sorted(match['scope'].casefold().split()))))
+    return objects
+
+
+def _bounded_result_supported(question: str, claim: str, evidence: list[str]) -> bool:
+    normalized = _normalized_removal_clause(claim)
+    if any(normalized == _normalized_removal_clause(source)
+           and _bounded_removal_statement(source) for source in evidence):
+        return True
+    zero_objects = _zero_removal_objects(claim)
+    # Keep mixed-count clauses on the exact-support path. A correct zero
+    # predicate cannot hide a changed positive count later in the clause.
+    positive = re.search(r"\b(?:[1-9]\d*|one|two|three|four|five|some|several)\s+"
+                         r"(?:(?:dedicated|shared|retained|old|local|new|backup)\s+){0,4}" + _COPY, claim, re.I)
+    if not zero_objects or positive:
+        return False
+    return all(any(obj in _zero_removal_objects(source) and _bounded_removal_statement(source)
+                   and not _different_explicit_tickets(question, claim, source)
+                   for source in evidence) for obj in zero_objects)
 
 
 def copy_state_supporting_sources(question: str, answer: str, source_texts: dict[str, str]) -> list[str]:
@@ -412,21 +448,29 @@ def copy_state_supporting_sources(question: str, answer: str, source_texts: dict
     answer_clauses = _clauses(answer)
     copy_clauses = [clause for clause in answer_clauses
                     if _COPY_RE.search(clause) or _SERVING_SCOPE.search(clause)]
-    normalized = {_normalized_removal_clause(clause) for clause in copy_clauses}
-    bounded = {_normalized_removal_clause(clause) for clause in copy_clauses if _bounded_removal_statement(clause)}
+    bounded = [clause for clause in copy_clauses if _bounded_removal_statement(clause)]
     supporters = []
+    coverage = {claim: [] for claim in bounded}
     for source, text in source_texts.items():
         evidence = _clauses(text)
         if _erasure_problem(question, answer, evidence):
             continue
-        if bounded and not bounded.issubset({_normalized_removal_clause(clause) for clause in evidence}):
+        if bounded:
+            # Different bounded results can have different source dates.
+            # Each result needs support; unrelated retention supplies none.
+            for claim in bounded:
+                if _bounded_result_supported(question, claim, evidence):
+                    coverage[claim].append(source)
             continue
         for clause in evidence:
             if any(_different_explicit_tickets(question, claim, clause) for claim in copy_clauses):
                 continue
-            exact_bounded = _normalized_removal_clause(clause) in normalized and _bounded_removal_statement(clause)
             observed = _completed_erasure(clause) or (_erasure_conflict(clause) and not _ERASURE_INTENT.search(clause))
-            if exact_bounded or observed:
+            if observed:
                 supporters.append(source)
                 break
+    if bounded:
+        if any(not sources for sources in coverage.values()):
+            return []
+        return list(dict.fromkeys(source for sources in coverage.values() for source in sources))
     return supporters

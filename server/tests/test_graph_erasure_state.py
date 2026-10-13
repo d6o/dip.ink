@@ -409,3 +409,59 @@ class BoundedCountCannotBorrowRetentionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(qualifier_problem(self.QUERY,self.OBSERVED+' '+self.WRONG,{
             self.SOURCE:self.OBSERVED+' Shared archives remain.',
         }), BOUNDED_REMOVAL_REASON)
+
+
+class ZeroIsARemovalCountTests(unittest.IsolatedAsyncioTestCase):
+    SOURCE = '2026-10-13-120000-removal-count-receipt'
+    QUESTION = 'What is the status of dedicated backup removal k3s#23?'
+
+    async def answer(self, draft, text):
+        p = {'facts': [], 'entities': [], 'source_excerpt': None,
+             'semantic_notes': [{'name': self.SOURCE, 'content': text}]}
+        with mock.patch.object(graph,'_assemble_packet',new=mock.AsyncMock(return_value=p)), \
+             mock.patch.object(graph,'_distill',new=mock.AsyncMock(return_value={
+                 'answer':draft,'confidence':'high','sources':[self.SOURCE],'escalate':False,
+             })), mock.patch.object(graph,'_record_query'):
+            return await graph._graph_answer_impl(self.QUESTION)
+
+    async def test_zero_does_not_match_observed_two_even_with_retention(self):
+        result = await self.answer('k3s#23: zero dedicated backup copies were removed.',
+                                  'k3s#23: two dedicated backup copies were removed. Shared archives remain.')
+        self.assertIsNone(result['answer'])
+        self.assertTrue(result['escalate'])
+
+    async def test_correct_sourced_zero_count_remains_dated(self):
+        text = 'k3s#23: zero dedicated backup copies were removed. Shared archives remain.'
+        result = await self.answer(text,text)
+        self.assertIsNotNone(result['answer'])
+        self.assertIn('zero dedicated backup copies were removed',result['answer'])
+        self.assertEqual(result['observation_dates'],{self.SOURCE:'2026-10-13T12:00:00Z'})
+
+    async def test_zero_and_positive_voices_report_the_same_no_effect(self):
+        result = await self.answer('k3s#23: zero dedicated backup copies were removed.',
+                                  'k3s#23 deleted zero dedicated backup copies. Shared archives remain.')
+        self.assertIsNotNone(result['answer'])
+        self.assertTrue(result['escalate'])
+
+    def test_wrong_scope_or_other_ticket_cannot_supply_zero_support(self):
+        from answer_qualifiers import BOUNDED_REMOVAL_REASON
+        draft = 'k3s#23: zero dedicated backup copies were removed.'
+        for text in ('k3s#23: zero shared archive copies were removed.',
+                     'k3s#99: zero dedicated backup copies were removed.',
+                     'k3s#23: two dedicated backup copies were removed. Shared archives remain.'):
+            with self.subTest(text=text):
+                self.assertEqual(qualifier_problem(self.QUESTION,draft,{'fixture':text}),BOUNDED_REMOVAL_REASON)
+
+    def test_instruction_or_question_does_not_establish_zero(self):
+        from answer_qualifiers import BOUNDED_REMOVAL_REASON
+        draft = 'Zero dedicated backup copies were removed.'
+        for text in ('Zero dedicated backup copies must be removed.',
+                     'Were zero dedicated backup copies removed?'):
+            with self.subTest(text=text):
+                self.assertEqual(qualifier_problem(self.QUESTION,draft,{'fixture':text}),BOUNDED_REMOVAL_REASON)
+
+    def test_zero_clause_cannot_hide_a_changed_positive_count(self):
+        from answer_qualifiers import BOUNDED_REMOVAL_REASON
+        draft = 'Zero shared archive copies were removed and three dedicated backup copies were deleted.'
+        text = 'Zero shared archive copies were removed and two dedicated backup copies were deleted.'
+        self.assertEqual(qualifier_problem('What is backup removal status?',draft,{'fixture':text}),BOUNDED_REMOVAL_REASON)
