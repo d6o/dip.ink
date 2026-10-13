@@ -29,7 +29,7 @@ def packet(*slugs: str) -> dict:
 
 
 def distilled(*slugs: str) -> dict:
-    return {"answer": "Gitea runners stay at zero; commit 668ff93 is not deployed.",
+    return {"answer": "Gitea runners stay at zero.",
             "confidence": "high", "sources": list(slugs), "escalate": False}
 
 

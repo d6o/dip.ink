@@ -77,6 +77,7 @@ GROUNDING_COUNTS = {
     "weak_only": 0,
     "project_mismatch": 0,
     "subject_mismatch": 0,
+    "qualifier_mismatch": 0,
     "error": 0,
 }
 
@@ -445,6 +446,60 @@ def _project_mismatch(question: str, answer: str, sources: list[str], packet: di
     return None
 
 
+# Deployment identifiers in an otherwise ordinary or procedural answer still
+# describe an observation, not a live check. UUIDs cover Worker deployments.
+_SNAPSHOT_ID_RE = re.compile(
+    r"\bv\d+(?:\.\d+){1,3}\b|\b[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\b"
+    r"|\bsha256:[0-9a-f]{12,64}\b|(?<![\w-])[0-9a-f]{7,40}(?![\w-])", re.I
+)
+_DEPLOYMENT_WORD_RE = re.compile(r"\b(?:deployment|deploys?|deployed|rollout|release|revision|worker|image)\b", re.I)
+_OPERATIONAL_ROLE_RE = re.compile(r"\bproject\s+lead\b|\blead\s+(?:address|identity|session)\b|\b(?:rollout|admission|workload)\b.*\bhold\b", re.I)
+
+
+def _snapshot_dates(question: str, answer: str, packet: dict, sources: list[str]) -> dict[str, str] | None:
+    """Dates for recorded deployment identifiers and operational role facts.
+
+    None means no snapshot qualification is needed. An empty mapping means
+    the answer needs qualification but dated supporting evidence is absent.
+    Every deployment identifier needs a dated cited source that contains it.
+    """
+    values = _SNAPSHOT_ID_RE.findall(answer) if _DEPLOYMENT_WORD_RE.search(question + " " + answer) else []
+    role_query = bool(_OPERATIONAL_ROLE_RE.search(question))
+    if not values and not role_query:
+        return None
+    texts = _readable_source_texts(packet)
+    dates = {}
+    if values:
+        for value in values:
+            holders = [source for source in sources if _source_time(source) and re.search(
+                r"(?<![\w-])" + re.escape(value) + r"(?![\w-])", texts.get(source, ""), re.I
+            )]
+            if not holders:
+                return {}
+            for source in holders:
+                dates[source] = _iso(_source_time(source))
+    if role_query:
+        for source in sources:
+            when = _source_time(source)
+            if when and texts.get(source):
+                dates[source] = _iso(when)
+    return dates
+
+
+def _qualify_snapshot(result: dict, dates: dict[str, str]) -> None:
+    """Label all cited observation dates without asserting live state."""
+    stamp = ", ".join(sorted(set(dates.values())))
+    prefix = f"Recorded evidence (source dates: {stamp}): "
+    suffix = " Live state is not verified."
+    body = str(result["answer"])[:max(0, 1999 - len(prefix) - len(suffix))].rstrip()
+    if body and body[-1] not in ".!?":
+        body += "."
+    result["answer"] = prefix + body + suffix
+    result["observation_dates"] = dates
+    result["confidence"] = "medium" if result["confidence"] == "high" else result["confidence"]
+    result["escalate"] = True
+
+
 def _source_time(slug: str) -> datetime | None:
     match = re.match(r"^(\d{4}-\d{2}-\d{2})-(\d{2})(\d{2})(\d{2})-", slug)
     if not match:
@@ -787,6 +842,10 @@ You will get a QUESTION and a RETRIEVAL PACKET (JSON with facts, entities, a sou
 
 17. For subject_context, evidence must support the named subject, not a similarly named service. Never transfer another service's model, limits, or credential location to that subject. Every requested detail needs readable support; if a requested detail is absent, return not_found. A name or description is not that support.
 
+18. Preserve the scope and unit of every limit. A per-unit allowance is not a per-request cap. Byte counts and token counts are not interchangeable. If the requested scope is absent, return not_found rather than substituting a related value.
+19. A project lead address must explicitly belong to the requested lead role. A peer address mentioned near the project does not establish that role. A gateway retirement is not a workload admission or rollout hold. Notes are not live authority to run an operation.
+20. For procedural deployment questions, do not volunteer release identifiers. If an identifier is necessary, it describes dated recorded evidence, not an independently verified current deployment.
+
 Reply with ONLY a JSON object:
 {"answer": "..." | null, "confidence": "high|medium|low|not_found", "sources": ["slug", ...], "superseded_note": "..." (omit if none), "escalate": true|false}"""
 
@@ -1000,6 +1059,17 @@ def _validate_distilled_answer(
         result["confidence"] = "medium" if conf == "high" else conf
         result["escalate"] = True
         action = "downgraded" if conf == "high" else action
+
+    if temporal.get("mode") != "current":
+        observation_dates = _snapshot_dates(question, answer, packet, cited_sources)
+        if observation_dates is not None:
+            if not observation_dates:
+                return {
+                    "answer": None, "confidence": "not_found", "sources": [], "escalate": True,
+                    "superseded_note": "No dated cited evidence supports the deployment or role identifiers.",
+                }, True, "qualifier_mismatch"
+            _qualify_snapshot(result, observation_dates)
+            action = "downgraded" if conf == "high" else action
 
     note = parsed.get("superseded_note")
     if note and str(note).strip().lower() not in ("none", "null", "n/a"):
