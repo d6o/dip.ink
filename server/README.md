@@ -75,6 +75,11 @@ Optional [indexed vector retrieval](VECTOR_RETRIEVAL.md) accelerates graph reads
   packet via a direct in-process call (episodes are BM25-only in graphiti; the
   wiki's embeddings cover that blind spot). Best-effort — an unready index
   just means no `semantic_notes`.
+- **Readable semantic evidence**: ordinary `graph_answer` requests inspect eight wiki hits and read at most three relevant indexed bodies.
+  Each excerpt is at most 2,500 characters. `graph_search` keeps its compact name/description results.
+  Explicit mixed-case product names, such as TokenBook and HookFork, constrain the evidence before distillation.
+  Every cited source must contain readable text about a named subject. Similar service names do not count.
+  Missing subject evidence produces `not_found` with escalation. This is a conservative lexical check, not a general entailment proof.
 - **Distiller** (`graph_answer`): one plain chat completion, temperature 0,
   answering **only from the packet** — invented provenance is discarded, and
   unsupported answers return `not_found` + `escalate` (the no-hallucination

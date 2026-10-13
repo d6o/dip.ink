@@ -10,6 +10,8 @@ os.environ.setdefault("OPENAI_API_KEY", "test-only")
 from loops import memory_healthcheck as hc  # noqa: E402
 
 WRONG = {
+    "dip.ink#10": {"answer": "TokenBook runs on tokenbridge.tokenbridge.svc.cluster.local:64963 with claude-max.",
+                   "confidence": "high", "sources": []},
     "dip.ink#1": {"answer": "Memory v0.1.6; pi-runner v0.1.11", "confidence": "high", "sources": []},
     "dip.ink#2": {"answer": "Runners stay at zero; 668ff93 not deployed; run 74 pending", "confidence": "high",
                   "sources": ["2026-07-30-231415-k3s-recovery-final-state-and-open-actions"]},
@@ -38,7 +40,7 @@ class RegressionProbeTests(unittest.TestCase):
 
     def test_each_known_wrong_answer_fails(self):
         failures = self.run_with(WRONG)
-        self.assertEqual(len(failures), 4)
+        self.assertEqual(len(failures), len(WRONG))
         for ticket in WRONG:
             self.assertTrue(any(ticket in f for f in failures), ticket)
 

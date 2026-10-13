@@ -76,6 +76,7 @@ GROUNDING_COUNTS = {
     "date_mismatch": 0,
     "weak_only": 0,
     "project_mismatch": 0,
+    "subject_mismatch": 0,
     "error": 0,
 }
 
@@ -311,6 +312,76 @@ def _named_projects(question: str) -> list[str]:
     return keys
 
 
+def _answer_subjects(question: str) -> list[str]:
+    """Recognize explicit mixed-case product names, not generic query words.
+
+    TokenBook and HookFork qualify; CPU, JSON, and sentence-initial words do
+    not. This is a conservative lexical guard, not a full entity resolver.
+    """
+    return list(dict.fromkeys(
+        token.casefold()
+        for token in re.findall(r"(?<![\w])([A-Z][A-Za-z0-9]*[a-z][A-Z][A-Za-z0-9]*)(?![\w])", question)
+    ))
+
+
+def _mentions_subject(text: str, subject: str) -> bool:
+    return bool(re.search(r"(?<![a-z0-9_])" + re.escape(subject) + r"(?![a-z0-9_])", text.casefold()))
+
+
+def _subject_evidence_packet(packet: dict, subjects: list[str]) -> dict:
+    """Keep readable evidence about explicit subjects before distillation.
+
+    Filter each fact separately. Another fact in the same source must not
+    transfer a service address or credential location to the named subject.
+    Names and descriptions alone do not establish the relationship.
+    """
+    if not subjects:
+        return packet
+
+    def relevant(text) -> bool:
+        return any(_mentions_subject(str(text or ""), subject) for subject in subjects)
+
+    excerpt = packet.get("source_excerpt") or {}
+    return {
+        **packet,
+        "facts": [fact for fact in packet.get("facts") or [] if relevant(fact.get("fact"))],
+        # Entity summaries have no source-level citation in this packet.
+        "entities": [],
+        "source_excerpt": excerpt if relevant(excerpt.get("content")) else None,
+        "semantic_notes": [hit for hit in packet.get("semantic_notes") or [] if relevant(hit.get("content"))],
+        "subject_context": {"subjects": subjects},
+    }
+
+
+def _readable_source_texts(packet: dict) -> dict[str, str]:
+    """Return readable source text, including historical facts, but no labels."""
+    texts: dict[str, list[str]] = {}
+    for fact in packet.get("facts") or []:
+        if fact.get("source_slug") and fact.get("fact"):
+            texts.setdefault(str(fact["source_slug"]), []).append(str(fact["fact"]))
+    excerpt = packet.get("source_excerpt") or {}
+    if excerpt.get("slug") and excerpt.get("content"):
+        texts.setdefault(str(excerpt["slug"]), []).append(str(excerpt["content"]))
+    for hit in packet.get("semantic_notes") or []:
+        if hit.get("name") and hit.get("content"):
+            texts.setdefault(str(hit["name"]), []).append(str(hit["content"]))
+    return {slug: "\n".join(parts) for slug, parts in texts.items()}
+
+
+def _subject_support_missing(packet: dict, subjects: list[str], sources: list[str] | None = None) -> bool:
+    texts = _readable_source_texts(packet)
+    if sources is not None:
+        texts = {source: texts.get(source, "") for source in sources}
+    if not texts:
+        return True
+    # Every named subject needs support. Every citation must also belong to
+    # at least one named subject; an unrelated credential source is rejected.
+    return (
+        any(not any(_mentions_subject(text, subject) for text in texts.values()) for subject in subjects)
+        or any(not any(_mentions_subject(text, subject) for subject in subjects) for text in texts.values())
+    )
+
+
 def _all_source_texts(packet: dict) -> dict[str, str]:
     texts: dict[str, list[str]] = {}
     for fact in packet.get("facts") or []:
@@ -508,10 +579,13 @@ def _current_evidence_packet(packet: dict) -> dict:
             if hit.get("name") in eligible and str(hit.get("content") or "").strip()
         ],
         "temporal_context": temporal,
+        **({"subject_context": packet["subject_context"]} if packet.get("subject_context") else {}),
     }
 
 
-async def _wiki_semantic_hits(query: str, k: int = 3, *, hydrate: bool = False) -> list[dict]:
+async def _wiki_semantic_hits(
+    query: str, k: int = 3, *, hydrate: bool = False, answer_evidence: bool = False,
+) -> list[dict]:
     """Fusion helper: the wiki index's semantic (embedding) search over all
     pages+notes. Same process — direct call into wiki.idx, run in a thread
     (the embed call is sync); [] on any failure (index unready, provider down)."""
@@ -541,6 +615,23 @@ async def _wiki_semantic_hits(query: str, k: int = 3, *, hydrate: bool = False) 
                 body = _current_body_excerpt((page or {}).get("body") or "")
                 if body:
                     hit["content"] = body
+        elif answer_evidence and hits:
+            # Ordinary answers need evidence too, not just semantic labels.
+            # Keep graph_search compact; only graph_answer opts into this path.
+            floor = hits[0]["score"] - CURRENT_RELEVANCE_MARGIN
+            relevant = [hit for hit in hits if hit["score"] >= floor]
+            subjects = _answer_subjects(query)
+            if subjects:
+                # Prefer explicit subject matches over a similar service name.
+                relevant.sort(key=lambda hit: not any(
+                    _mentions_subject(hit["name"] + " " + hit["description"], subject)
+                    for subject in subjects
+                ))
+            for hit in relevant[:3]:
+                page = wiki.idx.get(hit["name"])
+                body = _current_body_excerpt((page or {}).get("body") or "")
+                if body:
+                    hit["content"] = body
         return hits
 
     try:
@@ -556,6 +647,7 @@ async def _assemble_packet(
     *,
     excerpt_chars: int = 2500,
     current_state: bool = False,
+    answer_evidence: bool = False,
 ) -> dict:
     """Shared packet assembler for graph_search (wire format) and graph_answer
     (distiller input).
@@ -570,7 +662,10 @@ async def _assemble_packet(
     # graph search + wiki semantic search run concurrently (fusion)
     res, semantic_notes = await asyncio.gather(
         g.search_(query, config=config, group_ids=[DEFAULT_GROUP_ID]),
-        _wiki_semantic_hits(query, 25 if current_state else 3, hydrate=current_state),
+        _wiki_semantic_hits(
+            query, 25 if current_state else (8 if answer_evidence else 3),
+            hydrate=current_state, answer_evidence=answer_evidence,
+        ),
     )
     nodes = list(res.nodes or [])[:8]
     edges = list(res.edges or [])[:12]
@@ -670,6 +765,8 @@ You will get a QUESTION and a RETRIEVAL PACKET (JSON with facts, entities, a sou
 14. A source can quote obsolete, incorrect, or previous values as examples. Do not report a value that its own source describes that way.
 15. When the question names a date or a dated event (for example "the October 11 incident"), answer only from sources dated around that time (the slug starts with the date). Sources about another time do not answer it, even when the topic matches. Then return not_found.
 16. When the question names a project (for example batomon.com), use only sources about that project. A source about another project with similar words (retirement, approval, storage) does not answer it.
+
+17. For subject_context, evidence must support the named subject, not a similarly named service. Never transfer another service's model, limits, or credential location to that subject. Every requested detail needs readable support; if a requested detail is absent, return not_found. A name or description is not that support.
 
 Reply with ONLY a JSON object:
 {"answer": "..." | null, "confidence": "high|medium|low|not_found", "sources": ["slug", ...], "superseded_note": "..." (omit if none), "escalate": true|false}"""
@@ -796,6 +893,13 @@ def _validate_distilled_answer(
             "escalate": True,
         }, False, "rejected"
 
+    subjects = _answer_subjects(question)
+    if subjects and _subject_support_missing(_subject_evidence_packet(packet, subjects), subjects, sources):
+        return {
+            "answer": None, "confidence": "not_found", "sources": [], "escalate": True,
+            "superseded_note": "The cited text does not establish the named subject: " + ", ".join(subjects),
+        }, True, "subject_mismatch"
+
     mismatch = question and _date_mismatch(question, sources)
     if mismatch:
         # dip.ink#2: July recovery facts answered an October incident question
@@ -895,7 +999,7 @@ async def _graph_answer_impl(question: str, is_test: bool = False) -> dict:
     packet: dict | None = None
     try:
         packet = await _assemble_packet(
-            q, 8, excerpt_chars=2500, current_state=current_state,
+            q, 8, excerpt_chars=2500, current_state=current_state, answer_evidence=True,
         )
     except Exception as error:  # noqa: BLE001
         log.warning("graph_answer: packet assembly failed: %r", error)
@@ -908,12 +1012,16 @@ async def _graph_answer_impl(question: str, is_test: bool = False) -> dict:
     if packet is None:
         result = {"answer": None, "confidence": "error", "sources": [], "escalate": True}
     else:
+        subjects = _answer_subjects(q)
+        packet = _subject_evidence_packet(packet, subjects)
         if current_state:
             packet["temporal_context"] = _temporal_context(packet)
         distill_packet = _current_evidence_packet(packet) if current_state else packet
         packet_json = json.dumps(distill_packet, ensure_ascii=False)
         packet_tokens_est = len(packet_json) // 4
-        if current_state and not packet["temporal_context"]["eligible_sources"]:
+        if (subjects and _subject_support_missing(packet, subjects)) or (
+            current_state and not packet["temporal_context"]["eligible_sources"]
+        ):
             parsed = {"answer": None, "confidence": "not_found"}
         else:
             parsed = await _distill(q, packet_json)

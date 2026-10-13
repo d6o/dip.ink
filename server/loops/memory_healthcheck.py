@@ -99,6 +99,9 @@ REGRESSION_PROBES = (
      "reprices its catalog, and what does claim revocation do to historical or unresolved deliveries?",
      (r"(?i)unresolved[^.]*\bunaffected\b", r"(?i)\bunaffected\b[^.]*unresolved",
       r"(?i)does not affect[^.]*unresolved")),
+    ("dip.ink#10",
+     "What are the TokenBook self-hosted inference deployment, model, request limits, and protected credential location?",
+     (r"(?i)tokenbridge", r"(?i)corridabrasil-listmonk", r"(?i)claude-max")),
     ("dip.ink#8",
      "What did Diego authorize for the scheduled October 11 retirement of batomon.com's old home k3s storage, "
      "and where is the approval record?",
