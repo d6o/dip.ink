@@ -1047,6 +1047,16 @@ def _validate_distilled_answer(
         "escalate": bool(parsed.get("escalate", False)),
     }
     temporal = packet.get("temporal_context") or {}
+    # Role and hold dates must come from their own supporting evidence in
+    # both modes. Temporal eligibility alone does not establish a relation.
+    observation_dates = None
+    if temporal.get("mode") != "current" or _OPERATIONAL_ROLE_RE.search(question):
+        observation_dates = _snapshot_dates(question, answer, packet, cited_sources)
+        if observation_dates == {}:
+            return {
+                "answer": None, "confidence": "not_found", "sources": [], "escalate": True,
+                "superseded_note": "No dated cited evidence supports the deployment or role identifiers.",
+            }, True, "qualifier_mismatch"
     if temporal.get("mode") == "current":
         eligible = set(temporal.get("eligible_sources") or [])
         referenced = {str(source or "").strip() for source in raw_sources if str(source or "").strip()}
@@ -1066,28 +1076,25 @@ def _validate_distilled_answer(
             return {
                 "answer": None, "confidence": "not_found", "sources": [], "escalate": True,
             }, False, "rejected"
-        as_of = max(dates[source] for source in referenced)
-        prefix = f"Recorded as of {as_of}: "
-        suffix = " Live state is not verified."
-        body = answer[:2000 - len(prefix) - len(suffix)].rstrip()
-        if body and body[-1] not in ".!?":
-            body = body[:2000 - len(prefix) - len(suffix) - 1] + "."
-        result["answer"] = prefix + body + suffix
-        result["as_of"] = as_of
+        if observation_dates is not None:
+            _qualify_snapshot(result, observation_dates)
+            result["as_of"] = max(observation_dates.values())
+        else:
+            as_of = max(dates[source] for source in referenced)
+            prefix = f"Recorded as of {as_of}: "
+            suffix = " Live state is not verified."
+            body = answer[:2000 - len(prefix) - len(suffix)].rstrip()
+            if body and body[-1] not in ".!?":
+                body = body[:2000 - len(prefix) - len(suffix) - 1] + "."
+            result["answer"] = prefix + body + suffix
+            result["as_of"] = as_of
         result["confidence"] = "medium" if conf == "high" else conf
         result["escalate"] = True
         action = "downgraded" if conf == "high" else action
 
-    if temporal.get("mode") != "current":
-        observation_dates = _snapshot_dates(question, answer, packet, cited_sources)
-        if observation_dates is not None:
-            if not observation_dates:
-                return {
-                    "answer": None, "confidence": "not_found", "sources": [], "escalate": True,
-                    "superseded_note": "No dated cited evidence supports the deployment or role identifiers.",
-                }, True, "qualifier_mismatch"
-            _qualify_snapshot(result, observation_dates)
-            action = "downgraded" if conf == "high" else action
+    elif observation_dates is not None:
+        _qualify_snapshot(result, observation_dates)
+        action = "downgraded" if conf == "high" else action
 
     note = parsed.get("superseded_note")
     if note and str(note).strip().lower() not in ("none", "null", "n/a"):

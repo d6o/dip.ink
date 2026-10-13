@@ -85,6 +85,7 @@ Optional [indexed vector retrieval](VECTOR_RETRIEVAL.md) accelerates graph reads
   The answer lists the dates of the sources that contain those identifiers and requests escalation. A newer unrelated citation cannot refresh an older identifier.
   Operational role and hold answers also describe recorded evidence, not live authority.
   Every requested role or hold needs its own dated supporting source. An unrelated dated note cannot qualify an undated relationship.
+  This applies to ordinary and current-state answers. Temporal eligibility runs separately; a newer unrelated citation cannot advance a role's `as_of`.
 - **Qualifier guards**: request caps require clause-local evidence with the same numeric values, units, and direction.
   Per-unit allowances do not supply per-request bounds. Message counts, bytes, and tokens remain distinct dimensions.
   Native lead addresses need a direct project/role binding and a matching project prefix.

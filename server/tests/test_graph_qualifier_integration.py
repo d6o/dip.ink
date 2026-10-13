@@ -147,3 +147,60 @@ class RawDraftAndRoleDateTests(unittest.IsolatedAsyncioTestCase):
             "answer": source.replace("8 messages", "99 messages"), "sources": [SOURCE], "confidence": "high",
         }, evidence(source), REQUEST)
         self.assertIsNone(result["answer"])
+
+
+class CurrentRoleDateTests(unittest.IsolatedAsyncioTestCase):
+    QUESTION = "What is the current k3s project lead address and what rollout hold affects TokenBook?"
+    ROLE = "The k3s project lead address is k3s/test-worker~test-session:123."
+    HOLD = "k3s holds app rollouts for TokenBook."
+    SOURCE = "2026-10-13-010000-tokenbook-role-and-hold"
+    UNRELATED = "2026-10-13-020000-tokenbook-server"
+
+    def packet(self, notes=None):
+        notes = notes or {self.SOURCE: self.ROLE + " " + self.HOLD,
+                          self.UNRELATED: "TokenBook uses a local server."}
+        p = {"facts": [], "entities": [], "source_excerpt": None,
+             "semantic_notes": [{"name": name, "content": text} for name, text in notes.items()]}
+        p["temporal_context"] = graph._temporal_context(p)
+        return p
+
+    def draft(self, sources=None):
+        return {"answer": self.ROLE + " " + self.HOLD, "confidence": "high", "escalate": False,
+                "sources": sources or [self.SOURCE, self.UNRELATED]}
+
+    def test_current_validator_ignores_unrelated_newer_date(self):
+        p = self.packet()
+        self.assertEqual(p["temporal_context"]["newest_evidence_at"], "2026-10-13T02:00:00Z")
+        result, _, _ = graph._validate_distilled_answer(self.draft(), p, self.QUESTION)
+        self.assertEqual(result["as_of"], "2026-10-13T01:00:00Z")
+        self.assertEqual(result["observation_dates"], {self.SOURCE: "2026-10-13T01:00:00Z"})
+        self.assertNotIn("2026-10-13T02:00:00Z", result["answer"])
+        self.assertEqual(result["confidence"], "medium")
+        self.assertTrue(result["escalate"])
+
+    async def test_actual_current_answer_path_uses_relationship_dates(self):
+        self.assertTrue(graph._current_state_question(self.QUESTION))
+        with mock.patch.object(graph, "_assemble_packet", new=mock.AsyncMock(return_value=self.packet())), \
+             mock.patch.object(graph, "_distill", new=mock.AsyncMock(return_value=self.draft())), \
+             mock.patch.object(graph, "_record_query"):
+            result = await graph._graph_answer_impl(self.QUESTION)
+        self.assertEqual(result["as_of"], "2026-10-13T01:00:00Z")
+        self.assertNotIn("2026-10-13T02:00:00Z", result["answer"])
+
+    def test_temporal_eligibility_still_rejects_obsolete_role_support(self):
+        old = "2026-10-01-010000-tokenbook-role-and-hold"
+        notes = {old: self.ROLE + " " + self.HOLD, self.UNRELATED: "TokenBook uses a local server."}
+        result, _, _ = graph._validate_distilled_answer(self.draft([old, self.UNRELATED]), self.packet(notes), self.QUESTION)
+        self.assertIsNone(result["answer"])
+        self.assertTrue(result["escalate"])
+
+    def test_current_role_and_hold_can_have_separate_supporting_dates(self):
+        hold_source = "2026-10-13-013000-tokenbook-hold"
+        notes = {self.SOURCE: self.ROLE + " TokenBook has a service.", hold_source: self.HOLD,
+                 self.UNRELATED: "TokenBook uses a local server."}
+        result, _, _ = graph._validate_distilled_answer(self.draft(list(notes)), self.packet(notes), self.QUESTION)
+        self.assertEqual(result["observation_dates"], {
+            self.SOURCE: "2026-10-13T01:00:00Z", hold_source: "2026-10-13T01:30:00Z",
+        })
+        self.assertEqual(result["as_of"], "2026-10-13T01:30:00Z")
+        self.assertNotIn("2026-10-13T02:00:00Z", result["answer"])
