@@ -342,8 +342,20 @@ def _subject_evidence_packet(packet: dict, subjects: list[str]) -> dict:
         return any(_mentions_subject(str(text or ""), subject) for subject in subjects)
 
     excerpt = packet.get("source_excerpt") or {}
+    # Metadata cannot support an answer, but it can show that readable
+    # evidence is stale. Preserve matching unhydrated hits separately, so a
+    # new candidate cannot disappear and make an older fact look current.
+    candidates = {}
+    for hit in [*(packet.get("temporal_candidates") or []), *(packet.get("semantic_notes") or [])]:
+        if not str(hit.get("content") or "").strip() and hit.get("relevant", True) and relevant(
+            str(hit.get("name") or "") + " " + str(hit.get("description") or "")
+        ):
+            name = str(hit.get("name") or "")
+            if name:
+                candidates[name] = {"name": name, "description": str(hit.get("description") or "")}
     return {
         **packet,
+        "temporal_candidates": list(candidates.values()),
         "facts": [fact for fact in packet.get("facts") or [] if relevant(fact.get("fact"))],
         # Entity summaries have no source-level citation in this packet.
         "entities": [],
@@ -541,6 +553,13 @@ def _temporal_context(packet: dict) -> dict:
         slug = str(hit.get("name") or "")
         if _source_time(slug) and hit.get("relevant", True):
             dated[slug] = _source_time(slug)
+    # Subject-matching labels only veto old evidence. They never enter
+    # _source_texts, provenance, or the readable packet sent to the model.
+    for hit in packet.get("temporal_candidates") or []:
+        slug = str(hit.get("name") or "")
+        when = _source_time(slug)
+        if when:
+            dated[slug] = when
     newest = max(dated.values()) if dated else None
     eligible = sorted(
         slug for slug, when in dated.items()
@@ -1016,7 +1035,9 @@ async def _graph_answer_impl(question: str, is_test: bool = False) -> dict:
         packet = _subject_evidence_packet(packet, subjects)
         if current_state:
             packet["temporal_context"] = _temporal_context(packet)
-        distill_packet = _current_evidence_packet(packet) if current_state else packet
+        distill_packet = _current_evidence_packet(packet) if current_state else {
+            key: value for key, value in packet.items() if key != "temporal_candidates"
+        }
         packet_json = json.dumps(distill_packet, ensure_ascii=False)
         packet_tokens_est = len(packet_json) // 4
         if (subjects and _subject_support_missing(packet, subjects)) or (

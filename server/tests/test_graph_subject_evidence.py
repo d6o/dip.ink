@@ -153,3 +153,84 @@ class SemanticHydrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("TokenBridge", text)
         self.assertNotIn("corridabrasil", text)
         self.assertEqual(result["sources"], [NOTE])
+
+
+class SubjectTemporalVetoTests(unittest.IsolatedAsyncioTestCase):
+    OLD = "2026-10-01-120000-tokenbook-deployment"
+    NEW = "2026-10-13-120000-tokenbook-update"
+    QUERY = "What is the current TokenBook deployment version?"
+
+    def evidence(self, candidate=None):
+        return {
+            "facts": [{"source_slug": self.OLD, "current": True, "fact": "TokenBook uses v1.0.0."}],
+            "entities": [], "source_excerpt": None,
+            "semantic_notes": [candidate if candidate is not None else {"name": self.NEW, "relevant": True}],
+        }
+
+    def scoped(self, candidate=None):
+        return graph._subject_evidence_packet(self.evidence(candidate), ["tokenbook"])
+
+    def test_matching_unhydrated_candidate_only_vetoes_old_evidence(self):
+        scoped = self.scoped()
+        temporal = graph._temporal_context(scoped)
+        self.assertEqual(temporal["newest_evidence_at"], "2026-10-13T12:00:00Z")
+        self.assertEqual(temporal["eligible_sources"], [])
+        self.assertNotIn(self.NEW, graph._source_texts(scoped))
+        self.assertNotIn(self.NEW, graph._readable_source_texts(scoped))
+        self.assertNotIn(self.NEW, graph._allowed_provenance(scoped))
+        self.assertEqual(scoped, graph._subject_evidence_packet(scoped, ["tokenbook"]))
+        scoped["temporal_context"] = temporal
+        distilled = graph._current_evidence_packet(scoped)
+        self.assertNotIn("temporal_candidates", distilled)
+        self.assertEqual(distilled["semantic_notes"], [])
+        self.assertEqual(distilled["facts"], [])
+
+    async def test_actual_current_answer_abstains_before_distillation(self):
+        with mock.patch.object(graph, "_assemble_packet", new=mock.AsyncMock(return_value=self.evidence())), \
+             mock.patch.object(graph, "_distill", new=mock.AsyncMock()) as distill, \
+             mock.patch.object(graph, "_record_query"):
+            result = await graph._graph_answer_impl(self.QUERY)
+        self.assertIsNone(result["answer"])
+        self.assertEqual(result["confidence"], "not_found")
+        self.assertTrue(result["escalate"])
+        distill.assert_not_awaited()
+
+    def test_description_match_without_body_remains_a_veto(self):
+        scoped = self.scoped({"name": "2026-10-13-120000-runtime-update", "description": "TokenBook changed", "content": "  "})
+        self.assertEqual(graph._temporal_context(scoped)["eligible_sources"], [])
+
+    def test_unrelated_newer_candidate_does_not_veto_subject_evidence(self):
+        for candidate in (
+            {"name": "2026-10-13-120000-tokenbridge-update", "description": "TokenBridge changed"},
+            {"name": "2026-10-13-120000-tokenbookish-update"},
+            {"name": self.NEW, "relevant": False},
+        ):
+            with self.subTest(candidate=candidate):
+                self.assertEqual(graph._temporal_context(self.scoped(candidate))["eligible_sources"], [self.OLD])
+
+    def test_readable_newer_candidate_supports_current_evidence(self):
+        scoped = self.scoped({"name": self.NEW, "content": "TokenBook now uses v1.0.1."})
+        self.assertEqual(graph._temporal_context(scoped)["eligible_sources"], [self.NEW])
+
+    async def test_superseded_history_survives_newer_metadata(self):
+        p = self.evidence()
+        p["facts"][0]["current"] = False
+        parsed = {"answer": "TokenBook used v1.0.0 on October 1.", "confidence": "medium",
+                  "sources": [self.OLD], "escalate": False}
+        with mock.patch.object(graph, "_assemble_packet", new=mock.AsyncMock(return_value=p)), \
+             mock.patch.object(graph, "_distill", new=mock.AsyncMock(return_value=parsed)) as distill, \
+             mock.patch.object(graph, "_record_query"):
+            result = await graph._graph_answer_impl("What version did TokenBook use on October 1, 2026?")
+        self.assertEqual(result["answer"], parsed["answer"])
+        distill.assert_awaited_once()
+        self.assertNotIn("temporal_candidates", distill.call_args.args[1])
+        self.assertNotIn(self.NEW, distill.call_args.args[1])
+
+    async def test_blank_ordinary_body_does_not_become_readable_support(self):
+        with mock.patch.object(graph, "FUSION", True), \
+             mock.patch.object(wiki.idx, "search", return_value=[{"name": self.NEW, "score": .7}]), \
+             mock.patch.object(wiki.idx, "get", return_value={"body": "   \n"}):
+            hits = await graph._wiki_semantic_hits(QUESTION, 8, answer_evidence=True)
+        self.assertNotIn("content", hits[0])
+        scoped = self.scoped(hits[0])
+        self.assertEqual(graph._temporal_context(scoped)["eligible_sources"], [])

@@ -80,6 +80,7 @@ Optional [indexed vector retrieval](VECTOR_RETRIEVAL.md) accelerates graph reads
   Explicit mixed-case product names, such as TokenBook and HookFork, constrain the evidence before distillation.
   Every cited source must contain readable text about a named subject. Similar service names do not count.
   Missing subject evidence produces `not_found` with escalation. This is a conservative lexical check, not a general entailment proof.
+  Subject-matching metadata without a body remains a freshness veto for current-state questions. It cannot support an answer or a citation.
 - **Distiller** (`graph_answer`): one plain chat completion, temperature 0,
   answering **only from the packet** — invented provenance is discarded, and
   unsupported answers return `not_found` + `escalate` (the no-hallucination
