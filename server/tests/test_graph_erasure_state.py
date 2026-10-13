@@ -240,3 +240,65 @@ class ScopedConflictAndPluralExcerptTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('Shared archives remain', result['answer'])
         self.assertEqual(result['confidence'], 'medium')
         self.assertTrue(result['escalate'])
+
+
+class BoundedRemovalDatesAndTicketScopeTests(unittest.TestCase):
+    DATE = '2026-10-13-120000-copy-removal-receipt'
+    OTHER = '2026-10-13-130000-other-copy-state'
+
+    def validate(self, question, answer, notes):
+        p = {'facts': [], 'entities': [], 'source_excerpt': None,
+             'semantic_notes': [{'name': key, 'content': text} for key, text in notes.items()]}
+        return graph._validate_distilled_answer({
+            'answer': answer, 'confidence': 'high', 'sources': list(notes), 'escalate': False,
+        }, p, question)
+
+    def test_exact_counted_deletion_has_its_own_observation_date(self):
+        text = 'k3s#23 deleted two dedicated backup copies.'
+        result, _, _ = self.validate('What is the status of dedicated backup removal k3s#23?', text,
+                                      {self.DATE: text})
+        self.assertIsNotNone(result['answer'])
+        self.assertEqual(result['observation_dates'], {self.DATE: '2026-10-13T12:00:00Z'})
+        self.assertIn(text, result['answer'])
+        self.assertTrue(result['escalate'])
+
+    def test_exact_serving_history_is_not_total_retained_copy_erasure(self):
+        text = 'k3s#10 removed serving targets, not retained copies.'
+        result, _, _ = self.validate('What is the status of backup serving-target removal k3s#10?', text,
+                                      {self.DATE: text})
+        self.assertIsNotNone(result['answer'])
+        self.assertEqual(result['observation_dates'], {self.DATE: '2026-10-13T12:00:00Z'})
+
+    def test_another_ticket_retention_does_not_veto_supported_absence(self):
+        text = 'k3s#23: no shared archives remain.'
+        other = 'k3s#99: shared archives remain.'
+        self.assertIsNone(qualifier_problem('What is the status of shared archive cleanup k3s#23?', text,
+                                            {self.DATE: text, self.OTHER: other}))
+        result, _, _ = self.validate('What is the status of shared archive cleanup k3s#23?', text,
+                                      {self.DATE: text, self.OTHER: other})
+        self.assertIsNotNone(result['answer'])
+        self.assertEqual(result['observation_dates'], {self.DATE: '2026-10-13T12:00:00Z'})
+
+    def test_undated_absence_cannot_borrow_other_ticket_retention_date(self):
+        text = 'k3s#23: no shared archives remain.'
+        result, _, _ = self.validate('What is the status of shared archive cleanup k3s#23?', text,
+                                    {'CleanupNote': text, self.OTHER: 'k3s#99: shared archives remain.'})
+        self.assertIsNone(result['answer'])
+
+    def test_undated_absence_cannot_borrow_other_ticket_absence_date(self):
+        text = 'k3s#23: no shared archives remain.'
+        result, _, _ = self.validate('What is the status of shared archive cleanup k3s#23?', text,
+                                    {'CleanupNote': text, self.OTHER: 'k3s#99: no dedicated backups remain.'})
+        self.assertIsNone(result['answer'])
+
+    def test_counted_result_is_not_permission_to_change_the_count(self):
+        result, _, _ = self.validate('What is the status of dedicated backup removal k3s#23?',
+                                    'k3s#23 deleted three dedicated backup copies.',
+                                    {self.DATE: 'k3s#23 deleted two dedicated backup copies.'})
+        self.assertIsNone(result['answer'])
+
+    def test_source_instruction_does_not_date_a_bounded_result(self):
+        text = 'k3s#23 must delete two dedicated backup copies.'
+        result, _, _ = self.validate('What is the status of dedicated backup removal k3s#23?',
+                                    'k3s#23 deleted two dedicated backup copies.', {self.DATE: text})
+        self.assertIsNone(result['answer'])

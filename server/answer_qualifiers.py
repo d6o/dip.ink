@@ -81,6 +81,20 @@ def _copy_objects(clause: str) -> set[tuple[str, tuple[str, ...]]]:
     return objects
 
 
+def _ticket_scope(question: str, text: str) -> set[str]:
+    ids = set(re.findall(r"\b[a-z0-9._-]+#\d+\b", text.casefold()))
+    if not ids and re.search(r"\bstatus\b", question, re.I):
+        status_scope = re.split(r"\bstatus\b", question, flags=re.I)[-1]
+        ids = set(re.findall(r"\b[a-z0-9._-]+#\d+\b", status_scope.casefold()))
+    return ids
+
+
+def _different_explicit_tickets(question: str, claim: str, evidence: str) -> bool:
+    claimed = _ticket_scope(question, claim)
+    recorded = _ticket_scope("", evidence)
+    return bool(claimed and recorded and claimed.isdisjoint(recorded))
+
+
 def _copy_conflict_overlaps(claim: str, conflict: str) -> bool:
     """Only contrary observations of a compatible copy object can veto it.
 
@@ -155,6 +169,7 @@ def _erasure_problem(question: str, answer: str, evidence: list[str]) -> bool:
                    for source in observations):
             return True
     return any(_erasure_conflict(clause) and _copy_conflict_overlaps(claim, clause)
+               and not _different_explicit_tickets(question, claim, clause)
                for claim in claims for clause in evidence)
 
 
@@ -351,14 +366,41 @@ def operational_supporting_sources(question: str, answer: str, source_texts: dic
     return result
 
 
-def copy_state_supporting_sources(question: str, answer: str, source_texts: dict[str, str]) -> list[str]:
-    """Citations with observed absence or explicit retained/zero-removal state.
+def _bounded_removal_statement(clause: str) -> bool:
+    """Recognize a counted or serving-target result, not whole-copy absence.
 
-    Instructions and serving-target results alone do not provide a date for
-    retained-copy status. The return value is evidence identity, not permission.
+    This supplies a date only when the exact statement appears in a cited
+    body. It does not infer facts from a source plan or expand copy scope.
     """
-    return [source for source, text in source_texts.items()
-            if not _erasure_problem(question, answer, _clauses(text)) and any(
-                _completed_erasure(clause) or (_erasure_conflict(clause) and not _ERASURE_INTENT.search(clause))
-                for clause in _clauses(text)
-            )]
+    if any(match.group(0).casefold() not in ('not', 'never') for match in _ERASURE_INTENT.finditer(clause)):
+        return False
+    if not re.search(r"\b(?:deleted|removed|erased)\b", clause, re.I):
+        return False
+    counted = re.search(r"\b(?:[1-9]\d*|one|two|three|four|five|some|several)\s+"
+                        r"(?:(?:dedicated|shared|retained|old|local|new|backup)\s+){0,4}"
+                        + _COPY + r"\b", clause, re.I)
+    return bool(counted or re.search(r"\bserving[- ]targets?\b", clause, re.I))
+
+
+def copy_state_supporting_sources(question: str, answer: str, source_texts: dict[str, str]) -> list[str]:
+    """Dates for observed copy state or exact bounded removal statements.
+
+    A bounded serving result can be described as history, but never supports
+    whole-copy erasure. Another ticket's observation cannot supply the date.
+    """
+    answer_clauses = _clauses(answer)
+    normalized = {clause.casefold() for clause in answer_clauses}
+    supporters = []
+    for source, text in source_texts.items():
+        evidence = _clauses(text)
+        if _erasure_problem(question, answer, evidence):
+            continue
+        for clause in evidence:
+            if any(_different_explicit_tickets(question, claim, clause) for claim in answer_clauses):
+                continue
+            exact_bounded = clause.casefold() in normalized and _bounded_removal_statement(clause)
+            observed = _completed_erasure(clause) or (_erasure_conflict(clause) and not _ERASURE_INTENT.search(clause))
+            if exact_bounded or observed:
+                supporters.append(source)
+                break
+    return supporters
