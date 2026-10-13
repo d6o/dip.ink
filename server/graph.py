@@ -1111,7 +1111,17 @@ def _validate_distilled_answer(
 
     readable = _readable_source_texts(packet)
     cited_texts = {source: readable.get(source, "") for source in cited_sources}
-    qualifier_error = credential_method_problem(question, answer, _credential_cited_texts(packet, cited_sources)) or qualifier_problem(
+    credential_texts = _credential_cited_texts(packet, cited_sources)
+    if credential_services(question) and "credential_validation_texts" in packet and any(
+        not text.strip() for text in credential_texts.values()
+    ):
+        # One complete citation cannot hide an unavailable contrary source.
+        # Check all raw citations, including those beyond the display cap.
+        return {
+            "answer": None, "confidence": "not_found", "sources": [], "escalate": True,
+            "superseded_note": "Complete cited source text is unavailable for credential-method validation.",
+        }, True, "qualifier_mismatch"
+    qualifier_error = credential_method_problem(question, answer, credential_texts) or qualifier_problem(
         question, answer, cited_texts,
     )
     if qualifier_error:

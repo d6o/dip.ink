@@ -142,3 +142,58 @@ class FullCredentialSourceContradictionTests(unittest.IsolatedAsyncioTestCase):
         p['temporal_context']=graph._temporal_context(p)
         text = str(graph._current_evidence_packet(p))
         self.assertNotIn('credential_validation_texts',text)
+
+
+class EveryCitedCredentialBodyRequiredTests(unittest.IsolatedAsyncioTestCase):
+    POSITIVE = '`vault-reader` is the supported installed live exact-User-Agent method for Infisical credential reads.'
+    DRAFT = 'Use `vault-reader` for live Infisical credential reads.'
+
+    def packet(self, count=2):
+        sources = [f'2026-10-13-12000{i}-infisical-method' for i in range(count)]
+        p = {'facts': [], 'entities': [], 'source_excerpt': None,
+             'semantic_notes': [{'name': source, 'content': self.POSITIVE} for source in sources],
+             'credential_validation_texts': {source: self.POSITIVE for source in sources}}
+        return sources,p
+
+    async def answer(self,p,sources,question=QUESTION):
+        with mock.patch.object(graph,'_assemble_packet',new=mock.AsyncMock(return_value=p)), \
+             mock.patch.object(graph,'_distill',new=mock.AsyncMock(return_value={
+                 'answer':self.DRAFT,'confidence':'high','sources':sources,'escalate':False,
+             })), mock.patch.object(graph,'_record_query'):
+            return await graph._graph_answer_impl(question)
+
+    async def test_one_complete_body_cannot_admit_another_missing_body(self):
+        sources,p=self.packet()
+        p['credential_validation_texts'][sources[1]]=''
+        result=await self.answer(p,sources)
+        self.assertIsNone(result['answer'])
+        self.assertEqual(result['confidence'],'not_found')
+        self.assertTrue(result['escalate'])
+        self.assertIn('Complete cited source text is unavailable',result['superseded_note'])
+
+    async def test_sixth_missing_body_is_checked_in_ordinary_answer_path(self):
+        sources,p=self.packet(6)
+        p['credential_validation_texts'][sources[-1]]=''
+        result=await self.answer(p,sources,'What approved exact-User-Agent method supports Infisical credential reads?')
+        self.assertIsNone(result['answer'])
+        self.assertTrue(result['escalate'])
+
+    async def test_whitespace_full_body_is_missing(self):
+        sources,p=self.packet()
+        p['credential_validation_texts'][sources[1]]='  \n '
+        result=await self.answer(p,sources)
+        self.assertIsNone(result['answer'])
+
+    async def test_uncited_missing_candidate_does_not_block_complete_citation(self):
+        sources,p=self.packet()
+        p['credential_validation_texts'][sources[1]]=''
+        result=await self.answer(p,[sources[0]])
+        self.assertIsNotNone(result['answer'])
+        self.assertTrue(result['escalate'])
+
+    async def test_all_complete_bodies_preserve_positive_control(self):
+        sources,p=self.packet()
+        result=await self.answer(p,sources)
+        self.assertIsNotNone(result['answer'])
+        self.assertEqual(result['confidence'],'medium')
+        self.assertTrue(result['escalate'])
