@@ -234,3 +234,65 @@ class SubjectTemporalVetoTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("content", hits[0])
         scoped = self.scoped(hits[0])
         self.assertEqual(graph._temporal_context(scoped)["eligible_sources"], [])
+
+
+class CitationCapAndUnicodeTests(unittest.IsolatedAsyncioTestCase):
+    def evidence(self):
+        names = [f"2026-10-13-12000{i}-tokenbook-note" for i in range(6)]
+        p = {
+            "facts": [{"source_slug": name, "current": True, "fact": "TokenBook uses its own inference deployment."}
+                      for name in names],
+            "entities": [], "source_excerpt": None, "semantic_notes": [],
+        }
+        return names, p
+
+    def test_unicode_word_neighbors_are_not_exact_subject_matches(self):
+        for text in ("éTokenBook", "TokenBooké", "中TokenBook", "TokenBook中", "1TokenBook", "TokenBook_name"):
+            with self.subTest(text=text):
+                self.assertFalse(graph._mentions_subject(text, "tokenbook"))
+        for text in ("TokenBook", "(TokenBook)", "TokenBook’s", "Le service TokenBook fonctionne", "中文。TokenBook。"):
+            with self.subTest(text=text):
+                self.assertTrue(graph._mentions_subject(text, "tokenbook"))
+
+    async def test_sixth_unrelated_citation_is_rejected_on_normal_answer_path(self):
+        names, p = self.evidence()
+        p["facts"].append({"source_slug": BRIDGE, "current": True, "fact": "TokenBridge uses claude-max."})
+        parsed = {"answer": "TokenBook uses claude-max.", "confidence": "high",
+                  "sources": names[:5] + [BRIDGE], "escalate": False}
+        with mock.patch.object(graph, "_assemble_packet", new=mock.AsyncMock(return_value=p)), \
+             mock.patch.object(graph, "_distill", new=mock.AsyncMock(return_value=parsed)), \
+             mock.patch.object(graph, "_record_query"):
+            result = await graph._graph_answer_impl(QUESTION)
+        self.assertIsNone(result["answer"])
+        self.assertEqual(result["confidence"], "not_found")
+        self.assertTrue(result["escalate"])
+
+    def test_sixth_citation_is_checked_independent_of_prior_packet_filter(self):
+        names, p = self.evidence()
+        p["facts"].append({"source_slug": BRIDGE, "current": True, "fact": "TokenBridge uses claude-max."})
+        for extra in (BRIDGE, "invented-source", CREDENTIAL):
+            with self.subTest(extra=extra):
+                result, _, action = graph._validate_distilled_answer({
+                    "answer": "TokenBook uses claude-max.", "confidence": "high",
+                    "sources": names[:5] + [extra], "escalate": False,
+                }, p, QUESTION)
+                self.assertEqual(action, "subject_mismatch")
+                self.assertIsNone(result["answer"])
+
+    def test_all_valid_citations_still_have_five_source_display_cap(self):
+        names, p = self.evidence()
+        result, _, action = graph._validate_distilled_answer({
+            "answer": "TokenBook uses its own inference deployment.", "confidence": "high",
+            "sources": names, "escalate": False,
+        }, p, QUESTION)
+        self.assertEqual(action, "accepted")
+        self.assertEqual(result["sources"], names[:5])
+
+    def test_unicode_attached_word_cannot_supply_citation_support(self):
+        names, p = self.evidence()
+        p["facts"] = [{"source_slug": names[0], "current": True, "fact": "éTokenBook uses claude-max."}]
+        result, _, action = graph._validate_distilled_answer({
+            "answer": "TokenBook uses claude-max.", "confidence": "high", "sources": [names[0]],
+        }, p, QUESTION)
+        self.assertEqual(action, "subject_mismatch")
+        self.assertIsNone(result["answer"])

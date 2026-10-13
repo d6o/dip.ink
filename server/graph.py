@@ -325,7 +325,7 @@ def _answer_subjects(question: str) -> list[str]:
 
 
 def _mentions_subject(text: str, subject: str) -> bool:
-    return bool(re.search(r"(?<![a-z0-9_])" + re.escape(subject) + r"(?![a-z0-9_])", text.casefold()))
+    return bool(re.search(r"(?<!\w)" + re.escape(subject) + r"(?!\w)", text.casefold()))
 
 
 def _subject_evidence_packet(packet: dict, subjects: list[str]) -> dict:
@@ -888,6 +888,9 @@ def _validate_distilled_answer(
     raw_sources = parsed.get("sources") or []
     if not isinstance(raw_sources, list):
         raw_sources = [raw_sources]
+    # Validate every citation, not just the five returned to the caller.
+    # Otherwise a sixth off-subject source escapes the subject guard.
+    cited_sources = list(dict.fromkeys(str(source or "").strip() for source in raw_sources if str(source or "").strip()))
     allowed = _allowed_provenance(packet)
     sources: list[str] = []
     invented = False
@@ -898,10 +901,8 @@ def _validate_distilled_answer(
         if slug not in allowed:
             invented = True
             continue
-        if slug not in sources:
+        if slug not in sources and len(sources) < 5:
             sources.append(slug)
-        if len(sources) >= 5:
-            break
 
     # No non-null answer can survive without packet provenance.
     if not sources:
@@ -913,7 +914,7 @@ def _validate_distilled_answer(
         }, False, "rejected"
 
     subjects = _answer_subjects(question)
-    if subjects and _subject_support_missing(_subject_evidence_packet(packet, subjects), subjects, sources):
+    if subjects and _subject_support_missing(_subject_evidence_packet(packet, subjects), subjects, cited_sources):
         return {
             "answer": None, "confidence": "not_found", "sources": [], "escalate": True,
             "superseded_note": "The cited text does not establish the named subject: " + ", ".join(subjects),
