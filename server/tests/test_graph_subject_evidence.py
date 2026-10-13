@@ -81,10 +81,10 @@ class SubjectGuardTests(unittest.TestCase):
         p["semantic_notes"][0]["content"] = BODY
         parsed = {"answer": "TokenBook uses its own llama.cpp deployment.",
                   "sources": [NOTE], "confidence": "high", "escalate": False}
-        result, _, _ = graph._validate_distilled_answer(parsed, p, QUESTION)
+        result, _, _ = graph._validate_distilled_answer(parsed, p, "What is the TokenBook inference deployment?")
         self.assertEqual(result["answer"], parsed["answer"])
         parsed["sources"].append(CREDENTIAL)
-        result, _, action = graph._validate_distilled_answer(parsed, p, QUESTION)
+        result, _, action = graph._validate_distilled_answer(parsed, p, "What is the TokenBook inference deployment?")
         self.assertIsNone(result["answer"])
         self.assertEqual(action, "subject_mismatch")
 
@@ -147,7 +147,7 @@ class SemanticHydrationTests(unittest.IsolatedAsyncioTestCase):
              mock.patch.object(graph, "_distill", new=mock.AsyncMock(return_value={
                  "answer": "TokenBook uses its own llama.cpp deployment.", "confidence": "high", "sources": [NOTE]
              })) as distill, mock.patch.object(graph, "_record_query"):
-            result = await graph._graph_answer_impl(QUESTION)
+            result = await graph._graph_answer_impl("What is the TokenBook inference deployment?")
         text = distill.call_args.args[1]
         self.assertIn("Qwen2.5", text)
         self.assertNotIn("TokenBridge", text)
@@ -284,7 +284,7 @@ class CitationCapAndUnicodeTests(unittest.IsolatedAsyncioTestCase):
         result, _, action = graph._validate_distilled_answer({
             "answer": "TokenBook uses its own inference deployment.", "confidence": "high",
             "sources": names, "escalate": False,
-        }, p, QUESTION)
+        }, p, "What is the TokenBook inference deployment?")
         self.assertEqual(action, "accepted")
         self.assertEqual(result["sources"], names[:5])
 

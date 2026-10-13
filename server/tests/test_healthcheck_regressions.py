@@ -10,6 +10,10 @@ os.environ.setdefault("OPENAI_API_KEY", "test-only")
 from loops import memory_healthcheck as hc  # noqa: E402
 
 WRONG = {
+    "dip.ink#11": {"answer": "TokenBook deploys Worker version 12345678-1234-1234-1234-123456789abc.",
+                   "confidence": "high", "sources": []},
+    "dip.ink#13": {"answer": "The current k3s project lead address is gpuhours.voa.sh/worker~session:123.",
+                   "confidence": "high", "sources": []},
     "dip.ink#10": {"answer": "TokenBook runs on tokenbridge.tokenbridge.svc.cluster.local:64963 with claude-max.",
                    "confidence": "high", "sources": []},
     "dip.ink#1": {"answer": "Memory v0.1.6; pi-runner v0.1.11", "confidence": "high", "sources": []},
@@ -21,6 +25,9 @@ WRONG = {
                   "confidence": "high", "sources": []},
 }
 RIGHT = {
+    "dip.ink#11": {"answer": "Recorded evidence: Worker version 12345678-1234-1234-1234-123456789abc.",
+                   "confidence": "medium", "sources": [], "escalate": True,
+                   "observation_dates": {"fixture": "2026-10-13T04:15:36Z"}},
     "dip.ink#7": {"answer": "Revocation pauses unresolved affected deliveries for owner review; terminal history stays.",
                   "confidence": "high", "sources": ["2026-10-11-092841-hookfork-claim-revocation-and-inactive-prices"]},
 }
@@ -43,6 +50,14 @@ class RegressionProbeTests(unittest.TestCase):
         self.assertEqual(len(failures), len(WRONG))
         for ticket in WRONG:
             self.assertTrue(any(ticket in f for f in failures), ticket)
+
+    def test_request_unit_confusion_is_detected(self):
+        failures = self.run_with({"dip.ink#10": {
+            "answer": "Request limits are defined by the contract: 10,000 input tokens per unit.",
+            "confidence": "high", "sources": [],
+        }})
+        self.assertEqual(len(failures), 1)
+        self.assertIn("dip.ink#10", failures[0])
 
     def test_abstention_and_correct_answers_pass(self):
         self.assertEqual(self.run_with({}), [])

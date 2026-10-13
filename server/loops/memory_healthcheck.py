@@ -101,7 +101,14 @@ REGRESSION_PROBES = (
       r"(?i)does not affect[^.]*unresolved")),
     ("dip.ink#10",
      "What are the TokenBook self-hosted inference deployment, model, request limits, and protected credential location?",
-     (r"(?i)tokenbridge", r"(?i)corridabrasil-listmonk", r"(?i)claude-max")),
+     (r"(?i)tokenbridge", r"(?i)corridabrasil-listmonk", r"(?i)claude-max",
+      r"(?i)request (?:limits|caps) (?:are|is|:) [^.]*per[- ]unit")),
+    ("dip.ink#11",
+     "What is the TokenBook deployment procedure at tokenbook.voa.sh, including its Cloudflare Worker and self-hosted inference hostname?",
+     ()),
+    ("dip.ink#13",
+     "What is the current k3s project lead address and what rollout or workload admission hold affects GPUHours, TokenBook, or new prototype deployments on October 13, 2026?",
+     (r"(?i)k3s project lead address is\s+[`\"]?gpuhours\.voa\.sh/",)),
     ("dip.ink#8",
      "What did Diego authorize for the scheduled October 11 retirement of batomon.com's old home k3s storage, "
      "and where is the approval record?",
@@ -429,7 +436,11 @@ def check_regressions(base: str) -> None:
             continue
         text = " ".join([str(ans.get("answer") or ""), *map(str, ans.get("sources") or [])])
         hits = [pattern for pattern in forbidden if re.search(pattern, text)]
-        if hits:
+        if ticket == "dip.ink#11" and ans.get("answer") and re.search(
+            r"\bv\d+(?:\.\d+){1,3}\b|\b[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\b", str(ans["answer"]), re.I
+        ) and not ((ans.get("observation_dates") or ans.get("as_of")) and ans.get("escalate")):
+            failures.append("regression dip.ink#11: deployment identifier lacks dated qualification")
+        elif hits:
             failures.append(f"regression {ticket}: a known wrong answer came back ({len(hits)} pattern(s))")
         else:
             print(f"[D] regression {ticket} OK ({ans.get('confidence')})")

@@ -37,6 +37,7 @@ from starlette.routing import Route
 # Reuse the ingest client wiring (Graphiti extraction LLM, OpenAI embedder,
 # the roomy Neo4j pool).
 from chat_fallback import OrderedModelFallback, is_recoverable_provider_error, parse_model_ladder
+from answer_qualifiers import qualifier_problem, qualifier_requirements
 from ingest import DEFAULT_GROUP_ID, build_graphiti
 from vector_search import install_read_search
 from graphiti_core.search.search_config_recipes import COMBINED_HYBRID_SEARCH_RRF
@@ -654,6 +655,7 @@ def _current_evidence_packet(packet: dict) -> dict:
         ],
         "temporal_context": temporal,
         **({"subject_context": packet["subject_context"]} if packet.get("subject_context") else {}),
+        **({"required_qualifiers": packet["required_qualifiers"]} if packet.get("required_qualifiers") else {}),
     }
 
 
@@ -1007,6 +1009,16 @@ def _validate_distilled_answer(
             )[:500],
         }, True, "weak_only"
 
+    readable = _readable_source_texts(packet)
+    qualifier_error = qualifier_problem(
+        question, answer, {source: readable.get(source, "") for source in cited_sources},
+    )
+    if qualifier_error:
+        return {
+            "answer": None, "confidence": "not_found", "sources": [], "escalate": True,
+            "superseded_note": qualifier_error,
+        }, True, "qualifier_mismatch"
+
     project_problem = question and _project_mismatch(question, answer, sources, packet)
     if project_problem:
         return {
@@ -1104,6 +1116,9 @@ async def _graph_answer_impl(question: str, is_test: bool = False) -> dict:
     else:
         subjects = _answer_subjects(q)
         packet = _subject_evidence_packet(packet, subjects)
+        required_qualifiers = qualifier_requirements(q)
+        if required_qualifiers:
+            packet["required_qualifiers"] = list(required_qualifiers)
         if current_state:
             packet["temporal_context"] = _temporal_context(packet)
         distill_packet = _current_evidence_packet(packet) if current_state else {

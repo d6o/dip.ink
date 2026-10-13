@@ -111,7 +111,7 @@ def _address_key(match: re.Match) -> tuple[str, str, str, str]:
 
 def _lead_bindings(text: str, project: str) -> set[tuple[str, str, str, str]]:
     bindings = set()
-    role = rf"(?:the\s+)?{re.escape(project)}(?:\s+project)?\s+lead(?:'s)?(?:\s+(?:native\s+|peer\s+)?address)?"
+    role = rf"(?:the\s+)?(?:current\s+|recorded\s+)?{re.escape(project)}(?:\s+project)?\s+lead(?:'s)?(?:\s+(?:native\s+|peer\s+)?address)?"
     for clause in _clauses(text):
         if _UNCERTAIN.search(clause):
             continue

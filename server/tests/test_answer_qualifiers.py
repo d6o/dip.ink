@@ -125,6 +125,9 @@ class LeadTests(unittest.TestCase):
 
     def test_valid_explicit_binding(self):
         self.assertIsNone(self.problem(LEAD, LEAD))
+        current = LEAD.replace("The k3s", "The current k3s")
+        self.assertIsNone(self.problem(current, LEAD))
+        self.assertIsNone(self.problem(current, current))
         self.assertIsNone(self.problem(ADDRESS, LEAD))
         self.assertIsNone(self.problem(LEAD, f"{ADDRESS} is the k3s project lead address."))
 
