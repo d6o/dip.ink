@@ -69,6 +69,17 @@ class ErasureQualifierTests(unittest.TestCase):
             BOUNDARY: 'k3s#10: verified no backups remain.',
         }), ERASURE_REASON)
 
+    def test_another_named_product_cannot_supply_positive_absence(self):
+        self.assertEqual(qualifier_problem(
+            "What is the TargetApp backup cleanup status?", "TargetApp: no backups remain.",
+            {"fixture": "OtherApp: verified no backups remain."},
+        ), ERASURE_REASON)
+
+    def test_unidentified_completion_cannot_borrow_another_cleanup_ticket(self):
+        self.assertEqual(qualifier_problem(QUERY, "No backups remain.", {
+            BOUNDARY: "k3s#10: verified no backups remain.",
+        }), ERASURE_REASON)
+
     def test_generic_timeless_answers_unchanged(self):
         self.assertIsNone(qualifier_problem('What is a backup?', 'A backup is a retained copy.', {}))
 

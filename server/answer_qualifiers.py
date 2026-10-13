@@ -82,8 +82,15 @@ def _erasure_problem(question: str, answer: str, evidence: list[str]) -> bool:
     # Do not transfer a narrow service observation to another ticket/object.
     for claim in claims:
         ids = re.findall(r"\b[a-z0-9._-]+#\d+\b", claim, re.I)
-        if ids and not any(all(_mentions(source, item) for item in ids) for source in observations):
-            return True
+        # A nameless completion claim must not borrow another task's result.
+        # For a compound query, the status part names the cleanup task.
+        status_scope = re.split(r"\bstatus\b", question, flags=re.I)[-1]
+        if not ids and re.search(r"\bstatus\b", question, re.I):
+            ids = re.findall(r"\b[a-z0-9._-]+#\d+\b", status_scope, re.I)
+        subjects = list(dict.fromkeys(_subjects(question) + _subjects(claim)))
+        if ids or subjects:
+            if not any(all(_mentions(source, item) for item in ids + subjects) for source in observations):
+                return True
     return any(_erasure_conflict(clause) for clause in evidence)
 
 
