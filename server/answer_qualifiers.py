@@ -33,7 +33,7 @@ _COPY_RE = re.compile(r"(?<!\w)" + _COPY + r"(?!\w)", re.I)
 _ERASURE_INTENT = re.compile(
     r"\b(?:should|must|shall|would|could|may|might|requested?|instruct(?:ion|ed)?|"
     r"desired|intended|intend|planned?|proposed|goal|requires?|requirement|prohibits?|"
-    r"permission|authorized?|unverified|unconfirmed)\b|\b(?:do not|not verified)\b", re.I
+    r"permission|authorized?|unverified|unconfirmed|not|never)\b|\b(?:do not|not verified)\b", re.I
 )
 _ERASURE_NEGATIVE = re.compile(
     r"\b(?:zero|0|no)\s+(?:(?:dedicated|backup|retained|shared)\s+){0,3}"
@@ -44,10 +44,11 @@ _ERASURE_NEGATIVE = re.compile(
     re.I,
 )
 _ERASURE_ABSENCE = re.compile(
-    r"\b(?:no|zero|0)\s+(?:(?:old|retained|shared|remaining|dedicated)\s+){0,4}"
+    r"\b(?:no|zero|0)\s+(?:(?:old|retained|shared|remaining|dedicated|local|new)\s+){0,4}"
     + _COPY + r"\s+(?:(?:are|were|is|was|still)\s+)?(?:remain(?:ing|s)?|left|present|exist(?:s)?)\b"
-    r"|\b(?:all|every)\s+(?:(?:old|retained|shared|dedicated)\s+){0,4}"
+    r"|\b(?:all|every)\s+(?:(?:old|retained|shared|dedicated|local|new)\s+){0,4}"
     + _COPY + r"\s+(?:(?:are|were|have been|was|is)\s+)?(?:removed|deleted|erased|gone)\b"
+    r"|\b" + _COPY + r"\s+(?:are|were|have been|is|was|has been)\s+(?:gone|removed|deleted|erased)\b"
     r"|\b(?:backup|archive|copy)\s+(?:cleanup|removal|erasure)\s+(?:(?:is|was|has been)\s+)?complete(?:d)?\b",
     re.I,
 )
@@ -56,13 +57,48 @@ _ERASURE_ABSENCE = re.compile(
 def _erasure_conflict(clause: str) -> bool:
     # "No backups remain" is an absence statement, not positive retention.
     # Mask absence spans before testing for contrary observations.
+    if re.search(r"\b(?:zero|0|no)\s+(?:(?:dedicated|shared|retained|backup)\s+){0,3}"
+                 + _COPY + r"\s+(?:(?:were|are|have been|was|is)\s+)?(?:removed|deleted|erased)\b", clause, re.I):
+        return True
     remainder = _ERASURE_ABSENCE.sub("", clause)
     return bool(_COPY_RE.search(remainder) and _ERASURE_NEGATIVE.search(remainder))
 
 
+_COPY_OBJECT_RE = re.compile(
+    r"(?<!\w)(?P<scope>(?:(?:dedicated|shared|retained|old|local|new|remaining)\s+)*)"
+    r"(?P<kind>backups?|archives?|copies|copy)(?!\w)", re.I
+)
+_SERVING_SCOPE = re.compile(r"\bserving[- ]targets?\b|\bsource (?:code|plan|retirement)\b|\bexecutable examples?\b", re.I)
+
+
+def _copy_objects(clause: str) -> set[tuple[str, tuple[str, ...]]]:
+    """Keep copy kind and explicit modifiers; do not infer broader scope."""
+    objects = set()
+    for match in _COPY_OBJECT_RE.finditer(clause):
+        kind = match['kind'].casefold()
+        kind = 'copy' if kind in ('copies', 'copy') else kind.removesuffix('s')
+        objects.add((kind, tuple(sorted(match['scope'].casefold().split()))))
+    return objects
+
+
+def _erasure_claims(text: str) -> list[str]:
+    claims = []
+    for clause in _clauses(text):
+        match = _ERASURE_ABSENCE.search(clause)
+        if not match or _ERASURE_INTENT.search(clause):
+            continue
+        # Direct predicates also match 'zero copies were removed'. That is
+        # explicitly no effect, not a positive completion claim.
+        prefix = clause[:match.start()]
+        if re.search(r"\b(?:zero|0|no)\s+(?:(?:dedicated|shared|retained)\s+){0,3}$", prefix, re.I):
+            continue
+        claims.append(clause)
+    return claims
+
+
 def _completed_erasure(clause: str) -> bool:
-    return bool(_ERASURE_ABSENCE.search(clause) and not _ERASURE_INTENT.search(clause)
-                and not _erasure_conflict(clause))
+    return bool(_erasure_claims(clause) and not _erasure_conflict(clause)
+                and not _SERVING_SCOPE.search(clause))
 
 
 def _erasure_problem(question: str, answer: str, evidence: list[str]) -> bool:
@@ -72,8 +108,7 @@ def _erasure_problem(question: str, answer: str, evidence: list[str]) -> bool:
     observation. An instruction, source retirement, or empty serving target
     does not establish it. Conflicting retention evidence fails closed.
     """
-    claims = [clause for clause in _clauses(answer) if _ERASURE_ABSENCE.search(clause)
-              and not _ERASURE_INTENT.search(clause)]
+    claims = _erasure_claims(answer)
     if not claims:
         return False
     observations = [clause for clause in evidence if _completed_erasure(clause)]
@@ -88,9 +123,13 @@ def _erasure_problem(question: str, answer: str, evidence: list[str]) -> bool:
         if not ids and re.search(r"\bstatus\b", question, re.I):
             ids = re.findall(r"\b[a-z0-9._-]+#\d+\b", status_scope, re.I)
         subjects = list(dict.fromkeys(_subjects(question) + _subjects(claim)))
-        if ids or subjects:
-            if not any(all(_mentions(source, item) for item in ids + subjects) for source in observations):
-                return True
+        objects = _copy_objects(claim)
+        if not objects or _SERVING_SCOPE.search(claim):
+            return True
+        if not any(objects == _copy_objects(source)
+                   and all(_mentions(source, item) for item in ids + subjects)
+                   for source in observations):
+            return True
     return any(_erasure_conflict(clause) for clause in evidence)
 
 
@@ -287,13 +326,14 @@ def operational_supporting_sources(question: str, answer: str, source_texts: dic
     return result
 
 
-def copy_state_supporting_sources(source_texts: dict[str, str]) -> list[str]:
+def copy_state_supporting_sources(question: str, answer: str, source_texts: dict[str, str]) -> list[str]:
     """Citations with observed absence or explicit retained/zero-removal state.
 
     Instructions and serving-target results alone do not provide a date for
     retained-copy status. The return value is evidence identity, not permission.
     """
-    return [source for source, text in source_texts.items() if any(
-        _completed_erasure(clause) or (_erasure_conflict(clause) and not _ERASURE_INTENT.search(clause))
-        for clause in _clauses(text)
-    )]
+    return [source for source, text in source_texts.items()
+            if not _erasure_problem(question, answer, _clauses(text)) and any(
+                _completed_erasure(clause) or (_erasure_conflict(clause) and not _ERASURE_INTENT.search(clause))
+                for clause in _clauses(text)
+            )]

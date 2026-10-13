@@ -130,3 +130,54 @@ class ErasureActualAnswerTests(unittest.IsolatedAsyncioTestCase):
             hits=await graph._wiki_semantic_hits(QUERY,8,answer_evidence=True)
         self.assertIn('Zero copies are removed', hits[0]['content'])
         self.assertLessEqual(len(hits[0]['content']),2500)
+
+
+class CopyObjectScopeTests(unittest.TestCase):
+    def test_dedicated_backups_do_not_establish_shared_archive_absence(self):
+        self.assertEqual(qualifier_problem('What is copy cleanup status?', 'No shared archives remain.',
+                         {'fixture': 'No dedicated backups remain.'}), ERASURE_REASON)
+
+    def test_serving_copy_removal_does_not_establish_archive_erasure(self):
+        self.assertEqual(qualifier_problem('What is archive cleanup status?', 'All shared archives were deleted.',
+                         {'fixture': 'All copies were deleted from the serving target.'}), ERASURE_REASON)
+
+    def test_same_kind_serving_target_restriction_still_cannot_prove_absence(self):
+        self.assertEqual(qualifier_problem('What is archive cleanup status?', 'All shared archives were deleted.',
+                         {'fixture': 'All shared archives were deleted from the serving target.'}), ERASURE_REASON)
+
+    def test_direct_gone_claim_cannot_use_removal_instruction(self):
+        self.assertEqual(qualifier_problem('What is retained copy status?', 'The retained copies are gone.',
+                         {'fixture': 'No retained copies should remain.'}), ERASURE_REASON)
+
+    def test_direct_gone_claim_with_matched_observation_passes(self):
+        text = 'The retained copies are gone.'
+        self.assertIsNone(qualifier_problem('What is retained copy status?', text, {'fixture': text}))
+
+    def test_conflicting_zero_receipt_cannot_be_masked_by_direct_predicate(self):
+        self.assertEqual(qualifier_problem('What is retained copy status?', 'The retained copies are gone.',
+                         {'fixture': 'The retained copies are gone. Zero copies were removed.'}), ERASURE_REASON)
+
+    def test_scope_modifiers_are_not_interchangeable(self):
+        for source, claim in (
+            ('No dedicated backups remain.', 'No backups remain.'),
+            ('All shared archives were deleted.', 'All retained archives were deleted.'),
+            ('No local copies remain.', 'No shared copies remain.'),
+        ):
+            with self.subTest(source=source, claim=claim):
+                self.assertEqual(qualifier_problem('What is copy removal status?', claim, {'fixture': source}), ERASURE_REASON)
+
+    def test_historical_serving_result_is_allowed_without_total_copy_claim(self):
+        text = 'The serving targets were deleted. Shared archives remain.'
+        self.assertIsNone(qualifier_problem('What happened to serving targets and archives?', text, {'fixture': text}))
+
+    def test_positive_erasure_date_must_come_from_matching_object_support(self):
+        undated = 'ArchivePage'
+        unrelated = '2026-10-13-020000-other-object'
+        p = {'facts': [], 'entities': [], 'source_excerpt': None,
+             'semantic_notes': [{'name': undated, 'content': 'No shared archives remain.'},
+                                {'name': unrelated, 'content': 'No dedicated backups remain.'}]}
+        result, _, action = graph._validate_distilled_answer({
+            'answer': 'No shared archives remain.', 'confidence': 'high', 'sources': [undated, unrelated],
+        }, p, 'What is the archive cleanup status?')
+        self.assertIsNone(result['answer'])
+        self.assertEqual(action, 'qualifier_mismatch')

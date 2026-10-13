@@ -493,7 +493,7 @@ def _snapshot_dates(question: str, answer: str, packet: dict, sources: list[str]
     if copy_state_query:
         dated_texts = {source: texts[source] for source in sources
                        if _source_time(source) and texts.get(source)}
-        supporters = copy_state_supporting_sources(dated_texts)
+        supporters = copy_state_supporting_sources(question, answer, dated_texts)
         if not supporters:
             return {}
         for source in supporters:
