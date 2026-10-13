@@ -94,7 +94,7 @@ def _copy_conflict_overlaps(claim: str, conflict: str) -> bool:
                 continue
             tags, other_tags = set(scope), set(other_scope)
             if any((a in tags and b in other_tags) or (b in tags and a in other_tags)
-                   for a, b in (('dedicated', 'shared'), ('old', 'new')):
+                   for a, b in (('dedicated', 'shared'), ('old', 'new'))):
                 continue
             return True
     return False
