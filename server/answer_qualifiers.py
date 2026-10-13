@@ -81,6 +81,25 @@ def _copy_objects(clause: str) -> set[tuple[str, tuple[str, ...]]]:
     return objects
 
 
+def _copy_conflict_overlaps(claim: str, conflict: str) -> bool:
+    """Only contrary observations of a compatible copy object can veto it.
+
+    Generic copy evidence may cover backups or archives. Explicit dedicated
+    and shared scopes are separate, as are old and new scopes. Other unclear
+    combinations remain conservative; this is not object identity resolution.
+    """
+    for kind, scope in _copy_objects(claim):
+        for other_kind, other_scope in _copy_objects(conflict):
+            if kind != other_kind and 'copy' not in (kind, other_kind):
+                continue
+            tags, other_tags = set(scope), set(other_scope)
+            if any((a in tags and b in other_tags) or (b in tags and a in other_tags)
+                   for a, b in (('dedicated', 'shared'), ('old', 'new')):
+                continue
+            return True
+    return False
+
+
 def _erasure_claims(text: str) -> list[str]:
     claims = []
     for clause in _clauses(text):
@@ -135,7 +154,8 @@ def _erasure_problem(question: str, answer: str, evidence: list[str]) -> bool:
                    and all(_mentions(source, item) for item in ids + subjects)
                    for source in observations):
             return True
-    return any(_erasure_conflict(clause) for clause in evidence)
+    return any(_erasure_conflict(clause) and _copy_conflict_overlaps(claim, clause)
+               for claim in claims for clause in evidence)
 
 
 def qualifier_requirements(question: str) -> tuple[str, ...]:

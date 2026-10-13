@@ -194,3 +194,49 @@ class CopyObjectScopeTests(unittest.TestCase):
         }, p, 'What is the archive cleanup status?')
         self.assertIsNone(result['answer'])
         self.assertEqual(action, 'qualifier_mismatch')
+
+
+class ScopedConflictAndPluralExcerptTests(unittest.IsolatedAsyncioTestCase):
+    def test_separate_shared_archives_do_not_veto_dedicated_backup_absence(self):
+        self.assertIsNone(qualifier_problem('What is backup cleanup status?', 'No dedicated backups remain.', {
+            'backup': 'No dedicated backups remain.', 'archive': 'Shared archives remain.',
+        }))
+
+    def test_same_kind_separate_scope_is_not_a_contradiction(self):
+        self.assertIsNone(qualifier_problem('What is backup cleanup status?', 'No dedicated backups remain.', {
+            'backup': 'No dedicated backups remain.', 'shared': 'Shared backups remain.',
+        }))
+
+    def test_same_object_retention_still_rejects_absence(self):
+        self.assertEqual(qualifier_problem('What is backup cleanup status?', 'No shared archives remain.', {
+            'first': 'No shared archives remain.', 'second': 'Shared archives remain.',
+        }), ERASURE_REASON)
+
+    def test_generic_zero_copy_receipt_remains_a_conservative_veto(self):
+        self.assertEqual(qualifier_problem('What is backup cleanup status?', 'No dedicated backups remain.', {
+            'first': 'No dedicated backups remain.', 'second': 'Zero copies were removed.',
+        }), ERASURE_REASON)
+
+    def test_plural_removal_query_keeps_closing_receipt(self):
+        body = INTENT + '\n\n' + ('Metadata details. '*400) + '\n\n' + STATUS
+        for query in ('What is the status of the retained backups?', 'What is the status of the retained archives?'):
+            with self.subTest(query=query):
+                text = graph._answer_body_excerpt(body, query)
+                self.assertIn('deleted zero dedicated backup copies', text)
+                self.assertIn('incomplete and blocked', text)
+                self.assertLessEqual(len(text), 2500)
+
+    async def test_actual_answer_preserves_bounded_absence_and_other_retention(self):
+        slug = '2026-10-13-120000-dedicated-backup-state'
+        content = 'No dedicated backups remain. Shared archives remain.'
+        p = {'facts': [], 'entities': [], 'source_excerpt': None,
+             'semantic_notes': [{'name': slug, 'content': content}]}
+        with mock.patch.object(graph, '_assemble_packet', new=mock.AsyncMock(return_value=p)), \
+             mock.patch.object(graph, '_distill', new=mock.AsyncMock(return_value={
+                 'answer': content, 'confidence': 'high', 'sources': [slug], 'escalate': False,
+             })), mock.patch.object(graph, '_record_query'):
+            result = await graph._graph_answer_impl('What is the backup cleanup status?')
+        self.assertIsNotNone(result['answer'])
+        self.assertIn('Shared archives remain', result['answer'])
+        self.assertEqual(result['confidence'], 'medium')
+        self.assertTrue(result['escalate'])

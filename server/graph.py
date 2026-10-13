@@ -556,7 +556,7 @@ def _answer_body_excerpt(body: str, query: str, limit: int = CURRENT_BODY_CHARS)
     those observational paragraphs for copy-removal questions, verbatim,
     before the usual excerpt. Do not read archive contents or follow paths.
     """
-    if not re.search(r"\b(?:backup|archive|copies|copy)\b", query, re.I):
+    if not re.search(r"\b(?:backups?|archives?|copies|copy)\b", query, re.I):
         return _current_body_excerpt(body, limit)
     if not re.search(r"\b(?:removal|removed|erasure|cleanup|retained|delete|status)\b", query, re.I):
         return _current_body_excerpt(body, limit)
