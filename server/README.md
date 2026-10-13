@@ -95,6 +95,7 @@ Optional [indexed vector retrieval](VECTOR_RETRIEVAL.md) accelerates graph reads
   Counted historical removals are not whole-scope absence, and positive observation dates require the same scoped support.
   Contrary retention evidence vetoes only compatible copy objects. Dedicated backups can be absent while shared archives remain.
   Exact sourced counted removals and serving-target history retain their observation dates, without proving total copy erasure.
+  A bounded removal result needs direct statement support before date selection. A nearby retention statement cannot validate a changed count.
   Every erasure predicate is checked, including a total-absence claim after a counted or zero-removal predicate.
   Explicit observations from another ticket cannot supply a date or an erasure conflict for the named task.
   Removal-status excerpts preserve closing zero-removal and retention receipts within the existing body limit. Copy-state answers carry source dates and escalation.
