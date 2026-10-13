@@ -389,14 +389,16 @@ def copy_state_supporting_sources(question: str, answer: str, source_texts: dict
     whole-copy erasure. Another ticket's observation cannot supply the date.
     """
     answer_clauses = _clauses(answer)
-    normalized = {clause.casefold() for clause in answer_clauses}
+    copy_clauses = [clause for clause in answer_clauses
+                    if _COPY_RE.search(clause) or _SERVING_SCOPE.search(clause)]
+    normalized = {clause.casefold() for clause in copy_clauses}
     supporters = []
     for source, text in source_texts.items():
         evidence = _clauses(text)
         if _erasure_problem(question, answer, evidence):
             continue
         for clause in evidence:
-            if any(_different_explicit_tickets(question, claim, clause) for claim in answer_clauses):
+            if any(_different_explicit_tickets(question, claim, clause) for claim in copy_clauses):
                 continue
             exact_bounded = clause.casefold() in normalized and _bounded_removal_statement(clause)
             observed = _completed_erasure(clause) or (_erasure_conflict(clause) and not _ERASURE_INTENT.search(clause))

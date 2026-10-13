@@ -297,6 +297,13 @@ class BoundedRemovalDatesAndTicketScopeTests(unittest.TestCase):
                                     {self.DATE: 'k3s#23 deleted two dedicated backup copies.'})
         self.assertIsNone(result['answer'])
 
+    def test_unrelated_gate_in_compound_answer_does_not_hide_copy_receipt(self):
+        text = 'k3s#23 deleted two dedicated backup copies.'
+        result, _, _ = self.validate('What evidence clears k3s#6, and what is the status of backup removal k3s#23?',
+                                    'k3s#6 remains blocked. ' + text, {self.DATE: text})
+        self.assertIsNotNone(result['answer'])
+        self.assertEqual(result['observation_dates'], {self.DATE: '2026-10-13T12:00:00Z'})
+
     def test_source_instruction_does_not_date_a_bounded_result(self):
         text = 'k3s#23 must delete two dedicated backup copies.'
         result, _, _ = self.validate('What is the status of dedicated backup removal k3s#23?',
