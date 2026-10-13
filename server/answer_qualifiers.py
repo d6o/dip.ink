@@ -92,6 +92,11 @@ def _erasure_claims(text: str) -> list[str]:
         prefix = clause[:match.start()]
         if re.search(r"\b(?:zero|0|no)\s+(?:(?:dedicated|shared|retained)\s+){0,3}$", prefix, re.I):
             continue
+        # A counted subset can be removed while other copies remain. This
+        # total-erasure guard does not relabel that bounded historical result.
+        if re.search(r"\b(?:[1-9]\d*|one|two|three|four|five|some|several|a|an)\s+"
+                     r"(?:(?:dedicated|shared|retained|old|local|new)\s+){0,3}$", prefix, re.I):
+            continue
         claims.append(clause)
     return claims
 

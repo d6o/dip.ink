@@ -170,6 +170,19 @@ class CopyObjectScopeTests(unittest.TestCase):
         text = 'The serving targets were deleted. Shared archives remain.'
         self.assertIsNone(qualifier_problem('What happened to serving targets and archives?', text, {'fixture': text}))
 
+    def test_bounded_historical_deletion_with_other_copies_retained_is_not_total_erasure(self):
+        for text in (
+            'Two dedicated backups were removed. Shared archives remain.',
+            '3 local copies were deleted. Retained shared copies remain.',
+            'One retained copy is gone. Other archives remain.',
+        ):
+            with self.subTest(text=text):
+                self.assertIsNone(qualifier_problem('What is copy cleanup status?', text, {'fixture': text}))
+
+    def test_bounded_deleted_subset_cannot_support_all_copy_absence(self):
+        self.assertEqual(qualifier_problem('What is copy cleanup status?', 'All dedicated backups were removed.',
+                         {'fixture': 'Two dedicated backups were removed.'}), ERASURE_REASON)
+
     def test_positive_erasure_date_must_come_from_matching_object_support(self):
         undated = 'ArchivePage'
         unrelated = '2026-10-13-020000-other-object'
