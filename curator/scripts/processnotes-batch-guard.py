@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check the prepared inbox without an LLM or third-party modules.
+"""Check the prepared inbox without an LLM.
 
 The parent retains the manifest digest outside the child session. This check
 protects a batch boundary, not the repository against a hostile process.
@@ -16,6 +16,8 @@ from pathlib import Path
 import re
 import stat
 import sys
+
+import yaml
 
 
 class GuardError(Exception):
@@ -269,6 +271,53 @@ def first_h1(lines):
     return None
 
 
+def resolved_metadata_hashes(lines, mutable):
+    """Hash bounded YAML node dependencies without constructing custom objects."""
+    try:
+        root = yaml.compose("".join(lines), Loader=yaml.SafeLoader)
+    except (yaml.YAMLError, RecursionError):
+        raise GuardError("invalid-source-metadata") from None
+    require(isinstance(root, yaml.MappingNode), "invalid-source-metadata")
+    cache, active = {}, set()
+    visited = 0
+
+    def digest(node, depth=0):
+        nonlocal visited
+        identity = id(node)
+        if identity in cache:
+            return cache[identity]
+        require(depth <= 64, "metadata-depth-limit")
+        require(identity not in active, "metadata-cycle")
+        visited += 1
+        require(visited <= 50000, "metadata-node-limit")
+        active.add(identity)
+        if isinstance(node, yaml.ScalarNode):
+            value = ["scalar", node.tag, node.value]
+        elif isinstance(node, yaml.SequenceNode):
+            value = ["sequence", node.tag, [digest(item, depth + 1) for item in node.value]]
+        elif isinstance(node, yaml.MappingNode):
+            value = ["mapping", node.tag, sorted(
+                (digest(key, depth + 1), digest(item, depth + 1)) for key, item in node.value)]
+        else:
+            raise GuardError("unsupported-metadata-node")
+        result = hashlib.sha256(json.dumps(value, ensure_ascii=True,
+                               separators=(",", ":")).encode()).hexdigest()
+        active.remove(identity)
+        cache[identity] = result
+        return result
+
+    metadata, seen = {}, set()
+    for key, value in root.value:
+        require(isinstance(key, yaml.ScalarNode), "unsupported-metadata-key")
+        key_digest = digest(key)
+        require(key_digest not in seen, "duplicate-frontmatter-key")
+        seen.add(key_digest)
+        if key.tag == "tag:yaml.org,2002:str" and key.value in mutable:
+            continue
+        metadata[key_digest] = digest(value)
+    return metadata
+
+
 def source_parts(data):
     """Hash source text after the permitted frontmatter and H1 changes.
 
@@ -301,7 +350,9 @@ def source_parts(data):
     h1 = first_h1(body)
     title = body.pop(h1).rstrip("\r\n") if h1 is not None else None
     digest = hashlib.sha256("".join(body).strip("\r\n").encode()).hexdigest()
-    return {"body": digest, "full_body": full_body, "metadata": metadata}, title, blocks
+    resolved = resolved_metadata_hashes(lines[1:end], mutable)
+    return {"body": digest, "full_body": full_body, "metadata": metadata,
+            "resolved_metadata": resolved}, title, blocks
 
 
 def source_input(folder, slug):
@@ -358,7 +409,7 @@ def capture(root, notes, cap, state_path):
     pool = sorted(set(groups["live"]) | set(groups["held"]))
     require(sorted(groups["live"]) == pool[:cap] and len(groups["live"]) <= cap,
             "capture-selection-mismatch")
-    state = {"version": 1, "notes": str(notes.relative_to(root)), "cap": cap,
+    state = {"version": 2, "notes": str(notes.relative_to(root)), "cap": cap,
              "selected": {}, "held_count": len(groups["held"]),
              "blocked_count": len(groups["blocked"])}
     tree = snapshot(notes, root)
@@ -433,6 +484,9 @@ def check_canonical(folder, slug, prepared, root):
     require(all(parts["metadata"].get(key) == value
                 for key, value in prepared["source"]["metadata"].items()),
             "canonical-metadata-changed")
+    require(all(parts["resolved_metadata"].get(key) == value
+                for key, value in prepared["source"]["resolved_metadata"].items()),
+            "canonical-metadata-dependency-changed")
     require(title == f"# {slug}", "canonical-title-mismatch")
     require("type" in blocks and re.fullmatch(r"type:\s*['\"]?source['\"]?\s*",
                                              "".join(blocks["type"])),
@@ -451,7 +505,7 @@ def verify(root, state_path, digest, prepared_stage=False):
     require(len(data) <= 64 * 1024 * 1024, "state-too-large")
     require(hmac.compare_digest(hashlib.sha256(data).hexdigest(), digest), "state-digest-mismatch")
     state = json.loads(data)
-    require(state["version"] == 1 and state["cap"] > 0, "invalid-state-schema")
+    require(state["version"] == 2 and state["cap"] > 0, "invalid-state-schema")
     notes = notes_path(root, state["notes"])
     actual = inventories(notes)
     require(len(actual["live"]) <= state["cap"]

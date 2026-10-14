@@ -581,6 +581,79 @@ class PreparedBoundaryTests(unittest.TestCase):
     def test_original_source_name_is_immutable_metadata(self):
         self.original_metadata_field_is_immutable("name")
 
+    def source_metadata_fixture(self, metadata):
+        self.prepare()
+        note = self.root / "notes" / self.names[0] / "NOTE.md"
+        note.write_text(note.read_text().replace("---\n", "---\n" + metadata, 1))
+
+    def reject_alias_dependency_change(self, metadata, old, new):
+        self.source_metadata_fixture(metadata)
+        self.capture()
+        self.assertNotIn("Original alias value", self.state.read_text())
+        source = self.canonical() / (self.names[0] + ".md")
+        self.verify()
+        original = source.read_text()
+        self.assertIn(old, original)
+        source.write_text(original.replace(old, new, 1))
+        self.verify(success=False)
+
+    def test_mutable_description_cannot_change_aliased_title(self):
+        self.reject_alias_dependency_change(
+            "index-description: &label Original alias value\ntitle: *label\n",
+            "&label Original alias value", "&label Changed alias value")
+
+    def test_mutable_description_cannot_change_aliased_session(self):
+        self.prepare()
+        note = self.root / "notes" / self.names[0] / "NOTE.md"
+        note.write_text(note.read_text().replace("---\n", "---\nindex-description: &label Original alias value\n", 1)
+                        .replace("session: disposable fixture", "session: *label", 1))
+        self.capture()
+        source = self.canonical() / (self.names[0] + ".md")
+        self.verify()
+        source.write_text(source.read_text().replace("&label Original alias value", "&label Changed alias value", 1))
+        self.verify(success=False)
+
+    def test_mutable_tags_cannot_change_nested_aliased_metadata(self):
+        self.reject_alias_dependency_change(
+            "tags: [&label Original alias value, fixture]\ncontext: {title: *label}\n",
+            "&label Original alias value", "&label Changed alias value")
+
+    def test_mutable_description_cannot_change_a_merge_dependency(self):
+        self.reject_alias_dependency_change(
+            "index-description: &label {title: Original alias value}\n<<: *label\n",
+            "title: Original alias value", "title: Changed alias value")
+
+    def test_unchanged_alias_dependency_allows_canonical_move(self):
+        self.source_metadata_fixture(
+            "index-description: &label Original alias value\ntitle: *label\n")
+        self.capture()
+        self.canonical()
+        self.verify()
+
+    def test_independent_alias_allows_mutable_description_change(self):
+        self.source_metadata_fixture(
+            "label: &label Original alias value\ntitle: *label\nindex-description: Original description\n")
+        self.capture()
+        source = self.canonical() / (self.names[0] + ".md")
+        source.write_text(source.read_text().replace("index-description: Original description", "index-description: Canonical description", 1))
+        self.verify()
+
+    def test_cyclic_protected_metadata_rejects_without_payload_output(self):
+        self.source_metadata_fixture("context: &loop [*loop]\n")
+        result = self.guard("capture", "--notes-dir", "notes", "--cap", "4",
+                            "--state", self.state, success=False)
+        self.assertIn("metadata-cycle", result.stderr)
+        self.assertNotIn("&loop", result.stderr)
+
+    def test_legacy_manifest_requires_new_capture(self):
+        self.capture()
+        state = json.loads(self.state.read_text())
+        self.assertEqual(state["version"], 2)
+        state["version"] = 1
+        self.state.write_text(json.dumps(state))
+        self.digest = hashlib.sha256(self.state.read_bytes()).hexdigest()
+        self.verify(success=False)
+
     def test_complete_folder_moves_with_attachments_work(self):
         self.capture()
         for index in range(4):
