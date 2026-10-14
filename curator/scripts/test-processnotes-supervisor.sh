@@ -220,6 +220,25 @@ EOF
 )
 echo 'exact ingest-log dedup test OK'
 
+# A dynamic inbox root must reject before preparation or an agent call.
+ALTERNATE="$TMP/alternate-root"; ENV_FILE="$TMP/alternate-env"; make_repo "$ALTERNATE" 12
+mv "$ALTERNATE"/notes/.deferred/* "$ALTERNATE/notes/"
+mkdir -p "$ALTERNATE/alternate"
+printf 'synthetic alternate input\n' > "$ALTERNATE/alternate/input.txt"
+original_tree=$(git -C "$ALTERNATE" status --porcelain)
+set +e
+(cd "$ALTERNATE"; NOTES_DIR=alternate CURATOR_RUNNER_BIN="$TMP/fake-runner" \
+ INBOX_PREPARE_BIN="$ROOT/scripts/processnotes-prepare-inbox.sh" \
+ CURATOR_PREFLIGHT=0 GITHUB_ENV="$ENV_FILE" bash "$ROOT/scripts/processnotes-supervisor.sh") >"$TMP/alternate-output" 2>&1
+alternate_status=$?
+set -e
+[[ "$alternate_status" -eq 2 ]]
+[[ $(git -C "$ALTERNATE" status --porcelain) == "$original_tree" ]]
+[[ $(find "$ALTERNATE/notes" -mindepth 1 -maxdepth 1 -type d ! -name .deferred ! -name .blocked | wc -l) -eq 12 ]]
+[[ ! -e "$ENV_FILE" ]]
+grep -q 'non-default notes root is not supported' "$TMP/alternate-output"
+echo 'alternate root fails before preparation test OK'
+
 # Inbox preparation keeps the oldest four live, wraps bare notes, and excludes blocked entries.
 PREP="$TMP/prepare"
 mkdir -p "$PREP/notes/.blocked/2025-12-31-235959-blocked"
