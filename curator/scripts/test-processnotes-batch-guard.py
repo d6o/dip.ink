@@ -657,6 +657,15 @@ class PreparedBoundaryTests(unittest.TestCase):
         self.assertIn("metadata-cycle", result.stderr)
         self.assertNotIn("&loop", result.stderr)
 
+    def test_cached_alias_cannot_bypass_metadata_depth_limit(self):
+        value = "[" * 40 + "leaf" + "]" * 40
+        alias = "[" * 40 + "*nested" + "]" * 40
+        self.source_metadata_fixture(f"first: &nested {value}\nsecond: {alias}\n")
+        result = self.guard("capture", "--notes-dir", "notes", "--cap", "4",
+                            "--state", self.state, success=False)
+        self.assertIn("metadata-depth-limit", result.stderr)
+        self.assertNotIn("leaf", result.stderr)
+
     def test_legacy_manifest_requires_new_capture(self):
         self.capture()
         state = json.loads(self.state.read_text())

@@ -278,13 +278,14 @@ def resolved_metadata_hashes(lines, mutable):
     except (yaml.YAMLError, RecursionError):
         raise GuardError("invalid-source-metadata") from None
     require(isinstance(root, yaml.MappingNode), "invalid-source-metadata")
-    cache, active = {}, set()
+    cache, heights, active = {}, {}, set()
     visited = 0
 
     def digest(node, depth=0):
         nonlocal visited
         identity = id(node)
         if identity in cache:
+            require(depth + heights[identity] <= 64, "metadata-depth-limit")
             return cache[identity]
         require(depth <= 64, "metadata-depth-limit")
         require(identity not in active, "metadata-cycle")
@@ -293,18 +294,23 @@ def resolved_metadata_hashes(lines, mutable):
         active.add(identity)
         if isinstance(node, yaml.ScalarNode):
             value = ["scalar", node.tag, node.value]
+            children = []
         elif isinstance(node, yaml.SequenceNode):
             value = ["sequence", node.tag, [digest(item, depth + 1) for item in node.value]]
+            children = node.value
         elif isinstance(node, yaml.MappingNode):
             # Order can affect duplicate-key and merge precedence.
             value = ["mapping", node.tag, [
                 (digest(key, depth + 1), digest(item, depth + 1)) for key, item in node.value]]
+            children = [item for pair in node.value for item in pair]
         else:
             raise GuardError("unsupported-metadata-node")
         result = hashlib.sha256(json.dumps(value, ensure_ascii=True,
                                separators=(",", ":")).encode()).hexdigest()
         active.remove(identity)
         cache[identity] = result
+        heights[identity] = 1 + max((heights[id(item)] for item in children), default=-1)
+        require(depth + heights[identity] <= 64, "metadata-depth-limit")
         return result
 
     metadata, seen = {}, set()
