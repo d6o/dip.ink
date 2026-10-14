@@ -72,21 +72,42 @@ def read_file(path):
 
 
 def check_link_target(item, target, root):
-    """Check each link target before any filesystem access outside the root."""
-    path = Path(os.path.abspath(item.parent / target))
-    for _ in range(40):
-        require(inside(path, root), "external-symlink")
-        parts = path.relative_to(root).parts
-        current = root
-        for index, part in enumerate(parts):
-            current = current / part
-            if current.is_symlink():
-                path = Path(os.path.abspath(current.parent / os.readlink(current)))
-                path = path.joinpath(*parts[index + 1:])
-                break
+    """Resolve each component before '..'. Never inspect a path outside the root."""
+    current = item.parent
+    pending = []
+    redirects = 0
+
+    def expand(value):
+        nonlocal current, pending
+        path = Path(value)
+        if path.is_absolute():
+            require(path.parts[:len(root.parts)] == root.parts, "external-symlink")
+            current = root
+            parts = path.parts[len(root.parts):]
         else:
-            return path
-    raise GuardError("symlink-cycle")
+            parts = path.parts
+        pending = list(parts) + pending
+
+    expand(target)
+    while pending:
+        part = pending.pop(0)
+        if part == "..":
+            current = current.parent
+            require(inside(current, root), "external-symlink")
+            continue
+        candidate = current / part
+        if candidate.is_symlink():
+            redirects += 1
+            require(redirects <= 40, "symlink-cycle")
+            expand(os.readlink(candidate))
+            continue
+        current = candidate
+        if pending:
+            if not exists(current):
+                # An absent ancestor cannot resolve later '..' components.
+                return current.joinpath(*pending)
+            require(current.is_dir(), "invalid-symlink-target")
+    return current
 
 
 def link_referents(folder, tree, root):
