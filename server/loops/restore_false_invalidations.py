@@ -39,11 +39,18 @@ WHERE r.uuid IN $ids
 RETURN r.uuid AS uuid, a.uuid AS source_uuid, b.uuid AS target_uuid,
        properties(r) AS properties
 """
+LOCK = """
+MATCH (a:Entity)-[r:RELATES_TO {uuid:$uuid}]->(b:Entity)
+WITH a, b, r
+CALL apoc.lock.rels([r])
+CALL apoc.lock.nodes([a, b])
+RETURN r.uuid AS uuid, a.uuid AS source_uuid, b.uuid AS target_uuid,
+       properties(r) AS properties
+"""
 APPLY = """
 MATCH (a:Entity)-[r:RELATES_TO {uuid:$uuid}]->(b:Entity)
-WHERE r.fact = $fact AND r.episodes = $episodes
-  AND r.invalid_at = $invalid_at AND r.expired_at = $expired_at
-  AND r.valid_at = $valid_at
+WHERE a.uuid = $source_uuid AND b.uuid = $target_uuid
+  AND properties(r) = $properties
 CREATE (c:DipinkProjectionCorrection {
     key:$key, edge_uuid:$uuid, source_uuid:a.uuid, target_uuid:b.uuid,
     corrected_at:$at, reason:$reason, source_names:$source_names,
@@ -88,17 +95,31 @@ def backup(rows):
     with path.open("x", encoding="utf-8") as stream:
         os.chmod(path, 0o600)
         json.dump({"sources": SOURCE_NAMES, "reason": REASON, "rows": rows}, stream, default=str)
+        stream.flush()
+        os.fsync(stream.fileno())
+    folder_fd = os.open(folder, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(folder_fd)
+    finally:
+        os.close(folder_fd)
     return path
 
 
 def apply(tx, rows, at):
     validate(rows)
+    # Lock endpoints and relationships before a complete state comparison.
+    # Keep all locks until the transaction commits or rolls back.
+    ordered = sorted(rows, key=lambda row: row["uuid"])
+    for row in ordered:
+        locked = tx.run(LOCK, uuid=row["uuid"]).single()
+        if locked is None or dict(locked) != row:
+            raise RuntimeError("Complete locked edge state changed; no correction selected")
     corrected = []
-    for row in rows:
+    for row in ordered:
         p = row["properties"]
         result = tx.run(
-            APPLY, uuid=row["uuid"], fact=p["fact"], episodes=p["episodes"],
-            valid_at=p["valid_at"], invalid_at=p["invalid_at"], expired_at=p["expired_at"],
+            APPLY, uuid=row["uuid"], source_uuid=row["source_uuid"],
+            target_uuid=row["target_uuid"], properties=p,
             key="dipink4-restore-" + row["uuid"], at=at, reason=REASON,
             source_names=SOURCE_NAMES,
             prior_state_json=json.dumps(row, default=str),
