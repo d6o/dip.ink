@@ -276,6 +276,155 @@ class PreparedBoundaryTests(unittest.TestCase):
         self.verify()
         self.assertEqual(payload, {str(p.relative_to(destination)): p.read_bytes() for p in destination.iterdir() if p.is_file()})
 
+    def archived_copy(self, date="2025/12/31"):
+        self.prepare()
+        correct = self.canonical(copy=True)
+        destination = self.root / "wiki/sources/notes" / date / self.names[0]
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        correct.rename(destination)
+        return destination
+
+    def archive_payload(self, destination):
+        return {str(path.relative_to(destination)): (
+            stat.S_IMODE(path.lstat().st_mode), path.read_bytes())
+            for path in destination.rglob("*") if path.is_file()}
+
+    def test_wrong_date_archive_forbids_second_canonical_action(self):
+        archive = self.archived_copy()
+        original = self.archive_payload(archive)
+        self.capture()
+        self.canonical()
+        self.verify(success=False)
+        self.assertEqual(original, self.archive_payload(archive))
+
+    def test_wrong_date_archive_forbids_post_pi_live_noop(self):
+        archive = self.archived_copy()
+        original = self.archive_payload(archive)
+        self.capture()
+        self.guard("verify", "--state", self.state, "--sha256", self.digest,
+                   "--repo", self.root, "--prepared")
+        self.verify(success=False)
+        self.assertEqual(original, self.archive_payload(archive))
+        self.assertTrue((self.root / "notes" / self.names[0]).is_dir())
+
+    def test_wrong_date_archive_preserves_prepared_duplicate_block(self):
+        archive = self.archived_copy()
+        original = self.archive_payload(archive)
+        self.capture()
+        self.guard("verify", "--state", self.state, "--sha256", self.digest,
+                   "--repo", self.root, "--prepared")
+        env = dict(os.environ, NOTES_DIR="notes", BLOCKED_AT="2026-01-02T03:04:05Z")
+        self.command("bash", str(SCRIPT_DIR / "processnotes-block-note.sh"),
+                     self.names[0], "already-ingested", env=env)
+        self.verify()
+        self.assertEqual(original, self.archive_payload(archive))
+
+    def test_wrong_date_archive_preserves_duplicate_drop(self):
+        archive = self.archived_copy()
+        original = self.archive_payload(archive)
+        self.capture()
+        shutil.rmtree(self.root / "notes" / self.names[0])
+        self.verify()
+        self.assertEqual(original, self.archive_payload(archive))
+
+    def test_post_pi_duplicate_archived_slugs_fail(self):
+        self.capture()
+        canonical = self.canonical()
+        duplicate = self.root / "wiki/sources/notes/2025/12/31" / self.names[0]
+        duplicate.parent.mkdir(parents=True)
+        shutil.copytree(canonical, duplicate)
+        self.verify(success=False)
+        self.assertTrue(canonical.is_dir())
+        self.assertTrue(duplicate.is_dir())
+
+    def test_prior_duplicate_archived_slugs_fail_before_mutation(self):
+        archive = self.archived_copy()
+        duplicate = self.root / "wiki/sources/notes/2024/01/01" / self.names[0]
+        duplicate.parent.mkdir(parents=True)
+        shutil.copytree(archive, duplicate)
+        original = self.archive_payload(archive)
+        before = self.inventory()
+        self.prepare(success=False)
+        self.assertEqual(before, self.inventory())
+        self.assertEqual(original, self.archive_payload(archive))
+        self.assertEqual(original, self.archive_payload(duplicate))
+
+    def selected_attachment_link(self, target):
+        # Install the link after the first promotion, then capture that state.
+        self.prepare()
+        link = self.root / "notes" / self.names[0] / "linked attachment ü.bin"
+        link.symlink_to(target)
+        return link
+
+    def test_canonical_move_rejects_missing_link_referent(self):
+        raw = self.root / "raw"
+        raw.mkdir()
+        (raw / "doc.txt").write_bytes(b"synthetic stable raw document")
+        self.selected_attachment_link("../../raw/doc.txt")
+        self.capture()
+        destination = self.canonical()
+        self.assertFalse((destination / "linked attachment ü.bin").exists())
+        self.verify(success=False)
+        self.assertEqual((raw / "doc.txt").read_bytes(), b"synthetic stable raw document")
+
+    def test_canonical_move_rejects_different_link_referent(self):
+        raw = self.root / "raw"
+        raw.mkdir()
+        (raw / "doc.txt").write_bytes(b"synthetic original target")
+        other = self.root / "wiki/sources/notes/2026/01/raw"
+        other.mkdir(parents=True)
+        (other / "doc.txt").write_bytes(b"synthetic different target")
+        self.selected_attachment_link("../../raw/doc.txt")
+        self.capture()
+        destination = self.canonical()
+        self.assertEqual((destination / "linked attachment ü.bin").read_bytes(),
+                         b"synthetic different target")
+        self.verify(success=False)
+
+    def test_canonical_move_rejects_same_bytes_at_different_referent(self):
+        raw = self.root / "raw"
+        raw.mkdir()
+        (raw / "doc.txt").write_bytes(b"synthetic identical bytes")
+        other = self.root / "wiki/sources/notes/2026/01/raw"
+        other.mkdir(parents=True)
+        (other / "doc.txt").write_bytes(b"synthetic identical bytes")
+        self.selected_attachment_link("../../raw/doc.txt")
+        self.capture()
+        self.canonical()
+        self.verify(success=False)
+
+    def test_external_attachment_link_fails_before_mutation(self):
+        outside = Path(self.temp.name) / "outside synthetic.bin"
+        outside.write_bytes(b"synthetic outside document")
+        self.selected_attachment_link(str(outside))
+        before = self.inventory()
+        self.prepare(success=False)
+        self.assertEqual(before, self.inventory())
+
+    def test_attachment_link_cycle_fails_before_mutation(self):
+        first = self.selected_attachment_link("second link.bin")
+        (first.parent / "second link.bin").symlink_to(first.name)
+        before = self.inventory()
+        self.prepare(success=False)
+        self.assertEqual(before, self.inventory())
+
+    def test_canonical_move_preserves_internal_attachment_link(self):
+        self.selected_attachment_link("attachment ü.bin")
+        self.capture()
+        destination = self.canonical()
+        self.verify()
+        self.assertEqual((destination / "linked attachment ü.bin").read_bytes(),
+                         b"\x00\x01synthetic attachment\xff")
+
+    def test_canonical_move_preserves_internal_attachment_link_chain(self):
+        first = self.selected_attachment_link("attachment ü.bin")
+        (first.parent / "second link.bin").symlink_to(first.name)
+        self.capture()
+        destination = self.canonical()
+        self.verify()
+        self.assertEqual((destination / "second link.bin").read_bytes(),
+                         b"\x00\x01synthetic attachment\xff")
+
     def test_complete_folder_moves_with_attachments_work(self):
         self.capture()
         for index in range(4):
