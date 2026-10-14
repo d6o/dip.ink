@@ -327,6 +327,9 @@ def resolved_metadata_hashes(lines, mutable):
 
     def key_value(node):
         require(isinstance(node, yaml.ScalarNode), "unsupported-metadata-key")
+        # SafeLoader treats the legacy '=' key as a string during flattening.
+        if node.tag == "tag:yaml.org,2002:value":
+            return node.value
         allowed = {"str", "null", "bool", "int", "float", "binary", "timestamp"}
         require(node.tag.removeprefix("tag:yaml.org,2002:") in allowed,
                 "unsupported-metadata-key")

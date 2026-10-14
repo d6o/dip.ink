@@ -776,6 +776,9 @@ class PreparedBoundaryTests(unittest.TestCase):
         source.write_text(source.read_text().replace("---\n", "---\nsession: Backup session\n", 1))
         self.verify(success=False)
 
+    def test_unquoted_equals_metadata_key_remains_supported_and_protected(self):
+        self.protected_extended_metadata_key("=")
+
     def test_complete_folder_moves_with_attachments_work(self):
         self.capture()
         for index in range(4):
