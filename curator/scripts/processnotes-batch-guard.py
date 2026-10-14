@@ -233,10 +233,11 @@ def source_parts(data):
     metadata = {key: hashlib.sha256("".join(value).rstrip("\r\n").encode()).hexdigest()
                 for key, value in blocks.items() if key not in mutable}
     body = lines[end + 1:]
+    full_body = hashlib.sha256("".join(body).strip("\r\n").encode()).hexdigest()
     h1 = next((i for i, line in enumerate(body) if line.startswith("# ")), None)
     title = body.pop(h1).rstrip("\r\n") if h1 is not None else None
     digest = hashlib.sha256("".join(body).strip("\r\n").encode()).hexdigest()
-    return {"body": digest, "metadata": metadata}, title, blocks
+    return {"body": digest, "full_body": full_body, "metadata": metadata}, title, blocks
 
 
 def source_input(folder, slug):
@@ -337,7 +338,9 @@ def check_canonical(folder, slug, prepared, root):
     with open(folder / f"{slug}.md", "rb") as stream:
         data = stream.read(16 * 1024 * 1024 + 1)
     parts, title, blocks = source_parts(data)
-    require(parts["body"] == prepared["source"]["body"], "canonical-body-changed")
+    # The curator can replace the first H1 or add an H1 before the original.
+    require(parts["body"] in (prepared["source"]["body"], prepared["source"]["full_body"]),
+            "canonical-body-changed")
     require(all(parts["metadata"].get(key) == value
                 for key, value in prepared["source"]["metadata"].items()),
             "canonical-metadata-changed")
