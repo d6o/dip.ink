@@ -678,10 +678,12 @@ class PreparedBoundaryTests(unittest.TestCase):
         self.capture()
         state = json.loads(self.state.read_text())
         self.assertEqual(state["version"], 3)
-        state["version"] = 1
-        self.state.write_text(json.dumps(state))
-        self.digest = hashlib.sha256(self.state.read_bytes()).hexdigest()
-        self.verify(success=False)
+        for version in (1, 2):
+            with self.subTest(version=version):
+                state["version"] = version
+                self.state.write_text(json.dumps(state))
+                self.digest = hashlib.sha256(self.state.read_bytes()).hexdigest()
+                self.verify(success=False)
 
     def test_block_preserves_existing_link_text_and_byte_policy(self):
         raw = self.root / "raw"
