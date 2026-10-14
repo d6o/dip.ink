@@ -283,14 +283,14 @@ def resolved_metadata_hashes(lines, mutable):
 
     def digest(node, depth=0):
         nonlocal visited
+        visited += 1
+        require(visited <= 50000, "metadata-node-limit")
         identity = id(node)
         if identity in cache:
             require(depth + heights[identity] <= 64, "metadata-depth-limit")
             return cache[identity]
         require(depth <= 64, "metadata-depth-limit")
         require(identity not in active, "metadata-cycle")
-        visited += 1
-        require(visited <= 50000, "metadata-node-limit")
         active.add(identity)
         if isinstance(node, yaml.ScalarNode):
             value = ["scalar", node.tag, node.value]

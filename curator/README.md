@@ -62,7 +62,7 @@ The check does not hash external directory contents recursively.
 The manifest uses version 2 and requires a fresh capture from the same toolchain.
 Frontmatter checks also hash resolved YAML node dependencies with the installed PyYAML parser.
 A mutable schema field cannot change an original protected alias or merge dependency.
-The parser does not construct custom objects. It limits protected graphs to 50,000 nodes and depth 64.
+The parser does not construct custom objects. It limits protected graph traversal to 50,000 visits and depth 64.
 Cyclic protected metadata fails safely. The manifest stores hashes, not resolved values.
 The H1 scan recognizes backtick and tilde fences, not complete Markdown syntax.
 The guard is a workflow consistency check, not a permission fence against a hostile process.
