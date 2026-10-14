@@ -48,8 +48,14 @@ pinned to `ghcr.io/d6o/dip.ink/pi-runner:v0.1.46`.
 The supervisor rejects dual-root note identities before preparation changes.
 It exposes exactly the oldest configured live batch and records a private metadata manifest outside the checkout.
 The parent retains its digest. The runner checks selected identities, held paths, raw bytes, and existing source bytes after Pi.
-It checks the boundary again after repair and before commit. Restored preparation paths or excess live inputs stop the commit.
-Canonical source formatting can change frontmatter and the first H1, not the source body or attachments.
+It checks the boundary after every validator return, before another Pi call, and before commit.
+Restored preparation paths or excess live inputs stop the workflow.
+The supervisor accepts only `NOTES_DIR=notes`, which matches its prompt and live count.
+The standalone guard CLI can use another inbox root.
+Source-schema frontmatter fields and the first H1 may change during a selected canonical move.
+Preserve `captured`, `session`, `topic`, other original metadata, the remaining source body, and attachments.
+A selected input with a canonical copy must leave the live inbox after Pi.
+A pre-Pi check permits a captured duplicate so Pi can use a supported block or drop outcome.
 The guard is a workflow consistency check, not a permission fence against a hostile process.
 
 The repair invocation receives bounded validator diagnostics. It cannot add paths outside the failed batch.
@@ -71,6 +77,7 @@ The image is published as `ghcr.io/d6o/dip.ink/pi-runner` by this repo's CI
 | `VALIDATOR_DIAGNOSTIC_BYTES` | `12000` | maximum validator output bytes included in the one repair prompt |
 | `INBOX_PREPARED_STATE` / `INBOX_PREPARED_SHA256` | supervisor-owned | private prepared manifest and parent-retained digest; required for processnotes |
 | `INBOX_GUARD_BIN` | image helper | the guard from the shared toolchain |
+| `NOTES_DIR` | `notes` | fixed inbox root for the supervisor; other values reject before preparation |
 | `COMMIT_MESSAGE`, `GIT_USER_NAME`, `GIT_USER_EMAIL`, `GIT_BRANCH` | sensible defaults | |
 
 `PI_MODELS_JSON` is **curator/Pi-runner configuration only**. It is not a
