@@ -779,6 +779,14 @@ class PreparedBoundaryTests(unittest.TestCase):
     def test_unquoted_equals_metadata_key_remains_supported_and_protected(self):
         self.protected_extended_metadata_key("=")
 
+    def test_quoted_equals_cannot_shadow_original_unquoted_key(self):
+        self.source_metadata_fixture("index-description: Fixture summary\n=: Original equals value\n")
+        self.capture()
+        source = self.canonical() / (self.names[0] + ".md")
+        self.verify()
+        source.write_text(source.read_text().replace("\n---\n", '\n"=": Changed equals value\n---\n', 1))
+        self.verify(success=False)
+
     def test_complete_folder_moves_with_attachments_work(self):
         self.capture()
         for index in range(4):
