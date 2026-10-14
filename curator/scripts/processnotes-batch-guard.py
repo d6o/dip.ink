@@ -119,7 +119,10 @@ def link_referents(folder, tree, root):
         resolved = check_link_target(folder / name, entry["target"], root)
         require(exists(resolved), "missing-symlink-target")
         info = resolved.lstat()
-        target = {"path": str(resolved.relative_to(root)),
+        local = inside(resolved, folder)
+        # A referent inside the selected folder keeps its identity on a move.
+        target = {"scope": "folder" if local else "repo",
+                  "path": str(resolved.relative_to(folder if local else root)),
                   "mode": stat.S_IMODE(info.st_mode)}
         if stat.S_ISREG(info.st_mode):
             digest, size = read_file(resolved)
