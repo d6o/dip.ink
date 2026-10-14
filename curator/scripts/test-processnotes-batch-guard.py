@@ -787,6 +787,21 @@ class PreparedBoundaryTests(unittest.TestCase):
         source.write_text(source.read_text().replace("\n---\n", '\n"=": Changed equals value\n---\n', 1))
         self.verify(success=False)
 
+    def test_positive_infinity_metadata_key_remains_supported(self):
+        self.protected_extended_metadata_key(".inf")
+
+    def test_negative_infinity_metadata_key_remains_supported(self):
+        self.protected_extended_metadata_key("-.inf")
+
+    def test_nan_metadata_key_remains_supported(self):
+        self.protected_extended_metadata_key(".nan")
+
+    def test_minimum_year_offset_metadata_key_remains_supported(self):
+        self.protected_extended_metadata_key("0001-01-01T00:00:00+01:00")
+
+    def test_maximum_year_offset_metadata_key_remains_supported(self):
+        self.protected_extended_metadata_key("9999-12-31T23:00:00-02:00")
+
     def test_complete_folder_moves_with_attachments_work(self):
         self.capture()
         for index in range(4):

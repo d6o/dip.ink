@@ -378,14 +378,24 @@ def resolved_metadata_hashes(lines, mutable):
         elif isinstance(key, (bool, int)):
             value = ["number", int(key), 1]
         elif isinstance(key, float):
-            try:
+            if key != key:
+                # SafeLoader uses its shared built-in NaN mapping key.
+                value = ["number", "nan"]
+            elif key == float("inf"):
+                value = ["number", "positive-infinity"]
+            elif key == float("-inf"):
+                value = ["number", "negative-infinity"]
+            else:
                 numerator, denominator = key.as_integer_ratio()
-            except (ValueError, OverflowError):
-                raise GuardError("unsupported-metadata-key") from None
-            value = ["number", numerator, denominator]
+                value = ["number", numerator, denominator]
         elif isinstance(key, dt.datetime):
-            value = ["timestamp", key.astimezone(dt.timezone.utc).isoformat()
-                     if key.tzinfo else key.isoformat(), bool(key.tzinfo)]
+            microseconds = (((key.toordinal() - 1) * 86400 + key.hour * 3600
+                             + key.minute * 60 + key.second) * 1000000 + key.microsecond)
+            offset = key.utcoffset()
+            if offset is not None:
+                microseconds -= ((offset.days * 86400 + offset.seconds) * 1000000
+                                 + offset.microseconds)
+            value = ["timestamp", microseconds, offset is not None]
         elif isinstance(key, dt.date):
             value = ["date", key.isoformat()]
         elif isinstance(key, bytes):
