@@ -623,6 +623,18 @@ class PreparedBoundaryTests(unittest.TestCase):
             "index-description: &label {title: Original alias value}\n<<: *label\n",
             "title: Original alias value", "title: Changed alias value")
 
+    def test_duplicate_key_order_cannot_change_aliased_metadata(self):
+        self.reject_alias_dependency_change(
+            "index-description: &label {value: Original alias value, value: Last value}\ncontext: *label\n",
+            "{value: Original alias value, value: Last value}",
+            "{value: Last value, value: Original alias value}")
+
+    def test_quoted_star_is_literal_metadata(self):
+        self.source_metadata_fixture('title: "A literal *label in a title"\n')
+        self.capture()
+        self.canonical()
+        self.verify()
+
     def test_unchanged_alias_dependency_allows_canonical_move(self):
         self.source_metadata_fixture(
             "index-description: &label Original alias value\ntitle: *label\n")

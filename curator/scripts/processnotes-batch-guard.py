@@ -296,8 +296,9 @@ def resolved_metadata_hashes(lines, mutable):
         elif isinstance(node, yaml.SequenceNode):
             value = ["sequence", node.tag, [digest(item, depth + 1) for item in node.value]]
         elif isinstance(node, yaml.MappingNode):
-            value = ["mapping", node.tag, sorted(
-                (digest(key, depth + 1), digest(item, depth + 1)) for key, item in node.value)]
+            # Order can affect duplicate-key and merge precedence.
+            value = ["mapping", node.tag, [
+                (digest(key, depth + 1), digest(item, depth + 1)) for key, item in node.value]]
         else:
             raise GuardError("unsupported-metadata-node")
         result = hashlib.sha256(json.dumps(value, ensure_ascii=True,
