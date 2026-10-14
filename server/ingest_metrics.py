@@ -11,8 +11,8 @@ Each record goes to two places:
 - Neo4j, as a ``(:DipinkIngestMetric)`` node (outside the Graphiti labels),
   so ``ingest_report.py`` can analyze history after the job pods are gone.
 
-No record contains note text, prompts, or model output. Error messages are
-bounded to 200 characters.
+No record contains note text, prompts, or model output. Error summaries contain
+only the exception class, category, HTTP status, and validation count.
 """
 from __future__ import annotations
 
@@ -75,6 +75,30 @@ def failure_kind(error: BaseException) -> str:
     if "connection" in name.lower() or "connection" in text:
         return "connection"
     return name
+
+
+def error_summary(error: BaseException) -> str:
+    """Keep diagnostic scalars, never exception messages or input values."""
+    parts = [f"{type(error).__name__} ({failure_kind(error)})"]
+    status = getattr(error, "status_code", None)
+    if isinstance(status, int) and not isinstance(status, bool) and 100 <= status <= 599:
+        parts.append(f"status={status}")
+    count = getattr(error, "error_count", None)
+    if callable(count):
+        try:
+            value = count()
+            if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                parts.append(f"validation_errors={value}")
+        except Exception:
+            pass
+    return bounded("; ".join(parts))
+
+
+def report_error_kind(record: dict) -> str:
+    """Ignore historical raw error strings at the report boundary."""
+    import re
+    kind = str(record.get("error_kind") or "unknown")
+    return kind if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,63}", kind) else "unknown"
 
 
 def _union_seconds(intervals: list[tuple[float, float]]) -> float:
@@ -207,7 +231,7 @@ class NoteMetrics:
             "attempt": self.attempt,
             "outcome": outcome,
             "error_kind": failure_kind(error) if error else "",
-            "error": bounded(f"{type(error).__name__}: {error}") if error else "",
+            "error": error_summary(error) if error else "",
             "body_chars": self.body_chars,
             "wall_s": round(wall, 1),
             "llm_calls": len(self.llm_calls),

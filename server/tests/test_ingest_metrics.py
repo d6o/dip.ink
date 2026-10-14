@@ -248,5 +248,90 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(out["llm_failure_kinds"], {"json_truncated": 3})
 
 
+class PayloadFreeErrorTests(unittest.IsolatedAsyncioTestCase):
+    MARKER = 'PRIVATE_MODEL_INPUT_DO_NOT_RECORD'
+
+    def validation_error(self):
+        from pydantic import BaseModel, ValidationError
+        class Output(BaseModel):
+            count: int
+        try:
+            Output(count=self.MARKER)
+        except ValidationError as error:
+            return error
+        raise AssertionError('Expected a synthetic validation error')
+
+    async def test_validation_input_never_reaches_metric_log_or_store(self):
+        import io
+        from contextlib import redirect_stdout
+        error = self.validation_error()
+        self.assertIn(self.MARKER,str(error))
+        record=ingest_metrics.NoteMetrics(slug='fixture',body_chars=0).summary(outcome='fail',error=error)
+        self.assertEqual(record['error'],'ValidationError (schema); validation_errors=1')
+        driver=SimpleNamespace(client=SimpleNamespace(execute_query=mock.AsyncMock()))
+        out=io.StringIO()
+        with redirect_stdout(out):
+            ingest_metrics.emit(record)
+            await ingest_metrics.persist(driver,record)
+        self.assertNotIn(self.MARKER,out.getvalue())
+        self.assertNotIn(self.MARKER,json.dumps(driver.client.execute_query.call_args.kwargs))
+
+    async def test_span_receives_only_safe_exception_and_original_type_survives(self):
+        from contextlib import contextmanager
+        error=self.validation_error()
+        span=mock.Mock()
+        auto=[]
+        @contextmanager
+        def scope(name):
+            try:
+                yield span
+            except Exception as raw:
+                auto.append(raw)
+                raise
+        client=ClientInstrumentationTests.make_client(None,[])
+        client._apply_attribute_extraction_preamble=lambda *a:None
+        client.structured_output_mode='json_schema'
+        client.max_tokens=400
+        client.tracer=SimpleNamespace(start_span=scope)
+        client._generate_response_with_retry=mock.AsyncMock(side_effect=error)
+        with self.assertRaises(type(error)) as caught:
+            await client.generate_response([SimpleNamespace(role='system',content='fixture')])
+        self.assertIs(caught.exception,error)
+        self.assertEqual(auto,[])
+        self.assertNotIn(self.MARKER,str(span.set_status.call_args))
+        safe=span.record_exception.call_args.args[0]
+        self.assertNotIn(self.MARKER,str(safe))
+        self.assertIsNone(safe.__traceback__)
+        self.assertIsNone(safe.__context__)
+
+    async def test_historical_report_output_ignores_raw_error(self):
+        row={'slug':'fixture','at':'2026-10-14T00:00:00Z','outcome':'fail','wall_s':1,
+             'error_kind':'schema','error':self.MARKER,'body_chars':0}
+        report=ingest_report.aggregate([row])
+        self.assertNotIn(self.MARKER,json.dumps(report))
+        self.assertEqual(report['errors'],[('schema',1)])
+        driver=mock.Mock()
+        driver.execute_query.return_value=([{'m':row}],None,None)
+        with mock.patch('neo4j.GraphDatabase.driver',return_value=driver):
+            rows=ingest_report.fetch(.05)
+        self.assertNotIn(self.MARKER,json.dumps(rows))
+
+    async def test_ingest_failure_log_does_not_print_exception_repr(self):
+        import io
+        from contextlib import redirect_stderr
+        from datetime import datetime,timezone
+        error=self.validation_error();out=io.StringIO()
+        with mock.patch.object(ingest,'_prepare_note_for_reingest',new=mock.AsyncMock()), \
+             mock.patch.object(ingest,'_ingest_note',new=mock.AsyncMock(side_effect=error)), redirect_stderr(out):
+            result=await ingest._run_pending_batch(SimpleNamespace(),{},[(datetime.now(timezone.utc),'fixture',Path('/tmp/unused'))],group_id='fixture',prefix='fixture')
+        self.assertNotIn(self.MARKER,out.getvalue())
+        self.assertIn('ValidationError (schema)',out.getvalue())
+        self.assertEqual(result,(0,1,False))
+
+    async def test_provider_error_keeps_status_without_body(self):
+        error=RuntimeError(self.MARKER);error.status_code=503
+        self.assertEqual(ingest_metrics.error_summary(error),'RuntimeError (provider_5xx); status=503')
+
+
 if __name__ == "__main__":
     unittest.main()

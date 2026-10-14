@@ -139,6 +139,8 @@ class CompactSchemaClient(OpenAIGenericClient):
                 + example
             )
         messages[0].content += get_extraction_language_instruction(group_id)
+        caught = None
+        result = None
         with self.tracer.start_span("llm.generate") as span:
             span.add_attributes(
                 {
@@ -150,15 +152,21 @@ class CompactSchemaClient(OpenAIGenericClient):
             )
             prompt_token = ingest_metrics.set_prompt(prompt_name)
             try:
-                return await self._generate_response_with_retry(
+                result = await self._generate_response_with_retry(
                     messages, response_model, max_tokens=max_tokens, model_size=model_size
                 )
             except Exception as e:
-                span.set_status("error", str(e))
-                span.record_exception(e)
-                raise
+                safe = ingest_metrics.error_summary(e)
+                span.set_status("error", safe)
+                span.record_exception(RuntimeError(safe))
+                caught = e
             finally:
                 ingest_metrics.reset_prompt(prompt_token)
+        # Do not pass the payload-bearing exception through the span context.
+        # Preserve its type and retry behavior for the caller.
+        if caught is not None:
+            raise caught
+        return result
 
     async def _run_with_outage_waits(self, call):
         """Run the ladder; wait out recoverable provider errors before failing."""
@@ -953,7 +961,7 @@ async def _run_pending_batch(
         except Exception as error:  # one note failing must not kill the run
             consecutive_fail += 1
             fail += 1
-            print(f"[{prefix}] FAIL {slug}: {error!r}", file=sys.stderr)
+            print(f"[{prefix}] FAIL {slug}: {ingest_metrics.error_summary(error)}", file=sys.stderr)
         if circuit_breaker_threshold and consecutive_fail >= circuit_breaker_threshold:
             print(
                 f"[{prefix}] circuit breaker tripped after {consecutive_fail} consecutive "

@@ -18,6 +18,7 @@ from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, "/app")
+from ingest_metrics import report_error_kind
 
 
 def pct(values: list[float], p: float) -> float | None:
@@ -49,6 +50,9 @@ def fetch(days: float) -> list[dict]:
             row.update(json.loads(row.pop("detail", "") or "{}"))
         except json.JSONDecodeError:
             pass
+        # Historical records can contain exception input excerpts. Keep those
+        # bytes in their original store, not in diagnostic report output.
+        row["error"] = report_error_kind(row) if row.get("outcome") != "ok" else ""
         rows.append(row)
     return rows
 
@@ -62,7 +66,7 @@ def aggregate(rows: list[dict]) -> dict:
         "notes_with_retries": sum(1 for c in Counter(r["slug"] for r in rows).values() if c > 1),
         "ok_per_day": Counter(r["at"][:10] for r in ok),
         "error_kinds": Counter(r.get("error_kind") for r in rows if r.get("outcome") != "ok"),
-        "errors": Counter(r.get("error") for r in rows if r.get("outcome") != "ok").most_common(8),
+        "errors": Counter(report_error_kind(r) for r in rows if r.get("outcome") != "ok").most_common(8),
     }
     if not rows:
         return out
