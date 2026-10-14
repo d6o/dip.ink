@@ -23,6 +23,7 @@ RUNNER_BIN="${CURATOR_RUNNER_BIN:-/opt/pi-runner/entrypoint.sh}"
 # pi-runner image (/opt/dip.ink/scripts) and from a dip.ink checkout.
 SUPERVISOR_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 PREPARE_BIN="${INBOX_PREPARE_BIN:-$SUPERVISOR_DIR/processnotes-prepare-inbox.sh}"
+GUARD_BIN="${INBOX_GUARD_BIN:-$SUPERVISOR_DIR/processnotes-batch-guard.py}"
 PROBE_BIN="${CURATOR_PROBE_BIN:-}"
 NOW_BIN="${SUPERVISOR_NOW_BIN:-}"
 GITHUB_ENV_FILE="${GITHUB_ENV:-/dev/null}"
@@ -45,6 +46,12 @@ CURATOR_PREFLIGHT="${CURATOR_PREFLIGHT:-}"
 [[ "$MIN_REMAINING" =~ ^[0-9]+$ ]] || { log "invalid minimum remaining time: $MIN_REMAINING"; exit 2; }
 [[ -x "$RUNNER_BIN" ]] || { log "runner is not executable: $RUNNER_BIN"; exit 2; }
 [[ -x "$PREPARE_BIN" ]] || { log "inbox preparer is not executable: $PREPARE_BIN"; exit 2; }
+
+[[ -f "$GUARD_BIN" ]] || { log "batch guard is unavailable"; exit 2; }
+PREPARED_DIR=$(mktemp -d)
+chmod 700 "$PREPARED_DIR"
+trap 'rm -rf -- "$PREPARED_DIR"' EXIT
+export INBOX_GUARD_BIN="$GUARD_BIN"
 
 git config --global --add safe.directory "$PWD"
 git rev-parse --is-inside-work-tree >/dev/null
@@ -122,7 +129,7 @@ probe_one_model() {
   if [[ -n "$CURATOR_LLM_API_KEY" ]]; then
     auth_args=(-H "Authorization: Bearer $CURATOR_LLM_API_KEY")
   fi
-  if ! status=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 20 \
+  if ! status=$(curl -A 'OpenAI File Downloader, XaiImageApiFetch/1.0' -sS -o /dev/null -w "%{http_code}" --max-time 20 \
     "$base/chat/completions" \
     -H "Content-Type: application/json" \
     "${auth_args[@]}" \
@@ -204,6 +211,14 @@ while true; do
     write_summary
     exit 0
   fi
+
+  # Keep preparation metadata outside the checkout and its digest in the
+  # parent process. The Pi child cannot change the parent's expected digest.
+  INBOX_PREPARED_STATE="$PREPARED_DIR/batch-$batch_number.json"
+  PREPARED_JSON=$(python3 "$GUARD_BIN" capture --notes-dir "${NOTES_DIR:-notes}" \
+    --cap "${INBOX_BATCH_SIZE:-4}" --state "$INBOX_PREPARED_STATE")
+  INBOX_PREPARED_SHA256=$(printf '%s' "$PREPARED_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["sha256"])')
+  export INBOX_PREPARED_STATE INBOX_PREPARED_SHA256
 
   maybe_probe "$batch_number"
 

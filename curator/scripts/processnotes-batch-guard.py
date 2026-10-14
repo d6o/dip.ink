@@ -40,7 +40,8 @@ def check_repo_root(root):
     for candidate in (root, *root.parents):
         if exists(candidate / ".git"):
             require(candidate == root, "not-repository-root")
-            break
+            return
+    raise GuardError("not-repository-root")
 
 
 def safe_path(root, relative):

@@ -99,6 +99,10 @@ jobs:
           python-version: "3.12"
       - name: Install validator dependency
         run: python -m pip install 'PyYAML>=6.0,<7'
+      - name: Run prepared batch guard tests
+        run: python curator/scripts/test-processnotes-batch-guard.py
+      - name: Run prepared runner boundary tests
+        run: bash curator/pi-runner/tests/test-prepared-boundary.sh
       - name: Run curator supervisor shell tests
         run: bash curator/scripts/test-processnotes-supervisor.sh
       - name: Validate a fresh template repository

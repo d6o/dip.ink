@@ -41,7 +41,12 @@ case "$FAKE_MODE:$count" in
       mkdir -p "$(dirname "$destination")"
       mv "notes/$slug" "$destination"
       mv "$destination/NOTE.md" "$destination/$slug.md"
-      printf '\nSynthetic source format change.\n' >> "$destination/$slug.md"
+      python3 - "$destination/$slug.md" "$slug" <<'PYFORMAT'
+import sys
+from pathlib import Path
+p=Path(sys.argv[1]); text=p.read_text()
+p.write_text(text.replace("---\n","---\ntype: source\n",1).replace("# Fixture","# "+sys.argv[2],1))
+PYFORMAT
     done
     ;;
   mixed:1)
@@ -50,6 +55,12 @@ case "$FAKE_MODE:$count" in
     mkdir -p "$(dirname "$destination")"
     mv "notes/$slug" "$destination"
     mv "$destination/NOTE.md" "$destination/$slug.md"
+    python3 - "$destination/$slug.md" "$slug" <<'PYFORMAT'
+import sys
+from pathlib import Path
+p=Path(sys.argv[1]); text=p.read_text()
+p.write_text(text.replace("---\n","---\ntype: source\n",1).replace("# Fixture","# "+sys.argv[2],1))
+PYFORMAT
     NOTES_DIR=notes BLOCKED_AT=2026-01-02T03:04:05Z \
       bash "$FIXTURE_BLOCK" 2026-01-01-000002-fixture corrupt-input >/dev/null
     rm -rf notes/2026-01-01-000003-fixture
@@ -142,8 +153,8 @@ PY
       PI_BIN="$TMP/fake-pi" PI_EVENT_LOGGER="$TMP/fake-event-logger" \
       VALIDATOR="$TMP/fake-validator" WIKI_REPO_TOKEN=synthetic-unused \
       COMMIT_MESSAGE='Record the synthetic batch' \
-      PROCESSNOTES_BATCH_STATE="$state" PROCESSNOTES_BATCH_SHA256="$digest" \
-      PROCESSNOTES_BATCH_GUARD_BIN="$GUARD" \
+      INBOX_PREPARED_STATE="$state" INBOX_PREPARED_SHA256="$digest" \
+      INBOX_GUARD_BIN="$GUARD" \
       FAKE_MODE="$mode" FAKE_PI_COUNT="$TMP/$name-pi-count" \
       FAKE_VALIDATOR_COUNT="$TMP/$name-validator-count" \
       FIXTURE_STATE="$state" FIXTURE_BLOCK="$BLOCK" \

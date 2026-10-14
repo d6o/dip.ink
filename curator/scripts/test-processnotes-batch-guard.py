@@ -76,6 +76,8 @@ class PreparedBoundaryTests(unittest.TestCase):
         return result
 
     def capture(self):
+        # Each disposable subcase gets a new immutable state file.
+        self.state = Path(self.temp.name) / ("private-state-" + str(__import__('uuid').uuid4()) + ".json")
         self.prepare()
         result = self.guard("capture", "--notes-dir", "notes", "--cap", "4",
                             "--state", self.state)
@@ -119,6 +121,9 @@ class PreparedBoundaryTests(unittest.TestCase):
         else:
             shutil.move(source, destination)
         (destination / "NOTE.md").rename(destination / f"{name}.md")
+        source_file = destination / f"{name}.md"
+        text = source_file.read_text()
+        source_file.write_text(text.replace("---\n", "---\ntype: source\n", 1).replace("# Fixture", "# " + name, 1))
         return destination
 
     def test_cap_four_from_thirteen_with_existing_deferred(self):
@@ -176,7 +181,7 @@ class PreparedBoundaryTests(unittest.TestCase):
                     elif change == "file_mode":
                         file.chmod(0o755)
                     elif change == "folder_mode":
-                        path.chmod(0o700)
+                        path.chmod(stat.S_IMODE(path.stat().st_mode) ^ 0o010)
                     elif change == "file_type":
                         file.unlink()
                         file.symlink_to("NOTE.md")
@@ -256,9 +261,8 @@ class PreparedBoundaryTests(unittest.TestCase):
         for index in range(4):
             dest = self.canonical(index)
             self.assertTrue((dest / "attachment ü.bin").is_file())
-            # Normal source format changes remain supported.
-            with (dest / f"{self.names[index]}.md").open("a", encoding="utf-8") as file:
-                file.write("\nSynthetic source format change.\n")
+            # Canonical frontmatter and H1 changes preserve the source body.
+            self.assertIn("type: source", (dest / f"{self.names[index]}.md").read_text())
         self.verify()
 
     def test_canonical_attachment_change_fails(self):
