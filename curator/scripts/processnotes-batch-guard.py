@@ -85,8 +85,30 @@ def check_link_target(item, target, root):
                 path = path.joinpath(*parts[index + 1:])
                 break
         else:
-            return
+            return path
     raise GuardError("symlink-cycle")
+
+
+def link_referents(folder, tree, root):
+    """Record resolved paths and target metadata for selected link attachments."""
+    referents = {}
+    for name, entry in tree.items():
+        if entry["type"] != "link":
+            continue
+        resolved = check_link_target(folder / name, entry["target"], root)
+        require(exists(resolved), "missing-symlink-target")
+        info = resolved.lstat()
+        target = {"path": str(resolved.relative_to(root)),
+                  "mode": stat.S_IMODE(info.st_mode)}
+        if stat.S_ISREG(info.st_mode):
+            digest, size = read_file(resolved)
+            target.update(type="file", sha256=digest, size=size)
+        elif stat.S_ISDIR(info.st_mode):
+            target.update(type="dir")
+        else:
+            raise GuardError("unsupported-symlink-target")
+        referents[name] = target
+    return referents
 
 
 def snapshot(path, root):
@@ -175,12 +197,8 @@ def preflight(root, notes):
     snapshot(notes, root)
     snapshot(safe_path(root, "raw"), root)
     source_tree = snapshot(safe_path(root, "wiki/sources/notes"), root)
-    source_slugs = set()
-    for name, entry in source_tree.items():
-        path = Path(name)
-        if entry["type"] == "file" and path.name == f"{path.parent.name}.md":
-            require(path.parent.name not in source_slugs, "duplicate-source-identity")
-            source_slugs.add(path.parent.name)
+    require(all(len(paths) == 1 for paths in source_identities(source_tree).values()),
+            "duplicate-source-identity")
     return groups
 
 
@@ -283,15 +301,24 @@ def canonical_path(slug):
     return f"wiki/sources/notes/{year}/{month}/{day}/{slug}"
 
 
-def source_identity_exists(tree, slug):
-    """Include source folders and canonical pages at any prior source path."""
+def source_identities(tree):
+    """Record each archived slug and its folder paths, including legacy paths."""
+    identities = {}
     for name, entry in tree.items():
         path = Path(name)
-        if path.name == slug and entry["type"] in ("dir", "link"):
-            return True
-        if path.parent.name == slug and path.name == f"{slug}.md":
-            return True
-    return False
+        parts = path.parts
+        dated_folder = (len(parts) == 4 and re.fullmatch(r"\d{4}", parts[0])
+                        and re.fullmatch(r"\d{2}", parts[1])
+                        and re.fullmatch(r"\d{2}", parts[2]))
+        if entry["type"] in ("dir", "link") and (
+                dated_folder or re.match(r"^\d{4}-\d{2}-\d{2}-", path.name)):
+            slug, folder = path.name, str(path)
+        elif path.parent.name and path.name == f"{path.parent.name}.md":
+            slug, folder = path.parent.name, str(path.parent)
+        else:
+            continue
+        identities.setdefault(slug, set()).add(folder)
+    return {slug: sorted(paths) for slug, paths in identities.items()}
 
 
 def counts(state):
@@ -313,13 +340,16 @@ def capture(root, notes, cap, state_path):
     tree = snapshot(notes, root)
     for slug, folder in groups["live"].items():
         source_name, parts = source_input(folder, slug)
-        state["selected"][slug] = {"tree": snapshot(folder, root),
+        selected_tree = snapshot(folder, root)
+        state["selected"][slug] = {"tree": selected_tree,
+                                    "link_referents": link_referents(folder, selected_tree, root),
                                     "source_name": source_name, "source": parts}
         tree = {path: entry for path, entry in tree.items()
                 if path != slug and not path.startswith(slug + "/")}
     state["protected_notes"] = tree
     state["raw"] = snapshot(safe_path(root, "raw"), root)
     state["sources"] = snapshot(safe_path(root, "wiki/sources/notes"), root)
+    state["source_identities"] = source_identities(state["sources"])
     # Capture both sides of each queue move, even if a source path did not exist.
     absent = []
     for slug in groups["held"]:
@@ -368,6 +398,8 @@ def check_canonical(folder, slug, prepared, root):
     require(canonical is not None and canonical["type"] == "file"
             and original["mode"] == canonical["mode"], "canonical-source-missing")
     require(tree == expected, "canonical-attachments-changed")
+    require(link_referents(folder, tree, root) == prepared["link_referents"],
+            "canonical-symlink-referent-changed")
     with open(folder / f"{slug}.md", "rb") as stream:
         data = stream.read(16 * 1024 * 1024 + 1)
     parts, title, blocks = source_parts(data)
@@ -405,6 +437,8 @@ def verify(root, state_path, digest, prepared_stage=False):
     require(snapshot(safe_path(root, "raw"), root) == state["raw"], "raw-changed")
     tree = snapshot(notes, root)
     source_tree = snapshot(safe_path(root, "wiki/sources/notes"), root)
+    archived = source_identities(source_tree)
+    require(all(len(paths) == 1 for paths in archived.values()), "duplicate-source-identity")
     allowed_sources = set()
     for slug, prepared in state["selected"].items():
         live = notes / slug
@@ -419,16 +453,19 @@ def verify(root, state_path, digest, prepared_stage=False):
         require(sum((exists(live), exists(blocked), new_canonical)) <= 1,
                 "selected-action-ambiguous")
         if exists(live):
-            require(canonical is None or not exists(canonical) or (prepared_stage and not new_canonical),
+            require(slug not in archived or (prepared_stage
+                    and archived[slug] == state["source_identities"].get(slug)),
                     "canonicalized-input-still-live")
-            require(snapshot(live, root) == prepared["tree"], "selected-live-changed")
+            live_tree = snapshot(live, root)
+            require(live_tree == prepared["tree"], "selected-live-changed")
+            require(link_referents(live, live_tree, root) == prepared["link_referents"],
+                    "selected-symlink-referent-changed")
             prefix = slug
         elif exists(blocked):
             check_blocked(blocked, slug, prepared, root)
             prefix = f".blocked/{slug}"
         elif new_canonical:
-            require(not source_identity_exists(state["sources"], slug),
-                    "canonical-identity-exists")
+            require(slug not in state["source_identities"], "canonical-identity-exists")
             check_canonical(canonical, slug, prepared, root)
             prefix = None
             for key in source_tree:
