@@ -206,6 +206,27 @@ def prepare(root, notes, cap):
             "blocked": len(actual["blocked"]), "cap": cap}
 
 
+def first_h1(lines):
+    """Do not treat a code line inside a Markdown fence as a title."""
+    fence = None
+    for index, line in enumerate(lines):
+        if fence is not None:
+            marker, length = fence
+            closing = rf"^ {{0,3}}{re.escape(marker)}{{{length},}}[ \t]*(?:\r?\n)?$"
+            if re.fullmatch(closing, line):
+                fence = None
+            continue
+        opening = re.match(r"^ {0,3}(`{3,}|~{3,})(.*)", line)
+        if opening is not None:
+            marker, suffix = opening.groups()
+            if marker[0] != "`" or "`" not in suffix:
+                fence = (marker[0], len(marker))
+                continue
+        if line.startswith("# "):
+            return index
+    return None
+
+
 def source_parts(data):
     """Hash source text after the permitted frontmatter and H1 changes.
 
@@ -235,7 +256,7 @@ def source_parts(data):
                 for key, value in blocks.items() if key not in mutable}
     body = lines[end + 1:]
     full_body = hashlib.sha256("".join(body).strip("\r\n").encode()).hexdigest()
-    h1 = next((i for i, line in enumerate(body) if line.startswith("# ")), None)
+    h1 = first_h1(body)
     title = body.pop(h1).rstrip("\r\n") if h1 is not None else None
     digest = hashlib.sha256("".join(body).strip("\r\n").encode()).hexdigest()
     return {"body": digest, "full_body": full_body, "metadata": metadata}, title, blocks
