@@ -802,6 +802,34 @@ class PreparedBoundaryTests(unittest.TestCase):
     def test_maximum_year_offset_metadata_key_remains_supported(self):
         self.protected_extended_metadata_key("9999-12-31T23:00:00-02:00")
 
+    def equivalent_scalar_key_cannot_override_original(self, original, equivalent):
+        self.source_metadata_fixture(f"index-description: Fixture summary\n{original}: Original scalar value\n")
+        self.capture()
+        source = self.canonical() / (self.names[0] + ".md")
+        self.verify()
+        original_line = f"{original}: Original scalar value\n"
+        source.write_text(source.read_text().replace(original_line,
+                          original_line + f"{equivalent}: Changed scalar value\n", 1))
+        result = self.verify(success=False)
+        self.assertIn("canonical-inherited-metadata-changed", result.stderr)
+
+    def test_equivalent_positive_infinity_cannot_override_original(self):
+        self.equivalent_scalar_key_cannot_override_original(".inf", ".Inf")
+
+    def test_equivalent_negative_infinity_cannot_override_original(self):
+        self.equivalent_scalar_key_cannot_override_original("-.inf", "-.Inf")
+
+    def test_equivalent_nan_cannot_override_original(self):
+        self.equivalent_scalar_key_cannot_override_original(".nan", ".NaN")
+
+    def test_equivalent_minimum_year_timestamp_cannot_override_original(self):
+        self.equivalent_scalar_key_cannot_override_original(
+            "0001-01-01T00:00:00+01:00", "0001-01-01T01:00:00+02:00")
+
+    def test_equivalent_maximum_year_timestamp_cannot_override_original(self):
+        self.equivalent_scalar_key_cannot_override_original(
+            "9999-12-31T23:00:00-02:00", "9999-12-31T22:00:00-03:00")
+
     def test_complete_folder_moves_with_attachments_work(self):
         self.capture()
         for index in range(4):
