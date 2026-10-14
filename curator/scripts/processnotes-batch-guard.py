@@ -274,7 +274,12 @@ def first_h1(lines):
 def resolved_metadata_hashes(lines, mutable):
     """Hash bounded YAML node dependencies without constructing custom objects."""
     try:
-        root = yaml.compose("".join(lines), Loader=yaml.SafeLoader)
+        text = "".join(lines)
+        anchors = {event.start_mark.index: event.anchor
+                   for event in yaml.parse(text, Loader=yaml.SafeLoader)
+                   if getattr(event, "anchor", None) is not None
+                   and not isinstance(event, yaml.AliasEvent)}
+        root = yaml.compose(text, Loader=yaml.SafeLoader)
     except (yaml.YAMLError, RecursionError):
         raise GuardError("invalid-source-metadata") from None
     require(isinstance(root, yaml.MappingNode), "invalid-source-metadata")
@@ -305,6 +310,8 @@ def resolved_metadata_hashes(lines, mutable):
             children = [item for pair in node.value for item in pair]
         else:
             raise GuardError("unsupported-metadata-node")
+        # An alias retains the defining anchor's stable identity, not its address.
+        value.append(["anchor", anchors.get(node.start_mark.index)])
         result = hashlib.sha256(json.dumps(value, ensure_ascii=True,
                                separators=(",", ":")).encode()).hexdigest()
         active.remove(identity)
@@ -328,6 +335,7 @@ def resolved_metadata_hashes(lines, mutable):
         metadata.setdefault(key_digest, []).append(digest(value))
     merge_cache, merge_active = {}, set()
     key_loader = yaml.SafeLoader("")
+    nan_anchors = {}
 
     def key_value(node):
         require(isinstance(node, yaml.ScalarNode), "unsupported-metadata-key")
@@ -338,7 +346,11 @@ def resolved_metadata_hashes(lines, mutable):
         require(node.tag.removeprefix("tag:yaml.org,2002:") in allowed,
                 "unsupported-metadata-key")
         try:
-            return key_loader.construct_object(node, deep=True)
+            value = key_loader.construct_object(node, deep=True)
+            anchor = anchors.get(node.start_mark.index)
+            if isinstance(value, float) and value != value and value is not key_loader.nan_value and anchor:
+                nan_anchors[id(value)] = anchor
+            return value
         except (yaml.YAMLError, ValueError, TypeError):
             raise GuardError("invalid-metadata-key") from None
 
@@ -385,7 +397,7 @@ def resolved_metadata_hashes(lines, mutable):
             if key != key:
                 # SafeLoader uses its shared built-in NaN mapping key.
                 value = ["number", "shared-nan" if key is key_loader.nan_value
-                         else "independent-nan"]
+                         else "independent-nan", nan_anchors.get(id(key))]
             elif key == float("inf"):
                 value = ["number", "positive-infinity"]
             elif key == float("-inf"):
@@ -513,7 +525,7 @@ def capture(root, notes, cap, state_path):
     pool = sorted(set(groups["live"]) | set(groups["held"]))
     require(sorted(groups["live"]) == pool[:cap] and len(groups["live"]) <= cap,
             "capture-selection-mismatch")
-    state = {"version": 4, "notes": str(notes.relative_to(root)), "cap": cap,
+    state = {"version": 5, "notes": str(notes.relative_to(root)), "cap": cap,
              "selected": {}, "held_count": len(groups["held"]),
              "blocked_count": len(groups["blocked"])}
     tree = snapshot(notes, root)
@@ -612,7 +624,7 @@ def verify(root, state_path, digest, prepared_stage=False):
     require(len(data) <= 64 * 1024 * 1024, "state-too-large")
     require(hmac.compare_digest(hashlib.sha256(data).hexdigest(), digest), "state-digest-mismatch")
     state = json.loads(data)
-    require(state["version"] == 4 and state["cap"] > 0, "invalid-state-schema")
+    require(state["version"] == 5 and state["cap"] > 0, "invalid-state-schema")
     notes = notes_path(root, state["notes"])
     actual = inventories(notes)
     require(len(actual["live"]) <= state["cap"]

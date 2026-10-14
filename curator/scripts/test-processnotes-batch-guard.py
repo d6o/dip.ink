@@ -686,8 +686,8 @@ class PreparedBoundaryTests(unittest.TestCase):
     def test_legacy_manifest_requires_new_capture(self):
         self.capture()
         state = json.loads(self.state.read_text())
-        self.assertEqual(state["version"], 4)
-        for version in (1, 2, 3):
+        self.assertEqual(state["version"], 5)
+        for version in (1, 2, 3, 4):
             with self.subTest(version=version):
                 state["version"] = version
                 self.state.write_text(json.dumps(state))
@@ -857,6 +857,33 @@ class PreparedBoundaryTests(unittest.TestCase):
             "index-description: Fixture summary\n.nan: Shared value\n!!float nan: Independent value\n")
         self.capture()
         self.canonical()
+        self.verify()
+
+    def nan_alias_association_source(self):
+        self.source_metadata_fixture(
+            "tags: [&keyA !!float nan, &keyB !!float nan]\n"
+            "index-description: &defaults {? *keyA : Original A, ? *keyB : Original B}\n"
+            "<<: *defaults\ncontext: {first: *keyA, second: *keyB}\n")
+        self.capture()
+        return self.canonical() / (self.names[0] + ".md")
+
+    def test_nan_alias_association_swap_rejects(self):
+        source = self.nan_alias_association_source()
+        self.verify()
+        source.write_text(source.read_text().replace(
+            "{? *keyA : Original A, ? *keyB : Original B}",
+            "{? *keyB : Original A, ? *keyA : Original B}", 1))
+        self.verify(success=False)
+
+    def test_unchanged_nan_alias_association_passes(self):
+        self.nan_alias_association_source()
+        self.verify()
+
+    def test_mutable_anchor_definition_order_keeps_protected_association(self):
+        source = self.nan_alias_association_source()
+        source.write_text(source.read_text().replace(
+            "tags: [&keyA !!float nan, &keyB !!float nan]",
+            "tags: [&keyB !!float nan, &keyA !!float nan]", 1))
         self.verify()
 
     def test_complete_folder_moves_with_attachments_work(self):
