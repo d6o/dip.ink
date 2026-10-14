@@ -35,7 +35,7 @@ CREATE (b:Entity:DipinkRepairFixture {uuid:item.uuid+'-b', group_id:$group})
 CREATE (a)-[r:RELATES_TO {
  uuid:item.uuid, group_id:$group, fact:$fact, episodes:[$ep],
  valid_at:datetime('2026-10-13T10:51:14Z'),
- invalid_at:datetime('2026-10-14T00:28:59Z'), expired_at:datetime(item.expired)
+ invalid_at:datetime('2026-10-14T00:28:59Z[UTC]'), expired_at:datetime(item.expired)
 }]->(b)
 """, items=[{"uuid": i, "expired": e} for i, (_, e) in expected.items()],
                       group=prefix, fact=fixture_fact, ep=prefix).consume()
@@ -86,6 +86,17 @@ CREATE (a)-[r:RELATES_TO {
                 with driver.session(default_access_mode="WRITE") as s:
                     s.run("MATCH ()-[r:RELATES_TO {uuid:$id}]->() REMOVE r.concurrent", id=ids[0]).consume()
                 original = snapshot()
+
+                with driver.session(default_access_mode="WRITE") as s:
+                    tx = s.begin_transaction()
+                    try:
+                        corrected = repair.apply(tx, original, datetime.now(timezone.utc))
+                        self.assertEqual(set(corrected), set(ids))
+                        changed = list(tx.run(repair.READ, ids=ids))
+                        self.assertTrue(all(r["properties"].get("invalid_at") is None for r in changed))
+                    finally:
+                        tx.rollback()
+                self.assertEqual(snapshot(), original)
 
                 # Force the second final predicate to miss after the first
                 # write. Native transaction rollback must retain both edges.

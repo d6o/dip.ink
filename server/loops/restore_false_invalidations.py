@@ -33,29 +33,32 @@ FACTS = {
         "2026-10-14T00:46:02.731229+00:00",
     ),
 }
-READ = """
+# The server signature preserves native value types and datetime zones. Bolt
+# can round-trip UTC named zones as offsets, so parameter-map equality fails.
+SIGNATURE = "apoc.convert.toJson([k IN apoc.coll.sort(keys(r)) | {key:k, type:valueType(r[k]), value:r[k], zone:CASE WHEN valueType(r[k]) STARTS WITH 'ZONED DATETIME' THEN (r[k]).timezone ELSE null END}])"
+READ = f"""
 MATCH (a:Entity)-[r:RELATES_TO]->(b:Entity)
 WHERE r.uuid IN $ids
 RETURN r.uuid AS uuid, a.uuid AS source_uuid, b.uuid AS target_uuid,
-       properties(r) AS properties
+       properties(r) AS properties, {SIGNATURE} AS signature
 """
-LOCK = """
-MATCH (a:Entity)-[r:RELATES_TO {uuid:$uuid}]->(b:Entity)
+LOCK = f"""
+MATCH (a:Entity)-[r:RELATES_TO {{uuid:$uuid}}]->(b:Entity)
 WITH a, b, r
 CALL apoc.lock.rels([r])
 CALL apoc.lock.nodes([a, b])
 RETURN r.uuid AS uuid, a.uuid AS source_uuid, b.uuid AS target_uuid,
-       properties(r) AS properties
+       properties(r) AS properties, {SIGNATURE} AS signature
 """
-APPLY = """
-MATCH (a:Entity)-[r:RELATES_TO {uuid:$uuid}]->(b:Entity)
+APPLY = f"""
+MATCH (a:Entity)-[r:RELATES_TO {{uuid:$uuid}}]->(b:Entity)
 WHERE a.uuid = $source_uuid AND b.uuid = $target_uuid
-  AND properties(r) = $properties
-CREATE (c:DipinkProjectionCorrection {
+  AND {SIGNATURE} = $signature
+CREATE (c:DipinkProjectionCorrection {{
     key:$key, edge_uuid:$uuid, source_uuid:a.uuid, target_uuid:b.uuid,
     corrected_at:$at, reason:$reason, source_names:$source_names,
     prior_state_json:$prior_state_json
-})
+}})
 SET r.invalid_at = null, r.expired_at = null
 RETURN r.uuid AS uuid
 """
@@ -119,7 +122,7 @@ def apply(tx, rows, at):
         p = row["properties"]
         result = tx.run(
             APPLY, uuid=row["uuid"], source_uuid=row["source_uuid"],
-            target_uuid=row["target_uuid"], properties=p,
+            target_uuid=row["target_uuid"], signature=row["signature"],
             key="dipink4-restore-" + row["uuid"], at=at, reason=REASON,
             source_names=SOURCE_NAMES,
             prior_state_json=json.dumps(row, default=str),
