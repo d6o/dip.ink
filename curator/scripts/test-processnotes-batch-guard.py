@@ -493,6 +493,77 @@ class PreparedBoundaryTests(unittest.TestCase):
         self.assertEqual((destination / "linked attachment ü.bin").read_bytes(),
                          b"synthetic actual target")
 
+    def selected_source_body(self, body):
+        self.prepare()
+        source = self.root / "notes" / self.names[0] / "NOTE.md"
+        source.write_text(
+            "---\ncaptured: 2026-01-01T00:00:00Z\n"
+            "session: disposable fixture\ntopic: boundary fixture\n---\n\n" + body,
+            encoding="utf-8")
+
+    def reject_code_comment_title_change(self, body):
+        self.selected_source_body(body)
+        self.capture()
+        source = self.canonical() / (self.names[0] + ".md")
+        original = source.read_text(encoding="utf-8")
+        source.write_text(original.replace("# code original", "# " + self.names[0], 1),
+                          encoding="utf-8")
+        self.verify(success=False)
+
+    def test_backtick_code_comment_is_not_a_replaceable_title(self):
+        self.reject_code_comment_title_change(
+            "```python\n# code original\nprint('synthetic')\n```\n")
+
+    def test_tilde_code_comment_is_not_a_replaceable_title(self):
+        self.reject_code_comment_title_change(
+            "~~~python\n# code original\nprint('synthetic')\n~~~\n")
+
+    def test_shorter_fence_does_not_expose_a_code_comment_title(self):
+        for marker in ("`", "~"):
+            with self.subTest(marker=marker):
+                self.command("git", "reset", "--hard", "-q", "HEAD")
+                self.command("git", "clean", "-fdq")
+                self.reject_code_comment_title_change(
+                    marker * 5 + "\n" + marker * 3 + "\n# code original\n"
+                    + marker * 5 + "\n")
+
+    def test_unclosed_fence_keeps_code_comments_in_the_body(self):
+        for marker in ("`", "~"):
+            with self.subTest(marker=marker):
+                self.command("git", "reset", "--hard", "-q", "HEAD")
+                self.command("git", "clean", "-fdq")
+                self.reject_code_comment_title_change(
+                    marker * 3 + "\n# code original\nsynthetic code\n")
+
+    def test_genuine_title_replacement_preserves_fenced_code_body(self):
+        body = ("`````python\n```\n# code original\nsynthetic code\n`````\n\n"
+                "# Genuine fixture title\n\nSynthetic body.\n")
+        self.selected_source_body(body)
+        self.capture()
+        source = self.canonical() / (self.names[0] + ".md")
+        original = source.read_text(encoding="utf-8")
+        replacement = original.replace("# Genuine fixture title", "# " + self.names[0], 1)
+        source.write_text(replacement, encoding="utf-8")
+        self.verify()
+        self.assertTrue(replacement.endswith(body.replace(
+            "# Genuine fixture title", "# " + self.names[0], 1)))
+
+    def test_title_prepend_preserves_complete_fenced_code_body(self):
+        for body in ("~~~python\n# code original\n~~~\n\n# Genuine fixture title\n",
+                     "`````\n# code original\nsynthetic unclosed code\n"):
+            with self.subTest(body=body.splitlines()[0]):
+                self.command("git", "reset", "--hard", "-q", "HEAD")
+                self.command("git", "clean", "-fdq")
+                self.selected_source_body(body)
+                self.capture()
+                source = self.canonical() / (self.names[0] + ".md")
+                original = source.read_text(encoding="utf-8")
+                frontmatter, complete_body = original.split("\n---\n", 1)
+                source.write_text(frontmatter + "\n---\n\n# " + self.names[0]
+                                  + "\n" + complete_body, encoding="utf-8")
+                self.verify()
+                self.assertTrue(source.read_text(encoding="utf-8").endswith(body))
+
     def test_complete_folder_moves_with_attachments_work(self):
         self.capture()
         for index in range(4):
