@@ -425,6 +425,74 @@ class PreparedBoundaryTests(unittest.TestCase):
         self.assertEqual((destination / "second link.bin").read_bytes(),
                          b"\x00\x01synthetic attachment\xff")
 
+    def stable_link_target(self):
+        folder = self.root / "fixture targets ü"
+        folder.mkdir()
+        target = folder / "document.bin"
+        target.write_bytes(b"synthetic stable target")
+        self.selected_attachment_link(str(target))
+        return target
+
+    def test_canonical_move_preserves_absolute_repository_link(self):
+        target = self.stable_link_target()
+        self.capture()
+        destination = self.canonical()
+        self.verify()
+        self.assertEqual((destination / "linked attachment ü.bin").read_bytes(),
+                         target.read_bytes())
+
+    def test_canonical_move_preserves_alias_to_absolute_repository_link(self):
+        self.stable_link_target()
+        folder = self.root / "notes" / self.names[0]
+        (folder / "second link.bin").symlink_to("linked attachment ü.bin")
+        self.capture()
+        destination = self.canonical()
+        self.verify()
+        self.assertEqual((destination / "second link.bin").read_bytes(),
+                         b"synthetic stable target")
+
+    def test_canonical_move_rejects_target_metadata_changes(self):
+        for change in ("payload", "mode", "type"):
+            with self.subTest(change=change):
+                self.command("git", "reset", "--hard", "-q", "HEAD")
+                self.command("git", "clean", "-fdq")
+                target = self.stable_link_target()
+                self.capture()
+                self.canonical()
+                if change == "payload":
+                    target.write_bytes(b"synthetic changed target")
+                elif change == "mode":
+                    target.chmod(0o755)
+                else:
+                    target.unlink()
+                    target.mkdir()
+                self.verify(success=False)
+
+    def test_live_selected_link_rejects_target_payload_change(self):
+        target = self.stable_link_target()
+        self.capture()
+        target.write_bytes(b"synthetic changed target")
+        self.verify(success=False)
+        self.guard("verify", "--state", self.state, "--sha256", self.digest,
+                   "--repo", self.root, "--prepared", success=False)
+
+    def test_canonical_link_resolves_alias_before_parent_component(self):
+        raw = self.root / "raw"
+        (raw / "inner").mkdir(parents=True)
+        (raw / "doc.bin").write_bytes(b"synthetic actual target")
+        aliases = self.root / "fixture aliases"
+        aliases.mkdir()
+        (aliases / "pivot").symlink_to(raw / "inner", target_is_directory=True)
+        decoy = aliases / "doc.bin"
+        decoy.write_bytes(b"synthetic unrelated file")
+        self.selected_attachment_link(str(aliases / "pivot") + "/../doc.bin")
+        self.capture()
+        destination = self.canonical()
+        decoy.write_bytes(b"synthetic unrelated change")
+        self.verify()
+        self.assertEqual((destination / "linked attachment ü.bin").read_bytes(),
+                         b"synthetic actual target")
+
     def test_complete_folder_moves_with_attachments_work(self):
         self.capture()
         for index in range(4):
