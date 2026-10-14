@@ -190,3 +190,10 @@ python -m unittest discover -s tests -p 'test_*.py' -v
 # NEO4J_INTEGRATION=1 NEO4J_URI=bolt://127.0.0.1:7687 NEO4J_PASSWORD=... \
 #   python -m unittest discover -s tests -p 'test_*integration*.py' -v
 ```
+
+### Ingest diagnostic privacy
+
+New error summaries retain only exception classes, categories, HTTP statuses, and validation counts.
+The ingest log and its client span do not copy exception payloads into these diagnostics.
+Reports omit raw error strings from historical records. This does not delete earlier logs or ledger records.
+Retry rules, model selection, note eligibility, and source order remain unchanged.
