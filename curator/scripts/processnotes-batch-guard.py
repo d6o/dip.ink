@@ -261,6 +261,17 @@ def canonical_path(slug):
     return f"wiki/sources/notes/{year}/{month}/{day}/{slug}"
 
 
+def source_identity_exists(tree, slug):
+    """Include source folders and canonical pages at any prior source path."""
+    for name, entry in tree.items():
+        path = Path(name)
+        if path.name == slug and entry["type"] in ("dir", "link"):
+            return True
+        if path.parent.name == slug and path.name == f"{slug}.md":
+            return True
+    return False
+
+
 def counts(state):
     return {"selected": len(state["selected"]), "held": state["held_count"],
             "blocked": state["blocked_count"], "cap": state["cap"]}
@@ -392,6 +403,8 @@ def verify(root, state_path, digest):
             check_blocked(blocked, slug, prepared, root)
             prefix = f".blocked/{slug}"
         elif new_canonical:
+            require(not source_identity_exists(state["sources"], slug),
+                    "canonical-identity-exists")
             check_canonical(canonical, slug, prepared, root)
             prefix = None
             for key in source_tree:
