@@ -564,6 +564,23 @@ class PreparedBoundaryTests(unittest.TestCase):
                 self.verify()
                 self.assertTrue(source.read_text(encoding="utf-8").endswith(body))
 
+    def original_metadata_field_is_immutable(self, key):
+        self.prepare()
+        note = self.root / "notes" / self.names[0] / "NOTE.md"
+        original = f"{key}: Original synthetic label"
+        note.write_text(note.read_text().replace("---\n", "---\n" + original + "\n", 1))
+        self.capture()
+        source = self.canonical() / (self.names[0] + ".md")
+        self.verify()
+        source.write_text(source.read_text().replace(original, f"{key}: Changed synthetic label", 1))
+        self.verify(success=False)
+
+    def test_original_source_title_is_immutable_metadata(self):
+        self.original_metadata_field_is_immutable("title")
+
+    def test_original_source_name_is_immutable_metadata(self):
+        self.original_metadata_field_is_immutable("name")
+
     def test_complete_folder_moves_with_attachments_work(self):
         self.capture()
         for index in range(4):

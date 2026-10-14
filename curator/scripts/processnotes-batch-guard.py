@@ -293,7 +293,7 @@ def source_parts(data):
             key = "__preamble"
             blocks[key] = []
         blocks[key].append(line)
-    mutable = {"type", "tags", "created", "updated", "index-description", "name", "title"}
+    mutable = {"type", "tags", "created", "updated", "index-description"}
     metadata = {key: hashlib.sha256("".join(value).rstrip("\r\n").encode()).hexdigest()
                 for key, value in blocks.items() if key not in mutable}
     body = lines[end + 1:]

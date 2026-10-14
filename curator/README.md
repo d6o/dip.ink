@@ -53,7 +53,7 @@ Restored preparation paths or excess live inputs stop the workflow.
 The supervisor accepts only `NOTES_DIR=notes`, which matches its prompt and live count.
 The standalone guard CLI can use another inbox root.
 Source-schema frontmatter fields and the first H1 may change during a selected canonical move.
-Preserve `captured`, `session`, `topic`, other original metadata, the remaining source body, and attachments.
+Preserve `captured`, `session`, `topic`, `name`, `title`, other original metadata, the remaining source body, and attachments.
 A selected input with a canonical copy must leave the live inbox after Pi.
 A pre-Pi check permits a captured duplicate so Pi can use a supported block or drop outcome.
 Link checks use folder-relative identity for local targets and repository-relative identity for other in-repository targets.
