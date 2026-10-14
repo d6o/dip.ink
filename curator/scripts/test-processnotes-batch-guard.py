@@ -256,6 +256,26 @@ class PreparedBoundaryTests(unittest.TestCase):
         self.canonical(copy=True)
         self.verify(success=False)
 
+    def test_preexisting_canonical_copy_cannot_keep_selected_live(self):
+        self.prepare()
+        destination = self.canonical(copy=True)
+        self.capture()
+        self.guard("verify", "--state", self.state, "--sha256", self.digest, "--repo", self.root, "--prepared")
+        self.verify(success=False)
+        self.assertTrue(destination.is_dir())
+        self.assertTrue((self.root / "notes" / self.names[0]).is_dir())
+
+    def test_preexisting_canonical_copy_allows_preserved_block(self):
+        self.prepare()
+        destination = self.canonical(copy=True)
+        self.capture()
+        self.guard("verify", "--state", self.state, "--sha256", self.digest, "--repo", self.root, "--prepared")
+        payload = {str(p.relative_to(destination)): p.read_bytes() for p in destination.iterdir() if p.is_file()}
+        env = dict(os.environ, NOTES_DIR="notes", BLOCKED_AT="2026-01-02T03:04:05Z")
+        self.command("bash", str(SCRIPT_DIR / "processnotes-block-note.sh"), self.names[0], "already-ingested", env=env)
+        self.verify()
+        self.assertEqual(payload, {str(p.relative_to(destination)): p.read_bytes() for p in destination.iterdir() if p.is_file()})
+
     def test_complete_folder_moves_with_attachments_work(self):
         self.capture()
         for index in range(4):

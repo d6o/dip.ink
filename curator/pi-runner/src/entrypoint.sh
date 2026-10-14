@@ -107,8 +107,10 @@ check_batch_boundary() {
   local phase=$1
   if [[ -n "${INBOX_PREPARED_STATE:-}" ]]; then
     log "checking prepared batch boundary phase=$phase"
+    local -a guard_phase=()
+    [[ "$phase" != before-pi ]] || guard_phase=(--prepared)
     if ! python3 "$INBOX_GUARD_BIN" verify --state "$INBOX_PREPARED_STATE" \
-      --sha256 "$INBOX_PREPARED_SHA256" --repo "$(git rev-parse --show-toplevel)"; then
+      --sha256 "$INBOX_PREPARED_SHA256" --repo "$(git rev-parse --show-toplevel)" "${guard_phase[@]}"; then
       log "error: prepared batch boundary failed; aborting commit"
       return 3
     fi
