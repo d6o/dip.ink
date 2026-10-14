@@ -686,8 +686,8 @@ class PreparedBoundaryTests(unittest.TestCase):
     def test_legacy_manifest_requires_new_capture(self):
         self.capture()
         state = json.loads(self.state.read_text())
-        self.assertEqual(state["version"], 3)
-        for version in (1, 2):
+        self.assertEqual(state["version"], 4)
+        for version in (1, 2, 3):
             with self.subTest(version=version):
                 state["version"] = version
                 self.state.write_text(json.dumps(state))
@@ -829,6 +829,35 @@ class PreparedBoundaryTests(unittest.TestCase):
     def test_equivalent_maximum_year_timestamp_cannot_override_original(self):
         self.equivalent_scalar_key_cannot_override_original(
             "9999-12-31T23:00:00-02:00", "9999-12-31T22:00:00-03:00")
+
+    def test_independent_nan_cannot_mask_shared_inherited_field_change(self):
+        self.source_metadata_fixture(
+            "defaults: &defaults {.nan: Original inherited value}\n<<: *defaults\n"
+            "index-description: Fixture summary\n!!float nan: Last independent value\n")
+        self.capture()
+        source = self.canonical() / (self.names[0] + ".md")
+        self.verify()
+        source.write_text(source.read_text().replace("!!float nan: Last independent value\n",
+            "!!float nan: Last independent value\n.NaN: Changed inherited value\n", 1))
+        result = self.verify(success=False)
+        self.assertIn("canonical-inherited-metadata-changed", result.stderr)
+
+    def test_multiple_independent_nan_keys_remain_supported_and_protected(self):
+        self.source_metadata_fixture(
+            "index-description: Fixture summary\n!!float nan: First independent value\n"
+            "!!float nan: Second independent value\n")
+        self.capture()
+        source = self.canonical() / (self.names[0] + ".md")
+        self.verify()
+        source.write_text(source.read_text().replace("Second independent value", "Changed independent value", 1))
+        self.verify(success=False)
+
+    def test_shared_and_independent_nan_keys_pass_when_unchanged(self):
+        self.source_metadata_fixture(
+            "index-description: Fixture summary\n.nan: Shared value\n!!float nan: Independent value\n")
+        self.capture()
+        self.canonical()
+        self.verify()
 
     def test_complete_folder_moves_with_attachments_work(self):
         self.capture()

@@ -313,15 +313,19 @@ def resolved_metadata_hashes(lines, mutable):
         require(depth + heights[identity] <= 64, "metadata-depth-limit")
         return result
 
-    metadata, seen = {}, set()
+    metadata, seen = {}, {}
     for key, value in root.value:
         require(isinstance(key, yaml.ScalarNode), "unsupported-metadata-key")
         key_digest = digest(key)
-        require(key_digest not in seen, "duplicate-frontmatter-key")
-        seen.add(key_digest)
+        independent_nan = (key.tag == "tag:yaml.org,2002:float" and
+                           key.value.replace("_", "").strip().lower().lstrip("+-") == "nan")
+        identities = seen.setdefault(key_digest, set())
+        require(not identities or (independent_nan and id(key) not in identities),
+                "duplicate-frontmatter-key")
+        identities.add(id(key))
         if key.tag == "tag:yaml.org,2002:str" and key.value in mutable:
             continue
-        metadata[key_digest] = digest(value)
+        metadata.setdefault(key_digest, []).append(digest(value))
     merge_cache, merge_active = {}, set()
     key_loader = yaml.SafeLoader("")
 
@@ -380,7 +384,8 @@ def resolved_metadata_hashes(lines, mutable):
         elif isinstance(key, float):
             if key != key:
                 # SafeLoader uses its shared built-in NaN mapping key.
-                value = ["number", "nan"]
+                value = ["number", "shared-nan" if key is key_loader.nan_value
+                         else "independent-nan"]
             elif key == float("inf"):
                 value = ["number", "positive-infinity"]
             elif key == float("-inf"):
@@ -406,8 +411,12 @@ def resolved_metadata_hashes(lines, mutable):
                                separators=(",", ":")).encode()).hexdigest()
 
     try:
-        effective = {effective_key(key): digest(value) for key, value in merged(root).items()
-                     if not (isinstance(key, str) and key in mutable)}
+        effective = {}
+        for key, value in merged(root).items():
+            if isinstance(key, str) and key in mutable:
+                continue
+            # Non-reflexive independent NaN keys retain every protected value.
+            effective.setdefault(effective_key(key), []).append(digest(value))
     finally:
         key_loader.dispose()
     return metadata, effective
@@ -504,7 +513,7 @@ def capture(root, notes, cap, state_path):
     pool = sorted(set(groups["live"]) | set(groups["held"]))
     require(sorted(groups["live"]) == pool[:cap] and len(groups["live"]) <= cap,
             "capture-selection-mismatch")
-    state = {"version": 3, "notes": str(notes.relative_to(root)), "cap": cap,
+    state = {"version": 4, "notes": str(notes.relative_to(root)), "cap": cap,
              "selected": {}, "held_count": len(groups["held"]),
              "blocked_count": len(groups["blocked"])}
     tree = snapshot(notes, root)
@@ -603,7 +612,7 @@ def verify(root, state_path, digest, prepared_stage=False):
     require(len(data) <= 64 * 1024 * 1024, "state-too-large")
     require(hmac.compare_digest(hashlib.sha256(data).hexdigest(), digest), "state-digest-mismatch")
     state = json.loads(data)
-    require(state["version"] == 3 and state["cap"] > 0, "invalid-state-schema")
+    require(state["version"] == 4 and state["cap"] > 0, "invalid-state-schema")
     notes = notes_path(root, state["notes"])
     actual = inventories(notes)
     require(len(actual["live"]) <= state["cap"]
