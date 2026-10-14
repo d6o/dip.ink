@@ -76,9 +76,12 @@ The three workflows (`curator` hourly, `synthesis` weekly, `reviewqueue` daily) 
 
 ### 2. Deploy the memory stack
 
-Public runtime images use **immutable tags**, not a moving `latest` tag. The current public release pin is v0.1.46.
+Public runtime images use **immutable tags**, not a moving `latest` tag. The current public release pin is v0.1.47.
 
-Release v0.1.46 excludes exception payloads from new ingest diagnostics and historical report output, without a model or retry change.
+Release v0.1.47 enforces prepared curator inputs across Pi, validator, and commit boundaries.
+It preserves source bodies, attachments, held inputs, and existing archives.
+The guard checks workflow consistency; it is not a hostile-process permission fence.
+Published runner images receive isolated synthetic checks before private workflow adoption.
 
 Release v0.1.45 requires nonempty complete text for every raw cited credential-method source before accepting an answer.
 
@@ -284,7 +287,7 @@ dip.ink/
 │   ├── claude-code/        ← skill + PreCompact hook
 │   └── pi/                 ← memory extension (native tools), /recordnotes prompt,
 │                             compact/exit gate extension
-├── docker-compose.yml      ← the whole stack on one host (pinned v0.1.46 images)
+├── docker-compose.yml      ← the whole stack on one host (pinned v0.1.47 images)
 ├── .env.example
 ├── .github/workflows/      ← required CI + immutable image publication
 ├── ci/                     ← CI helpers (YAML/k8s/contracts, Neo4j integration runner, Pi typecheck)
@@ -312,7 +315,7 @@ dip.ink/
 
 ## Production (k8s)
 
-`deploy/k8s/` mirrors the compose stack for a cluster: Neo4j Deployment + PVC, the memory-server Deployment, the 15-min ingest CronJob, and the maintenance CronJobs. Images are published to GHCR by this repo's CI and **pinned to `v0.1.46`**.
+`deploy/k8s/` mirrors the compose stack for a cluster: Neo4j Deployment + PVC, the memory-server Deployment, the 15-min ingest CronJob, and the maintenance CronJobs. Images are published to GHCR by this repo's CI and **pinned to `v0.1.47`**.
 
 The Secret example lives **outside** the apply set so a directory apply cannot overwrite real credentials with placeholders:
 
@@ -349,9 +352,9 @@ Metric labels are bounded-cardinality only (`tool`, `outcome`, `confidence`, `gr
 
 - Required CI (`.github/workflows/ci.yml`) gates server unit tests, a real Neo4j 5.26.2 integration job, curator supervisor tests, template wikilint/index, workflow/YAML/kustomize smoke, Pi extension typecheck, and both Docker image builds.
 - Image publication (`.github/workflows/images.yml`) runs on `main` (moving `main` + immutable full-git-SHA tags) and on `v*` tags (semver + SHA). It does **not** publish `latest`.
-- Public manifests and template workflows pin `ghcr.io/d6o/dip.ink/{memory,pi-runner}:v0.1.46`.
+- Public manifests and template workflows pin `ghcr.io/d6o/dip.ink/{memory,pi-runner}:v0.1.47`.
 
-Release sequence for maintainers: push main → wait CI green → tag `v0.1.46` → wait image publication green → sync private instances / deploy.
+Release sequence for maintainers: push main → wait CI green → tag `v0.1.47` → wait image publication green → sync private instances / deploy.
 
 ## Operational notes (learned the hard way)
 

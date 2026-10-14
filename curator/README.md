@@ -31,7 +31,7 @@ concurrency:
 ```
 
 so they never race on `wiki/log.md` or other shared pages. Public images are
-pinned to `ghcr.io/d6o/dip.ink/pi-runner:v0.1.46`.
+pinned to `ghcr.io/d6o/dip.ink/pi-runner:v0.1.47`.
 
 ## pi-runner (this directory)
 
@@ -56,6 +56,10 @@ Source-schema frontmatter fields and the first H1 may change during a selected c
 Preserve `captured`, `session`, `topic`, other original metadata, the remaining source body, and attachments.
 A selected input with a canonical copy must leave the live inbox after Pi.
 A pre-Pi check permits a captured duplicate so Pi can use a supported block or drop outcome.
+Link checks use folder-relative identity for local targets and repository-relative identity for other in-repository targets.
+File targets retain bytes, type, and mode. Directory targets retain path, type, and mode.
+The check does not hash external directory contents recursively.
+The H1 scan recognizes backtick and tilde fences, not complete Markdown syntax.
 The guard is a workflow consistency check, not a permission fence against a hostile process.
 
 The repair invocation receives bounded validator diagnostics. It cannot add paths outside the failed batch.
