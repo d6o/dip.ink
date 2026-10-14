@@ -101,5 +101,5 @@ for root in "$NOTES_DIR" "$DEFER"; do
 done
 
 # Select exact identities, not a deduplicated list of names. The guard checks
-# the complete folder metadata after each queue transition.
+# the complete folder metadata after the queue transitions.
 python3 "$GUARD_BIN" prepare --notes-dir "$NOTES_DIR" --cap "$N"

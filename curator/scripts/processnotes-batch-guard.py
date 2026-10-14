@@ -292,6 +292,7 @@ def capture(root, notes, cap, state_path):
     require(not inside(state_path.resolve(), root), "state-inside-repo")
     require(state_path.parent.is_dir(), "state-parent-missing")
     data = (json.dumps(state, ensure_ascii=True, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    require(len(data) <= 64 * 1024 * 1024, "state-too-large")
     # A parent may supply an empty mktemp file. Never replace a populated state.
     fd = os.open(state_path, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, "wb") as stream:
