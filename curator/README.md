@@ -45,6 +45,13 @@ pinned to `ghcr.io/d6o/dip.ink/pi-runner:v0.1.46`.
 4. on changes: runs `VALIDATOR`, then starts one repair-only Pi invocation after a validation failure,
 5. runs the validator one final time, then commits, fetches, rebases, and pushes with bounded retries.
 
+The supervisor rejects dual-root note identities before preparation changes.
+It exposes exactly the oldest configured live batch and records a private metadata manifest outside the checkout.
+The parent retains its digest. The runner checks selected identities, held paths, raw bytes, and existing source bytes after Pi.
+It checks the boundary again after repair and before commit. Restored preparation paths or excess live inputs stop the commit.
+Canonical source formatting can change frontmatter and the first H1, not the source body or attachments.
+The guard is a workflow consistency check, not a permission fence against a hostile process.
+
 The repair invocation receives bounded validator diagnostics. It cannot add paths outside the failed batch.
 Its prompt prohibits new note processing. Provider, Git, and other failures do not start a repair invocation.
 
@@ -62,6 +69,8 @@ The image is published as `ghcr.io/d6o/dip.ink/pi-runner` by this repo's CI
 | `WIKI_REPO_TOKEN` | (required to push) | HTTPS token; in GitHub Actions use `x-access-token:${{ secrets.GITHUB_TOKEN }}` |
 | `VALIDATOR` | `true` | shell command that must pass before commit |
 | `VALIDATOR_DIAGNOSTIC_BYTES` | `12000` | maximum validator output bytes included in the one repair prompt |
+| `INBOX_PREPARED_STATE` / `INBOX_PREPARED_SHA256` | supervisor-owned | private prepared manifest and parent-retained digest; required for processnotes |
+| `INBOX_GUARD_BIN` | image helper | the guard from the shared toolchain |
 | `COMMIT_MESSAGE`, `GIT_USER_NAME`, `GIT_USER_EMAIL`, `GIT_BRANCH` | sensible defaults | |
 
 `PI_MODELS_JSON` is **curator/Pi-runner configuration only**. It is not a
@@ -111,3 +120,13 @@ fakes — run it from the dip.ink repo root:
 ```sh
 bash curator/scripts/test-processnotes-supervisor.sh
 ```
+
+The new boundary regressions use synthetic payloads and disposable local Git repositories:
+
+```sh
+python3 curator/scripts/test-processnotes-batch-guard.py
+bash curator/pi-runner/tests/test-prepared-boundary.sh
+```
+
+They reject restored, dual-root, excess, or modified protected inputs without deleting either copy.
+Supported canonical moves, drops, blocks, and unchanged no-op inputs remain available.

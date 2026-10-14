@@ -40,7 +40,8 @@ def check_repo_root(root):
     for candidate in (root, *root.parents):
         if exists(candidate / ".git"):
             require(candidate == root, "not-repository-root")
-            break
+            return
+    raise GuardError("not-repository-root")
 
 
 def safe_path(root, relative):
@@ -382,7 +383,7 @@ def check_canonical(folder, slug, prepared, root):
             "canonical-type-mismatch")
 
 
-def verify(root, state_path, digest):
+def verify(root, state_path, digest, prepared_stage=False):
     require(re.fullmatch(r"[0-9a-f]{64}", digest) is not None, "invalid-state-digest")
     require(not inside(Path(state_path).resolve(), root), "state-inside-repo")
     fd = os.open(state_path, os.O_RDONLY | os.O_NOFOLLOW)
@@ -418,6 +419,8 @@ def verify(root, state_path, digest):
         require(sum((exists(live), exists(blocked), new_canonical)) <= 1,
                 "selected-action-ambiguous")
         if exists(live):
+            require(canonical is None or not exists(canonical) or (prepared_stage and not new_canonical),
+                    "canonicalized-input-still-live")
             require(snapshot(live, root) == prepared["tree"], "selected-live-changed")
             prefix = slug
         elif exists(blocked):
@@ -466,13 +469,14 @@ def main():
     sub.add_argument("--state", required=True)
     sub.add_argument("--sha256", required=True)
     sub.add_argument("--repo", required=True)
+    sub.add_argument("--prepared", action="store_true", help="Check the captured pre-Pi state only")
     args = parser.parse_args()
     try:
         root = Path(args.repo if args.command == "verify" else os.getcwd()).resolve()
         require(root.is_dir(), "repo-missing")
         check_repo_root(root)
         if args.command == "verify":
-            result = verify(root, args.state, args.sha256)
+            result = verify(root, args.state, args.sha256, prepared_stage=args.prepared)
         else:
             notes = notes_path(root, args.notes_dir)
             if args.command == "preflight":

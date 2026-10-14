@@ -22,6 +22,10 @@ Your first action must inspect the filesystem, equivalent to:
 find notes -mindepth 1 -maxdepth 1 -type d -not -name '.deferred' -not -name '.blocked' -printf '%f\n' 2>/dev/null | sort
 ```
 
+The supervisor already owns the oldest selected identities and all preparation moves. Preserve those moves and tracked deletions.
+Never run git restore, reset, checkout, or clean to undo preparation. Do not expose another live folder.
+The runner verifies selected and protected paths after you exit and before commit. This is a consistency guard, not a permission fence.
+
 Use only that output as the batch. Never read, list, search, or modify `notes/.deferred/` or existing entries in `notes/.blocked/`; the supervisor promotes future batches and blocked entries are terminal. If no live folders exist, change nothing and finish.
 
 ## 2. Dedup

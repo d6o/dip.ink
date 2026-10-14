@@ -94,20 +94,46 @@ git config user.name "$GIT_USER_NAME"
 git config user.email "$GIT_USER_EMAIL"
 git config --global --add safe.directory "$PWD"
 
+INBOX_GUARD_BIN="${INBOX_GUARD_BIN:-/opt/dip.ink/scripts/processnotes-batch-guard.py}"
+if [[ -n "${INBOX_PREPARED_STATE:-}" || -n "${INBOX_PREPARED_SHA256:-}" ]]; then
+  [[ -n "${INBOX_PREPARED_STATE:-}" && -n "${INBOX_PREPARED_SHA256:-}" && -f "$INBOX_GUARD_BIN" ]] \
+    || { log "error: incomplete prepared-batch guard metadata"; exit 3; }
+elif [[ "$(basename "$PROMPT_PATH")" == "processnotes-auto.md" ]]; then
+  log "error: processnotes requires supervisor-owned preparation metadata"
+  exit 3
+fi
+
+check_batch_boundary() {
+  local phase=$1
+  if [[ -n "${INBOX_PREPARED_STATE:-}" ]]; then
+    log "checking prepared batch boundary phase=$phase"
+    local -a guard_phase=()
+    [[ "$phase" != before-pi ]] || guard_phase=(--prepared)
+    if ! python3 "$INBOX_GUARD_BIN" verify --state "$INBOX_PREPARED_STATE" \
+      --sha256 "$INBOX_PREPARED_SHA256" --repo "$(git rev-parse --show-toplevel)" "${guard_phase[@]}"; then
+      log "error: prepared batch boundary failed; aborting commit"
+      return 3
+    fi
+  fi
+}
+
+check_batch_boundary before-pi
 INITIAL_STATUS=$(git status --porcelain)
 if [[ -n "$INITIAL_STATUS" ]]; then
-  log "warn: workspace has pre-existing changes; this is unusual in CI"
+  log "workspace includes existing changes; preserve supervisor-owned preparation"
   echo "$INITIAL_STATUS" >&2
 fi
 
 PREAMBLE=$(cat <<'EOF'
-You are running in CI inside a container with a fresh repository checkout.
+You are running in CI inside a container. The supervisor already prepared this worktree.
+Its tracked moves and deletions are intentional batch boundaries, not changes to undo.
 
 Conventions for this run:
 - Make all file changes required by the task; the runner commits and pushes after you exit.
 - Update task state files so a later run does not repeat completed work.
 - If there is nothing to do, exit cleanly without writing files; a zero diff is a successful no-op.
-- Do not run git commit, git push, or create/switch branches. The runner owns version control.
+- Do not run git commit, git push, restore, reset, checkout, clean, or create/switch branches. The runner owns version control.
+- Preserve supervisor-owned selected and held paths. Never restore an input that preparation moved or removed.
 - Use only repository-local files, the shared curator toolchain under /opt/dip.ink/, and the built-in read, bash, edit, and write tools. No external MCP services are configured.
 
 Below is the task prompt.
@@ -157,10 +183,13 @@ run_validator() {
   validator_exit=$?
   set -e
   cat "$VALIDATOR_LOG" >&2
+  # A rejected validator must not expose altered protected inputs to repair.
+  check_batch_boundary "after-validator-$phase" || exit 3
   return "$validator_exit"
 }
 
 run_pi initial "$FULL_PROMPT"
+check_batch_boundary after-pi
 
 FINAL_STATUS=$(git status --porcelain)
 if [[ -z "$FINAL_STATUS" ]]; then
@@ -190,6 +219,7 @@ $(tail -c "$VALIDATOR_DIAGNOSTIC_BYTES" "$VALIDATOR_LOG")
 EOF
 )
   run_pi validator-repair "$REPAIR_PROMPT"
+  check_batch_boundary after-repair
   NEW_REPAIR_PATHS=$(comm -13 "$REPAIR_SCOPE" <(git status --porcelain | cut -c4- | LC_ALL=C sort -u))
   if [[ -n "$NEW_REPAIR_PATHS" ]]; then
     log "error: validator repair changed paths outside the failed batch:"
@@ -201,6 +231,8 @@ EOF
     exit 3
   fi
 fi
+
+check_batch_boundary before-commit
 
 # Stage after validation so validator-generated files are included, then check
 # the complete diff (including newly created files) before committing.

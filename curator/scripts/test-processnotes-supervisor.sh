@@ -245,12 +245,13 @@ topic: test fixture
 
 # 2026-note-3
 EOF
-prepare_output=$(NOTES_DIR="$PREP/notes" INBOX_BATCH_SIZE=4 "$ROOT/scripts/processnotes-prepare-inbox.sh")
+git -C "$PREP" init -q
+prepare_output=$(cd "$PREP"; NOTES_DIR=notes INBOX_BATCH_SIZE=4 "$ROOT/scripts/processnotes-prepare-inbox.sh")
 [[ $(find "$PREP/notes" -mindepth 1 -maxdepth 1 -type d ! -name .deferred ! -name .blocked | wc -l | tr -d ' ') -eq 4 ]]
 [[ -f "$PREP/notes/2026-note-3/2026-note-3.md" || -f "$PREP/notes/.deferred/2026-note-3/2026-note-3.md" ]]
 [[ $(find "$PREP/notes/.deferred" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ') -eq 2 ]]
 [[ -f "$PREP/notes/.blocked/2025-12-31-235959-blocked/NOTE.md" ]]
-grep -q 'pool=6 live=4 held=2 blocked=1 cap=4' <<<"$prepare_output"
+printf '%s\n' "$prepare_output" | tail -1 | python3 -c 'import json,sys; assert json.load(sys.stdin)=={"pool":6,"live":4,"held":2,"blocked":1,"cap":4}'
 echo 'prepare inbox blocked-exclusion test OK'
 
 # Malformed YAML is quarantined before provider use and valid neighbors refill
@@ -283,14 +284,15 @@ topic: malformed queue test
 
 # malformed
 EOF
-malformed_output=$(NOTES_DIR="$MALFORMED/notes" INBOX_BATCH_SIZE=4 BLOCKED_AT=2026-01-02T03:04:05Z \
+git -C "$MALFORMED" init -q
+malformed_output=$(cd "$MALFORMED"; NOTES_DIR=notes INBOX_BATCH_SIZE=4 BLOCKED_AT=2026-01-02T03:04:05Z \
   "$ROOT/scripts/processnotes-prepare-inbox.sh" 2>&1)
 [[ -d "$MALFORMED/notes/.blocked/$bad" ]]
 grep -Fqx 'reason: "malformed-note"' "$MALFORMED/notes/.blocked/$bad/BLOCKED.md"
 [[ $(find "$MALFORMED/notes" -mindepth 1 -maxdepth 1 -type d ! -name .deferred ! -name .blocked | wc -l | tr -d ' ') -eq 4 ]]
 [[ $(find "$MALFORMED/notes/.deferred" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ') -eq 1 ]]
-grep -q "blocking malformed note: $bad" <<<"$malformed_output"
-grep -q 'pool=5 live=4 held=1 blocked=1 cap=4' <<<"$malformed_output"
+grep -q "blocking malformed note" <<<"$malformed_output"
+printf '%s\n' "$malformed_output" | tail -1 | python3 -c 'import json,sys; assert json.load(sys.stdin)=={"pool":5,"live":4,"held":1,"blocked":1,"cap":4}'
 echo 'malformed frontmatter quarantine and queue progress test OK'
 
 # A logged oldest duplicate becomes terminal, while later notes continue in a fresh batch.
