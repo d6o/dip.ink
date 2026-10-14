@@ -181,6 +181,8 @@ run_validator() {
   validator_exit=$?
   set -e
   cat "$VALIDATOR_LOG" >&2
+  # A rejected validator must not expose altered protected inputs to repair.
+  check_batch_boundary "after-validator-$phase" || exit 3
   return "$validator_exit"
 }
 

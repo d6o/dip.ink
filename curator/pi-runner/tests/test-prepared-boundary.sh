@@ -86,8 +86,9 @@ if [[ "$FAKE_MODE" == repair-restore-held && "$count" -eq 1 ]]; then
   echo 'Synthetic validator rejection.' >&2
   exit 1
 fi
-if [[ "$FAKE_MODE" == validator-restore-held ]]; then
+if [[ "$FAKE_MODE" == validator-restore-held || "$FAKE_MODE" == validator-fail-restore-held ]]; then
   git restore -- "notes/$HELD_SLUG"
+  [[ "$FAKE_MODE" != validator-fail-restore-held ]] || exit 1
 fi
 SH
 chmod +x "$TMP/bin/curl" "$TMP/fake-event-logger" "$TMP/fake-pi" "$TMP/fake-validator"
@@ -188,6 +189,7 @@ run_case initial-state initial-state-tamper failure 1 0
 run_case canonical-copy canonical-copy failure 1 0
 run_case repair-held repair-restore-held failure 2 1
 run_case validator-held validator-restore-held failure 1 1
+run_case validator-failed-held validator-fail-restore-held failure 1 1
 run_case complete-moves allowed success 1 1
 run_case mixed-outcomes mixed success 1 1
 run_case selected-noop noop success 1 1
