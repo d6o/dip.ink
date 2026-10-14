@@ -322,7 +322,82 @@ def resolved_metadata_hashes(lines, mutable):
         if key.tag == "tag:yaml.org,2002:str" and key.value in mutable:
             continue
         metadata[key_digest] = digest(value)
-    return metadata
+    merge_cache, merge_active = {}, set()
+    key_loader = yaml.SafeLoader("")
+
+    def key_value(node):
+        require(isinstance(node, yaml.ScalarNode), "unsupported-metadata-key")
+        allowed = {"str", "null", "bool", "int", "float", "binary", "timestamp"}
+        require(node.tag.removeprefix("tag:yaml.org,2002:") in allowed,
+                "unsupported-metadata-key")
+        try:
+            return key_loader.construct_object(node, deep=True)
+        except (yaml.YAMLError, ValueError, TypeError):
+            raise GuardError("invalid-metadata-key") from None
+
+    def merged(node, depth=0):
+        nonlocal visited
+        require(depth <= 64, "metadata-depth-limit")
+        identity = id(node)
+        require(identity not in merge_active, "metadata-cycle")
+        if identity in merge_cache:
+            return merge_cache[identity]
+        require(isinstance(node, yaml.MappingNode), "invalid-metadata-merge")
+        merge_active.add(identity)
+        result, explicit = {}, []
+
+        def assign(key, value):
+            nonlocal visited
+            visited += 1
+            require(visited <= 50000, "metadata-node-limit")
+            result[key] = value
+
+        for key, value in node.value:
+            if key.tag == "tag:yaml.org,2002:merge":
+                sources = value.value if isinstance(value, yaml.SequenceNode) else [value]
+                for source in reversed(sources):
+                    for inherited_key, inherited_value in merged(source, depth + 1).items():
+                        assign(inherited_key, inherited_value)
+            else:
+                explicit.append((key_value(key), value))
+        # Explicit keys override inherited keys, regardless of their line order.
+        for key, value in explicit:
+            assign(key, value)
+        merge_active.remove(identity)
+        merge_cache[identity] = result
+        return result
+
+    def effective_key(key):
+        if isinstance(key, str):
+            value = ["str", key]
+        elif key is None:
+            value = ["null"]
+        elif isinstance(key, (bool, int)):
+            value = ["number", int(key), 1]
+        elif isinstance(key, float):
+            try:
+                numerator, denominator = key.as_integer_ratio()
+            except (ValueError, OverflowError):
+                raise GuardError("unsupported-metadata-key") from None
+            value = ["number", numerator, denominator]
+        elif isinstance(key, dt.datetime):
+            value = ["timestamp", key.astimezone(dt.timezone.utc).isoformat()
+                     if key.tzinfo else key.isoformat(), bool(key.tzinfo)]
+        elif isinstance(key, dt.date):
+            value = ["date", key.isoformat()]
+        elif isinstance(key, bytes):
+            value = ["binary", hashlib.sha256(key).hexdigest(), len(key)]
+        else:
+            raise GuardError("unsupported-metadata-key")
+        return hashlib.sha256(json.dumps(value, ensure_ascii=True,
+                               separators=(",", ":")).encode()).hexdigest()
+
+    try:
+        effective = {effective_key(key): digest(value) for key, value in merged(root).items()
+                     if not (isinstance(key, str) and key in mutable)}
+    finally:
+        key_loader.dispose()
+    return metadata, effective
 
 
 def source_parts(data):
@@ -357,9 +432,9 @@ def source_parts(data):
     h1 = first_h1(body)
     title = body.pop(h1).rstrip("\r\n") if h1 is not None else None
     digest = hashlib.sha256("".join(body).strip("\r\n").encode()).hexdigest()
-    resolved = resolved_metadata_hashes(lines[1:end], mutable)
+    resolved, effective = resolved_metadata_hashes(lines[1:end], mutable)
     return {"body": digest, "full_body": full_body, "metadata": metadata,
-            "resolved_metadata": resolved}, title, blocks
+            "resolved_metadata": resolved, "effective_metadata": effective}, title, blocks
 
 
 def source_input(folder, slug):
@@ -416,7 +491,7 @@ def capture(root, notes, cap, state_path):
     pool = sorted(set(groups["live"]) | set(groups["held"]))
     require(sorted(groups["live"]) == pool[:cap] and len(groups["live"]) <= cap,
             "capture-selection-mismatch")
-    state = {"version": 2, "notes": str(notes.relative_to(root)), "cap": cap,
+    state = {"version": 3, "notes": str(notes.relative_to(root)), "cap": cap,
              "selected": {}, "held_count": len(groups["held"]),
              "blocked_count": len(groups["blocked"])}
     tree = snapshot(notes, root)
@@ -494,6 +569,9 @@ def check_canonical(folder, slug, prepared, root):
     require(all(parts["resolved_metadata"].get(key) == value
                 for key, value in prepared["source"]["resolved_metadata"].items()),
             "canonical-metadata-dependency-changed")
+    require(all(parts["effective_metadata"].get(key) == value
+                for key, value in prepared["source"]["effective_metadata"].items()),
+            "canonical-inherited-metadata-changed")
     require(title == f"# {slug}", "canonical-title-mismatch")
     require("type" in blocks and re.fullmatch(r"type:\s*['\"]?source['\"]?\s*",
                                              "".join(blocks["type"])),
@@ -512,7 +590,7 @@ def verify(root, state_path, digest, prepared_stage=False):
     require(len(data) <= 64 * 1024 * 1024, "state-too-large")
     require(hmac.compare_digest(hashlib.sha256(data).hexdigest(), digest), "state-digest-mismatch")
     state = json.loads(data)
-    require(state["version"] == 2 and state["cap"] > 0, "invalid-state-schema")
+    require(state["version"] == 3 and state["cap"] > 0, "invalid-state-schema")
     notes = notes_path(root, state["notes"])
     actual = inventories(notes)
     require(len(actual["live"]) <= state["cap"]

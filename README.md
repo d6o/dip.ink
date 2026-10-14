@@ -80,7 +80,7 @@ Public runtime images use **immutable tags**, not a moving `latest` tag. The cur
 
 Release v0.1.48 adds bounded YAML dependency hashes to the prepared curator guard.
 Mutable source-schema fields cannot change protected aliases or merge dependencies.
-The manifest uses version 2 and requires a fresh capture.
+The manifest uses version 3 and requires a fresh capture.
 Published runner images receive isolated synthetic checks before private workflow adoption.
 Do not adopt v0.1.47: its block-text check misses this alias dependency case.
 The guard checks workflow consistency; it is not a hostile-process permission fence.

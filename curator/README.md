@@ -63,11 +63,13 @@ The check does not hash external directory contents recursively.
 Block retains complete-folder bytes, modes, link text, and a bounded receipt under the existing quarantine policy.
 A relocated block link need not resolve to the same target.
 Block does not add protection for outside-folder target contents. Raw and prior source trees remain independently protected.
-The manifest uses version 2 and requires a fresh capture from the same toolchain.
+The manifest uses version 3 and requires a fresh capture from the same toolchain.
 Frontmatter checks also hash resolved YAML node dependencies with the installed PyYAML parser.
 A mutable schema field cannot change an original protected alias or merge dependency.
+The guard also compares effective inherited fields, so a new explicit key cannot shadow their original values.
 The parser does not construct custom objects. It limits protected graph traversal to 50,000 visits and depth 64.
-Cyclic protected metadata fails safely. The manifest stores hashes, not resolved values.
+Merge resolution also uses the traversal budget and memo, rather than an unbounded expansion.
+Scalar keys use safe built-in constructors only. Cyclic protected metadata fails safely. The manifest stores hashes, not resolved values.
 The H1 scan recognizes backtick and tilde fences, not complete Markdown syntax.
 The guard is a workflow consistency check, not a permission fence against a hostile process.
 

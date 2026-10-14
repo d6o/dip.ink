@@ -677,7 +677,7 @@ class PreparedBoundaryTests(unittest.TestCase):
     def test_legacy_manifest_requires_new_capture(self):
         self.capture()
         state = json.loads(self.state.read_text())
-        self.assertEqual(state["version"], 2)
+        self.assertEqual(state["version"], 3)
         state["version"] = 1
         self.state.write_text(json.dumps(state))
         self.digest = hashlib.sha256(self.state.read_bytes()).hexdigest()
@@ -730,6 +730,40 @@ class PreparedBoundaryTests(unittest.TestCase):
 
     def test_unicode_metadata_key_remains_protected(self):
         self.protected_extended_metadata_key("fuente-ñ")
+
+    def inherited_metadata_source(self, sequence=False):
+        self.prepare()
+        note = self.root / "notes" / self.names[0] / "NOTE.md"
+        metadata = ("index-description: &defaults {captured: 2026-01-01T00:00:00Z, "
+                    "session: Original session, topic: Original topic, title: Original title}\n")
+        metadata += ("backup: &backup {session: Backup session, title: Backup title}\n"
+                     "<<: [*defaults, *backup]\n" if sequence else "<<: *defaults\n")
+        note.write_text("---\n" + metadata + "---\n\n# Fixture\n\nSynthetic inherited source.\n")
+        self.capture()
+        return self.canonical() / (self.names[0] + ".md")
+
+    def test_new_explicit_fields_cannot_shadow_inherited_metadata(self):
+        source = self.inherited_metadata_source()
+        self.verify()
+        source.write_text(source.read_text().replace("---\n",
+                          "---\nsession: Changed session\ntitle: Changed title\n", 1))
+        self.verify(success=False)
+
+    def test_unchanged_inherited_metadata_allows_canonical_move(self):
+        self.inherited_metadata_source()
+        self.verify()
+
+    def test_explicit_equal_inherited_values_preserve_meaning(self):
+        source = self.inherited_metadata_source()
+        source.write_text(source.read_text().replace("---\n",
+                          "---\nsession: Original session\ntitle: Original title\n", 1))
+        self.verify()
+
+    def test_merge_sequence_precedence_remains_protected(self):
+        source = self.inherited_metadata_source(sequence=True)
+        self.verify()
+        source.write_text(source.read_text().replace("---\n", "---\nsession: Backup session\n", 1))
+        self.verify(success=False)
 
     def test_complete_folder_moves_with_attachments_work(self):
         self.capture()
