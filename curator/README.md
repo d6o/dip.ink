@@ -56,9 +56,13 @@ Source-schema frontmatter fields and the first H1 may change during a selected c
 Preserve `captured`, `session`, `topic`, `name`, `title`, other original metadata, the remaining source body, and attachments.
 A selected input with a canonical copy must leave the live inbox after Pi.
 A pre-Pi check permits a captured duplicate so Pi can use a supported block or drop outcome.
-Link checks use folder-relative identity for local targets and repository-relative identity for other in-repository targets.
+Live selected inputs and canonical moves check resolved attachment references.
+These checks use folder-relative identity for local targets and repository-relative identity for other in-repository targets.
 File targets retain bytes, type, and mode. Directory targets retain path, type, and mode.
 The check does not hash external directory contents recursively.
+Block retains complete-folder bytes, modes, link text, and a bounded receipt under the existing quarantine policy.
+A relocated block link need not resolve to the same target.
+Block does not add protection for outside-folder target contents. Raw and prior source trees remain independently protected.
 The manifest uses version 2 and requires a fresh capture from the same toolchain.
 Frontmatter checks also hash resolved YAML node dependencies with the installed PyYAML parser.
 A mutable schema field cannot change an original protected alias or merge dependency.

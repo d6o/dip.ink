@@ -683,6 +683,37 @@ class PreparedBoundaryTests(unittest.TestCase):
         self.digest = hashlib.sha256(self.state.read_bytes()).hexdigest()
         self.verify(success=False)
 
+    def test_block_preserves_existing_link_text_and_byte_policy(self):
+        raw = self.root / "raw"
+        raw.mkdir()
+        target = raw / "doc.bin"
+        target.write_bytes(b"synthetic raw evidence")
+        link = self.selected_attachment_link("../../raw/doc.bin")
+        original_mode = stat.S_IMODE(link.lstat().st_mode)
+        self.capture()
+        self.command("bash", str(SCRIPT_DIR / "processnotes-block-note.sh"),
+                     self.names[0], "corrupt-input",
+                     env=dict(os.environ, NOTES_DIR="notes", BLOCKED_AT="2026-01-02T03:04:05Z"))
+        blocked = self.root / "notes/.blocked" / self.names[0] / link.name
+        self.assertEqual(os.readlink(blocked), "../../raw/doc.bin")
+        self.assertEqual(stat.S_IMODE(blocked.lstat().st_mode), original_mode)
+        self.assertFalse(blocked.exists())
+        self.assertEqual(target.read_bytes(), b"synthetic raw evidence")
+        self.verify()
+
+    def test_block_keeps_raw_target_bytes_independently_protected(self):
+        raw = self.root / "raw"
+        raw.mkdir()
+        target = raw / "doc.bin"
+        target.write_bytes(b"synthetic raw evidence")
+        self.selected_attachment_link(str(target))
+        self.capture()
+        self.command("bash", str(SCRIPT_DIR / "processnotes-block-note.sh"),
+                     self.names[0], "corrupt-input",
+                     env=dict(os.environ, NOTES_DIR="notes", BLOCKED_AT="2026-01-02T03:04:05Z"))
+        target.write_bytes(b"synthetic changed evidence")
+        self.verify(success=False)
+
     def test_complete_folder_moves_with_attachments_work(self):
         self.capture()
         for index in range(4):
