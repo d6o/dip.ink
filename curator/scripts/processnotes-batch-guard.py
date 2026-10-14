@@ -35,6 +35,14 @@ def inside(path, root):
     return path == root or root in path.parents
 
 
+def check_repo_root(root):
+    # A Git worktree can have a .git file instead of a directory.
+    for candidate in (root, *root.parents):
+        if exists(candidate / ".git"):
+            require(candidate == root, "not-repository-root")
+            break
+
+
 def safe_path(root, relative):
     """Reject traversal and symbolic links in path ancestors."""
     parts = Path(relative).parts
@@ -425,6 +433,7 @@ def main():
     try:
         root = Path(args.repo if args.command == "verify" else os.getcwd()).resolve()
         require(root.is_dir(), "repo-missing")
+        check_repo_root(root)
         if args.command == "verify":
             result = verify(root, args.state, args.sha256)
         else:
