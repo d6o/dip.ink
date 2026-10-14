@@ -714,6 +714,23 @@ class PreparedBoundaryTests(unittest.TestCase):
         target.write_bytes(b"synthetic changed evidence")
         self.verify(success=False)
 
+    def protected_extended_metadata_key(self, key):
+        self.source_metadata_fixture(f"index-description: Fixture summary\n{key}: Original extended value\n")
+        self.capture()
+        source = self.canonical() / (self.names[0] + ".md")
+        self.verify()
+        source.write_text(source.read_text().replace("Original extended value", "Changed extended value", 1))
+        self.verify(success=False)
+
+    def test_dotted_metadata_key_remains_protected(self):
+        self.protected_extended_metadata_key("source.url")
+
+    def test_quoted_metadata_key_with_spaces_remains_protected(self):
+        self.protected_extended_metadata_key('"source label"')
+
+    def test_unicode_metadata_key_remains_protected(self):
+        self.protected_extended_metadata_key("fuente-ñ")
+
     def test_complete_folder_moves_with_attachments_work(self):
         self.capture()
         for index in range(4):
