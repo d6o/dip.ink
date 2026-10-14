@@ -73,3 +73,31 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=${{ matrix.name }}
           cache-to: type=gha,scope=${{ matrix.name }},mode=max
+
+  verify-runner:
+    name: Verify the published runner image
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify installed guards with isolated synthetic inputs
+        env:
+          RUNNER_IMAGE: ghcr.io/${{ github.repository }}/pi-runner:${{ github.sha }}
+        run: |
+          set -euo pipefail
+          docker pull "$RUNNER_IMAGE"
+          docker run --rm --network none --user 1001:1001 --entrypoint python3 \
+            "$RUNNER_IMAGE" /opt/dip.ink/scripts/test-processnotes-batch-guard.py
+          docker run --rm --network none --user 1001:1001 --entrypoint bash \
+            -v "$GITHUB_WORKSPACE/curator/pi-runner/tests:/opt/dip.ink/pi-runner/tests:ro" \
+            -e PREPARED_TEST_ENTRYPOINT=/opt/pi-runner/entrypoint.sh \
+            -e PREPARED_TEST_GUARD=/opt/dip.ink/scripts/processnotes-batch-guard.py \
+            -e PREPARED_TEST_PREPARE=/opt/dip.ink/scripts/processnotes-prepare-inbox.sh \
+            "$RUNNER_IMAGE" /opt/dip.ink/pi-runner/tests/test-prepared-boundary.sh
+          docker run --rm --network none --entrypoint bash \
+            -v "$GITHUB_WORKSPACE/curator/pi-runner/tests:/canary:ro" \
+            "$RUNNER_IMAGE" /canary/test-root-prepared-boundary.sh
