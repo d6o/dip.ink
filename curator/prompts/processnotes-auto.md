@@ -58,7 +58,8 @@ Do not drop information merely because it is stale or contradictory. Process the
 - Do not invent entity categories or status values; use the closest existing enum and queue only if that choice needs review.
 - Cite the source note directly in frontmatter `sources:` and the bottom `## Sources` section as `[[<slug>|readable title]]`. Do not create an intermediate source stub.
 - Normalize and move the complete folder to `wiki/sources/notes/YYYY/MM/DD/<slug>/`; rename legacy `NOTE.md` to `<slug>.md`, add source frontmatter, and make the H1 exactly `# <slug>`. Preserve attachments beside it.
-- Never edit `raw/`. Never edit an existing archived source note except for a one-time format migration.
+- Preserve original `captured`, `session`, `topic`, and other non-schema metadata. Preserve the source body after its first H1.
+- Never edit `raw/` or an existing archived source. This batch does not authorize a format migration of existing sources.
 - At most one short synthesis per batch, only when the batch exposes a clear repeated cross-page pattern.
 
 ## 6. Narrow review queue

@@ -42,6 +42,10 @@ PI_PROVIDER="${PI_PROVIDER:-openai}"
 # CURATOR_PREFLIGHT: unset = provider-aware default, 0/false/no = off, 1/true/yes = on.
 CURATOR_PREFLIGHT="${CURATOR_PREFLIGHT:-}"
 
+# The supervisor and processnotes prompt share one fixed inbox root.
+[[ "${NOTES_DIR:-notes}" == "notes" ]] || { log "non-default notes root is not supported"; exit 2; }
+export NOTES_DIR=notes
+
 [[ "$BUDGET_SECONDS" =~ ^[0-9]+$ ]] || { log "invalid budget: $BUDGET_SECONDS"; exit 2; }
 [[ "$MIN_REMAINING" =~ ^[0-9]+$ ]] || { log "invalid minimum remaining time: $MIN_REMAINING"; exit 2; }
 [[ -x "$RUNNER_BIN" ]] || { log "runner is not executable: $RUNNER_BIN"; exit 2; }
