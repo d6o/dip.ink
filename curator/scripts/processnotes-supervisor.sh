@@ -219,6 +219,15 @@ while true; do
     --cap "${INBOX_BATCH_SIZE:-4}" --state "$INBOX_PREPARED_STATE")
   INBOX_PREPARED_SHA256=$(printf '%s' "$PREPARED_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["sha256"])')
   export INBOX_PREPARED_STATE INBOX_PREPARED_SHA256
+  if [[ "$(id -u)" -eq 0 ]]; then
+    # The entrypoint drops privileges after preparation. Transfer only this
+    # supervisor-owned temporary state, not an arbitrary workflow path.
+    state_uid="${PI_RUNNER_UID:-1001}"
+    state_gid="${PI_RUNNER_GID:-1001}"
+    [[ "$state_uid" =~ ^[0-9]+$ && "$state_gid" =~ ^[0-9]+$ ]] \
+      || { log "invalid prepared-state owner"; exit 2; }
+    chown "$state_uid:$state_gid" "$PREPARED_DIR" "$INBOX_PREPARED_STATE"
+  fi
 
   maybe_probe "$batch_number"
 
