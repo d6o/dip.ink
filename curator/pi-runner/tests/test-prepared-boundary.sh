@@ -66,6 +66,10 @@ PYFORMAT
     rm -rf notes/2026-01-01-000003-fixture
     # The fourth selected folder remains live without a canonical copy.
     ;;
+  preexisting-block:1)
+    NOTES_DIR=notes BLOCKED_AT=2026-01-02T03:04:05Z \
+      bash "$FIXTURE_BLOCK" 2026-01-01-000001-fixture already-ingested >/dev/null
+    ;;
   canonical-copy:1)
     slug=2026-01-01-000001-fixture
     destination="wiki/sources/notes/2026/01/01/$slug"
@@ -129,6 +133,13 @@ EOF
   (
     cd "$repo"
     NOTES_DIR=notes INBOX_BATCH_SIZE=4 BLOCK_NOTE_BIN="$BLOCK" bash "$PREPARE" >/dev/null
+    if [[ "$name" == preexisting-block ]]; then
+      slug=2026-01-01-000001-fixture
+      destination="wiki/sources/notes/2026/01/01/$slug"
+      mkdir -p "$(dirname "$destination")"
+      cp -a "notes/$slug" "$destination"
+      mv "$destination/NOTE.md" "$destination/$slug.md"
+    fi
     python3 "$GUARD" capture --notes-dir notes --cap 4 --state "$TMP/$name-state.json"
   ) > "$TMP/$name-metadata.json"
 }
@@ -193,3 +204,4 @@ run_case validator-failed-held validator-fail-restore-held failure 1 1
 run_case complete-moves allowed success 1 1
 run_case mixed-outcomes mixed success 1 1
 run_case selected-noop noop success 1 1
+run_case preexisting-block preexisting-block success 1 1
