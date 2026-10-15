@@ -493,7 +493,7 @@ def canonical_path(slug):
 
 
 def source_identities(tree):
-    """Record each archived slug and its folder paths, including legacy paths."""
+    """Record source roots, not retained originals within a canonical source."""
     identities = {}
     for name, entry in tree.items():
         path = Path(name)
@@ -508,7 +508,16 @@ def source_identities(tree):
             slug, folder = path.parent.name, str(path.parent)
         else:
             continue
-        identities.setdefault(slug, set()).add(folder)
+        # A direct same-slug NOTE.md subtree can retain the original payload.
+        # A second canonical document still represents a separate source root.
+        parent = Path(folder).parent
+        retained_original = (
+            entry["type"] == "dir" and parent.name == slug
+            and tree.get(f"{parent}/{slug}.md", {}).get("type") == "file"
+            and tree.get(f"{folder}/NOTE.md", {}).get("type") == "file"
+            and f"{folder}/{slug}.md" not in tree)
+        if not retained_original:
+            identities.setdefault(slug, set()).add(folder)
     return {slug: sorted(paths) for slug, paths in identities.items()}
 
 
@@ -525,7 +534,7 @@ def capture(root, notes, cap, state_path):
     pool = sorted(set(groups["live"]) | set(groups["held"]))
     require(sorted(groups["live"]) == pool[:cap] and len(groups["live"]) <= cap,
             "capture-selection-mismatch")
-    state = {"version": 5, "notes": str(notes.relative_to(root)), "cap": cap,
+    state = {"version": 6, "notes": str(notes.relative_to(root)), "cap": cap,
              "selected": {}, "held_count": len(groups["held"]),
              "blocked_count": len(groups["blocked"])}
     tree = snapshot(notes, root)
@@ -624,7 +633,7 @@ def verify(root, state_path, digest, prepared_stage=False):
     require(len(data) <= 64 * 1024 * 1024, "state-too-large")
     require(hmac.compare_digest(hashlib.sha256(data).hexdigest(), digest), "state-digest-mismatch")
     state = json.loads(data)
-    require(state["version"] == 5 and state["cap"] > 0, "invalid-state-schema")
+    require(state["version"] == 6 and state["cap"] > 0, "invalid-state-schema")
     notes = notes_path(root, state["notes"])
     actual = inventories(notes)
     require(len(actual["live"]) <= state["cap"]

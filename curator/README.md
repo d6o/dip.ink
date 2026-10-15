@@ -63,7 +63,15 @@ The check does not hash external directory contents recursively.
 Block retains complete-folder bytes, modes, link text, and a bounded receipt under the existing quarantine policy.
 A relocated block link need not resolve to the same target.
 Block does not add protection for outside-folder target contents. Raw and prior source trees remain independently protected.
-The manifest uses version 5 and requires a fresh capture from the same toolchain.
+The manifest uses version 6 and requires a fresh capture from the same toolchain.
+Versions 1–5 fail closed.
+
+The archive classifier distinguishes a canonical root from its retained original.
+A direct same-slug child with `NOTE.md` is part of its canonical parent when that parent has a regular `<slug>.md`.
+The child must not contain its own `<slug>.md`.
+The complete source snapshot still protects every child's path, bytes, type, and mode.
+Separate canonical documents and independent legacy roots still count as separate identities.
+This structural rule does not authorize archive edits, deletion, relinking, or changes to source eligibility.
 Frontmatter checks also hash resolved YAML node dependencies with the installed PyYAML parser.
 A mutable schema field cannot change an original protected alias or merge dependency.
 The guard also compares effective inherited fields, so a new explicit key cannot shadow their original values.

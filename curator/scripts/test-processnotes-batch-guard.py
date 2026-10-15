@@ -349,6 +349,85 @@ class PreparedBoundaryTests(unittest.TestCase):
         self.assertEqual(original, self.archive_payload(archive))
         self.assertEqual(original, self.archive_payload(duplicate))
 
+    def retained_archive_original(self):
+        slug = "2025-06-13-194734-retained-original"
+        outer = self.root / "wiki/sources/notes/2025/06/13" / slug
+        nested = outer / slug
+        nested.mkdir(parents=True)
+        (outer / f"{slug}.md").write_text(
+            f"---\ntype: source\n---\n# {slug}\n\n{PAYLOAD}\n")
+        (nested / "NOTE.md").write_text(
+            f"---\nsession: preserved fixture\n---\n# Original title\n\n{PAYLOAD}\n")
+        return outer, nested
+
+    def test_retained_same_slug_original_is_one_archive_identity(self):
+        outer, nested = self.retained_archive_original()
+        before = self.archive_payload(outer)
+        self.capture()
+        self.verify()
+        state = json.loads(self.state.read_text())
+        self.assertEqual(len(state["source_identities"][outer.name]), 1)
+        self.assertEqual(before, self.archive_payload(outer))
+        self.assertNotEqual((outer / f"{outer.name}.md").read_bytes(),
+                            (nested / "NOTE.md").read_bytes())
+
+    def test_retained_original_bytes_remain_protected(self):
+        _, nested = self.retained_archive_original()
+        self.capture()
+        (nested / "NOTE.md").write_text("Changed retained original")
+        self.assertIn("existing-source-changed", self.verify(success=False).stderr)
+
+    def test_retained_original_mode_remains_protected(self):
+        _, nested = self.retained_archive_original()
+        self.capture()
+        original = nested / "NOTE.md"
+        original.chmod(original.stat().st_mode ^ stat.S_IXUSR)
+        self.assertIn("existing-source-changed", self.verify(success=False).stderr)
+
+    def test_retained_original_deletion_rejects(self):
+        _, nested = self.retained_archive_original()
+        self.capture()
+        (nested / "NOTE.md").unlink()
+        self.verify(success=False)
+
+    def test_nested_independent_canonical_source_still_rejects(self):
+        outer, nested = self.retained_archive_original()
+        (nested / f"{outer.name}.md").write_text("Independent canonical fixture")
+        before = self.archive_payload(outer)
+        self.assertIn("duplicate-source-identity", self.prepare(success=False).stderr)
+        self.assertEqual(before, self.archive_payload(outer))
+
+    def test_second_legacy_source_outside_canonical_root_still_rejects(self):
+        outer, _ = self.retained_archive_original()
+        other = self.root / "wiki/sources/notes/2024/01/01" / outer.name
+        other.mkdir(parents=True)
+        (other / "NOTE.md").write_text("Separate legacy source")
+        self.assertIn("duplicate-source-identity", self.prepare(success=False).stderr)
+
+    def test_nested_legacy_requires_direct_canonical_parent(self):
+        outer, _ = self.retained_archive_original()
+        (outer / f"{outer.name}.md").unlink()
+        self.assertIn("duplicate-source-identity", self.prepare(success=False).stderr)
+
+    def test_new_nested_canonical_after_capture_still_rejects(self):
+        outer, nested = self.retained_archive_original()
+        self.capture()
+        (nested / f"{outer.name}.md").write_text("New independent canonical")
+        self.assertIn("duplicate-source-identity", self.verify(success=False).stderr)
+
+    def test_new_canonical_preserves_nested_same_slug_original(self):
+        self.prepare()
+        slug = self.names[0]
+        nested = self.root / "notes" / slug / slug
+        nested.mkdir()
+        original = nested / "NOTE.md"
+        original.write_text(f"Original attachment\n{PAYLOAD}\n")
+        before = original.read_bytes()
+        self.capture()
+        canonical = self.canonical()
+        self.verify()
+        self.assertEqual((canonical / slug / "NOTE.md").read_bytes(), before)
+
     def selected_attachment_link(self, target):
         # Install the link after the first promotion, then capture that state.
         self.prepare()
@@ -686,8 +765,8 @@ class PreparedBoundaryTests(unittest.TestCase):
     def test_legacy_manifest_requires_new_capture(self):
         self.capture()
         state = json.loads(self.state.read_text())
-        self.assertEqual(state["version"], 5)
-        for version in (1, 2, 3, 4):
+        self.assertEqual(state["version"], 6)
+        for version in (1, 2, 3, 4, 5):
             with self.subTest(version=version):
                 state["version"] = version
                 self.state.write_text(json.dumps(state))
