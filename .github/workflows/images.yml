@@ -7,7 +7,7 @@ name: images
 # Main publishes a moving `main` development tag plus an immutable full-git-SHA
 # tag. A `v*` release tag publishes that exact tag, its normalized SemVer tag,
 # and the same immutable full-git-SHA tag. The workflow deliberately does not
-# publish `latest`; public manifests pin v0.1.49 (or an immutable SHA) and move
+# publish `latest`; public manifests pin v0.1.50 (or an immutable SHA) and move
 # only through an explicit release.
 #
 # Path filters are intentionally omitted so a pure-docs release commit can still
@@ -104,3 +104,20 @@ jobs:
           docker run --rm --network none --entrypoint bash \
             -v "$GITHUB_WORKSPACE/curator/pi-runner/tests:/canary:ro" \
             "$RUNNER_IMAGE" /canary/test-root-prepared-boundary.sh
+      - name: Verify installed answer guards with synthetic evidence
+        env:
+          MEMORY_IMAGE: ghcr.io/${{ github.repository }}/memory:${{ github.sha }}
+        run: |
+          set -euo pipefail
+          docker pull "$MEMORY_IMAGE"
+          docker run --rm --network none --entrypoint python3 \
+            -e OPENAI_API_KEY=test-only \
+            -e WIKI_MCP_EMBED_PROVIDER=openai \
+            -e WIKI_MCP_BACKGROUND_REINDEX=0 \
+            -e WIKI_ROOT=/tmp/dipink-image-qa \
+            -e NEO4J_INTEGRATION=0 \
+            -e RUN_PROJECTION_REPAIR_NATIVE=0 \
+            -e PYTHONPATH=/app:/app/tests \
+            "$MEMORY_IMAGE" -m unittest \
+            test_temporal_negative_qualifiers test_graph_temporal_negatives \
+            test_resource_scope_qualifiers test_graph_resource_scopes
