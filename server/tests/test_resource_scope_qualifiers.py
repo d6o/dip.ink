@@ -342,6 +342,10 @@ class PredicateAndOperationTests(unittest.TestCase):
             self.reject(self.ANSWER, body)
         body = '`scope-reader` supports read-only pod metadata and Longhorn volume metadata is available through another reader.'
         self.reject(self.ANSWER, body)
+        for separator in (' and ', ', and ', ': '):
+            for predicate in ('belongs to storage-reader', 'delegates to storage-reader', 'depends on storage-reader'):
+                body = '`scope-reader` supports read-only pod metadata' + separator + 'Longhorn volume metadata ' + predicate + '.'
+                self.reject(self.ANSWER, body)
 
     def test_true_resource_lists_remain_supported(self):
         body = '`scope-reader` supports read-only Longhorn volume, replica, node disk capacity and backup metadata.'
@@ -406,6 +410,18 @@ class PredicateAndOperationTests(unittest.TestCase):
                          'Which supported read-only method lists pod metadata?'):
             self.assertIsNone(resource_scope_problem(question, answer, [source]))
 
+    def test_partial_facts_cannot_supply_an_unnamed_selection_tail(self):
+        source = '`scope-reader` supports read-only pod metadata.'
+        partial = 'The cited text records `scope-reader` support for pod metadata as a partial fact.'
+        for question in ('Which supported read-only method reads pod logs?',
+                         'Which supported read-only method lists pod metadata?'):
+            self.assertIsNone(resource_scope_problem(question, partial, [source]))
+            for tail in ('Use it.', 'Use it for this task.', 'Use them.'):
+                self.assertEqual(resource_scope_problem(question, partial + ' ' + tail, [source]), RESOURCE_SCOPE_REASON)
+                long_answer = partial + ' ' + ('Recorded background. ' * 110) + tail
+                self.assertGreater(len(long_answer), 2000)
+                self.assertEqual(resource_scope_problem(question, long_answer, [source]), RESOURCE_SCOPE_REASON)
+
     def test_raw_write_capability_is_not_a_read_only_channel(self):
         write = '`scope-reader` supports read-write Longhorn volume metadata.'
         self.reject(self.ANSWER, self.SUPPORT, write)
@@ -439,6 +455,17 @@ class ContractedResourceDenialTests(unittest.TestCase):
                          [positive + ' It doesn\u2019t support Longhorn volume metadata.']), RESOURCE_SCOPE_REASON)
         self.assertEqual(resource_scope_problem(self.QUESTION, answer,
                          [positive + ' It can\u2019t read.']), RESOURCE_SCOPE_REASON)
+
+    def test_a_simple_quoted_raw_identity_preserves_a_denial_without_a_name_verb_binding(self):
+        positive = '`alpha` supports read-only Longhorn volume metadata.'
+        answer = 'Use `alpha` for Longhorn volume metadata.'
+        denial = '`alpha` Longhorn volume metadata is unsupported.'
+        for raw in (denial, '# ' + denial, 'summary: >\n\n  ' + denial,
+                    '```text\n' + denial + '\n```'):
+            self.assertEqual(resource_scope_problem(self.QUESTION, answer, [positive, raw]), RESOURCE_SCOPE_REASON)
+            self.assertEqual(resource_scope_problem(self.QUESTION, answer, [positive] * 5 + [raw]), RESOURCE_SCOPE_REASON)
+        unbound_positive = '`alpha` Longhorn volume metadata is supported and read-only.'
+        self.assertEqual(resource_scope_problem(self.QUESTION, answer, [unbound_positive]), RESOURCE_SCOPE_REASON)
 
     def test_negation_normalization_does_not_alias_literal_identities(self):
         for name in ('/opt/bin/doesn\u2019t-client', 'doesn\u2019t'):
@@ -477,6 +504,16 @@ class LiteralIdentityTests(unittest.TestCase):
                           'Use `' + path + '.` for Longhorn volume metadata.', [dotted]))
         self.assertEqual(resource_scope_problem(self.QUESTION,
                          'Use `' + path + '` for Longhorn volume metadata.', [dotted]), RESOURCE_SCOPE_REASON)
+
+    def test_presentation_cleanup_preserves_all_literal_path_contents(self):
+        for name in ('/opt/bin/Scope*Client', '/opt/bin/Scope;Client', '/opt/bin/Scope but Client'):
+            body = '`' + name + '` supports read-only Longhorn volume metadata.'
+            answer = 'Use `' + name + '` for Longhorn volume metadata.'
+            self.assertIsNone(resource_scope_problem(self.QUESTION, answer, [body]))
+            self.assertIsNone(resource_scope_problem(self.QUESTION, answer, ['**`' + name + '`** supports read-only Longhorn volume metadata.']))
+        body = '`/opt/bin/Scope*Client` supports read-only Longhorn volume metadata.'
+        wrong = 'Use `/opt/bin/ScopeClient` for Longhorn volume metadata.'
+        self.assertEqual(resource_scope_problem(self.QUESTION, wrong, [body]), RESOURCE_SCOPE_REASON)
 
     def test_quoted_resource_tokens_do_not_hide_raw_limits(self):
         body = '`alpha` supports read-only Longhorn volume metadata.'

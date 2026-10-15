@@ -8,7 +8,9 @@ parser or an authorization check.
 
 False negatives are intentional. Positive names need backticks, a path, or a
 compound identifier. Pronouns, coordinated methods, generic workload scope,
-and indirect positive descriptions cannot establish a capability.
+and indirect positive descriptions cannot establish a capability. A positive
+target accepts only the declared resource and qualifier vocabulary. Other
+predicate words and unquoted identities fail closed.
 """
 import re
 from collections.abc import Mapping, Sequence
@@ -70,11 +72,22 @@ _CAPABILITY_PREDICATE = re.compile(
     r"\b(?:allows?|permits?|enables?|provides?|supports?|offers?|includes?|has|performs?|"
     r"capabilit\w*|operations?|functions?|access)\b", re.I,
 )
-_SPLIT_PREDICATE = re.compile(
-    r"\b(?:is|are|has|have|must|should|requires?|needs?|uses?|supports|reads|provides|"
-    r"allows|can|could|may|might|will|would|separate|another|different|instead)\b", re.I,
-)
+_SCOPE_WORDS = {
+    'a', 'an', 'the', 'and', 'or', 'with', 'for', 'of', 'to', 'in', 'on', 'from', 'via', 'through',
+    'supported', 'approved', 'installed', 'live', 'native', 'current', 'currently', 'explicitly',
+    'read', 'only', 'narrow', 'named', 'fixed', 'limited', 'restricted', 'exact', 'user', 'agent', 'ua',
+    'metadata', 'method', 'methods', 'channel', 'channels', 'reader', 'readers', 'tool', 'tools',
+    'endpoint', 'endpoints', 'cli', 'api', 'rest', 'capability', 'capabilities', 'operation', 'operations',
+    'kubernetes', 'workload', 'workloads', 'internal', 'longhorn', 'volume', 'volumes', 'replica', 'replicas',
+    'node', 'nodes', 'disk', 'disks', 'capacity', 'backup', 'backups', 'pod', 'pods', 'deployment',
+    'deployments', 'statefulset', 'statefulsets', 'cron', 'cronjob', 'cronjobs', 'job', 'jobs',
+    'pv', 'pvs', 'pvc', 'pvcs', 'persistent', 'claim', 'claims', 'log', 'logs', 'list', 'lists', 'listing',
+}
 _SELECTION = re.compile(r"\b(?:use|uses|using|via|through)\b", re.I)
+_AMBIGUOUS_SELECTION = re.compile(
+    r"\b(?:use|uses|using|via|through)\s+(?:it|this|that|them|these|those|"
+    r"the\s+(?:reader|method|helper|tool|channel|endpoint))\b", re.I,
+)
 _TO_ACTION = re.compile(r"\bto\s+(?P<verb>[A-Za-z]+(?:-[A-Za-z]+)?)\b", re.I)
 _MODAL_ACTION = re.compile(
     r"\b(?:can|could|may|might|will|would)\s+(?:(?:also|only|still)\s+)*"
@@ -185,10 +198,24 @@ def _mentions(text: str, name: str) -> bool:
 
 
 def _clauses(text: str) -> list[str]:
-    # Keep commas and "and" inside resource lists. Two named methods fail closed.
-    return [part.strip() for part in re.split(
-        r"[\n;]+|(?<=[.!?])\s+|\s+\b(?:but|while|whereas|however)\b\s+", text.replace("*", "")
-    ) if part.strip()]
+    # Protect literal identities before presentation removal and clause splits.
+    prefix = '\x00scope-literal'
+    while prefix in text:
+        prefix += '_'
+    literals = []
+
+    def protect(match):
+        literals.append(match[0])
+        return prefix + str(len(literals) - 1) + '\x00'
+
+    masked = re.sub(r'`+[^`\n]*`+', protect, text)
+    for marker in (r'\*\*', r'\*'):
+        masked = re.sub(r'(?<![\w./:-])' + marker + r'(\S(?:.*?\S)?)' + marker
+                        + r'(?![\w./:-])', r'\1', masked)
+    parts = re.split(r'[\n;]+|(?<=[.!?])\s+|\s+\b(?:but|while|whereas|however)\b\s+', masked)
+    token = re.compile(re.escape(prefix) + r'(\d+)\x00')
+    return [token.sub(lambda match: literals[int(match[1])], part.strip())
+            for part in parts if part.strip()]
 
 
 @dataclass
@@ -207,10 +234,13 @@ def _source_clauses(text: str) -> list[_Clause]:
         # Only contrary clauses can use an earlier method in the same source.
         # This preserves a following "logs fail" qualifier, not positive scope.
         scope = _scope_text(text_clause)
-        methods = explicit or (previous if _NEGATIVE.search(scope) or _LIMIT.search(scope) or _mutation_claim(scope) else [])
+        contrary = bool(_NEGATIVE.search(scope) or _LIMIT.search(scope) or _mutation_claim(scope))
+        # A raw quoted identity can veto without establishing positive scope.
+        possible = list(dict.fromkeys(explicit + _quoted_names(text_clause))) if contrary else explicit
+        methods = possible or (previous if contrary else [])
         result.append(_Clause(text_clause, explicit, methods, _resources(text_clause)))
-        if explicit:
-            previous = explicit
+        if possible:
+            previous = possible
     return result
 
 
@@ -259,6 +289,16 @@ def _contrary(clause: _Clause, method: str, resources: set[str]) -> bool:
     return bool(_NEGATIVE.search(scope) and _overlap(clause.resources, resources))
 
 
+def _positive_scope_target(target: str) -> bool:
+    # One predicate can name resources and qualifiers, not another predicate.
+    scope = _scope_text(target)
+    for token in re.findall(r'[A-Za-z0-9_]+(?:[-/.:][A-Za-z0-9_]+)+', scope):
+        if _name(token) is not None:
+            return False
+    words = re.findall(r'[A-Za-z][A-Za-z0-9_]*', scope)
+    return bool(words and all(word.casefold() in _SCOPE_WORDS for word in words))
+
+
 def _supported(clause: _Clause, method: str, resources: set[str], claim: str, question: str) -> bool:
     scope = _scope_text(clause.text)
     binding = re.search(
@@ -273,7 +313,7 @@ def _supported(clause: _Clause, method: str, resources: set[str], claim: str, qu
             and binding and resources <= _resources(target)
             and _AFFIRM.search(scope) and _READ.search(scope)
             and not _UNCERTAIN.search(scope) and not _mutation_claim(scope)
-            and not _SPLIT_PREDICATE.search(_scope_text(target))):
+            and _positive_scope_target(target)):
         return False
     # Preserve a source's narrow operation shapes in the answer.
     if any(re.search(r"\b" + word + r"\b", target, re.I)
@@ -334,6 +374,10 @@ def resource_scope_problem(
         if explicit:
             previous = explicit
         claim_scope = _scope_text(claim)
+        if (_AMBIGUOUS_SELECTION.search(claim_scope)
+                or (_SELECTION.search(claim_scope) and not explicit)):
+            # A partial fact cannot supply an unnamed operative selection.
+            return RESOURCE_SCOPE_REASON
         actions = list(_MODAL_ACTION.finditer(claim_scope))
         if _SELECTION.search(claim_scope):
             actions.extend(_TO_ACTION.finditer(claim_scope))

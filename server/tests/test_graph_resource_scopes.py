@@ -140,6 +140,66 @@ class ResourceScopeAnswerTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNotNone(result['answer'])
             self.assertTrue(result['escalate'])
 
+    async def test_partial_facts_do_not_supply_pronominal_selection_tails(self):
+        body = '`scope-reader` supports read-only pod metadata.'
+        partial = 'The cited text records `scope-reader` support for pod metadata as a partial fact.'
+        for question in ('Which supported read-only method reads pod logs?',
+                         'Which supported read-only method lists pod metadata?'):
+            safe = await self.assembled_named_answer(question, body, partial)
+            self.assertIsNotNone(safe['answer'])
+            for tail in ('Use it.', 'Use it for this task.'):
+                rejected = await self.assembled_named_answer(question, body, partial + ' ' + tail)
+                self.assertIsNone(rejected['answer'])
+                long_answer = partial + ' ' + ('Recorded background. ' * 110) + tail
+                self.assertGreater(len(long_answer), 2000)
+                self.assertIsNone(validate(long_answer, packet({SOURCE: body}), question=question)['answer'])
+
+    async def test_independent_predicates_do_not_supply_scope_in_private_assembly(self):
+        question = 'Which supported read-only method reads Longhorn volume metadata?'
+        for separator in (' and ', ', and ', ': '):
+            body = ('`scope-reader` supports read-only pod metadata' + separator
+                    + 'Longhorn volume metadata belongs to storage-reader.')
+            result = await self.assembled_named_answer(question, body, POSITIVE)
+            self.assertIsNone(result['answer'])
+        body = '`scope-reader` supports read-only Longhorn volume and replica metadata.'
+        result = await self.assembled_named_answer(question, body, POSITIVE)
+        self.assertIsNotNone(result['answer'])
+        self.assertTrue(result['escalate'])
+
+    async def test_literal_stars_are_not_removed_in_private_assembly(self):
+        question = 'Which supported read-only method reads Longhorn volume metadata?'
+        body = '`/opt/bin/Scope*Client` supports read-only Longhorn volume metadata.'
+        exact = 'Use `/opt/bin/Scope*Client` for Longhorn volume metadata.'
+        alias = 'Use `/opt/bin/ScopeClient` for Longhorn volume metadata.'
+        self.assertIsNotNone((await self.assembled_named_answer(question, body, exact))['answer'])
+        self.assertIsNone((await self.assembled_named_answer(question, body, alias))['answer'])
+        self.assertIsNone(validate(alias, packet({SOURCE: body}), question=question)['answer'])
+
+    async def test_raw_simple_quoted_denial_vetoes_a_sixth_private_source(self):
+        question = 'Which supported read-only method reads Longhorn volume metadata?'
+        positive = '`alpha` supports read-only Longhorn volume metadata.'
+        denial = '`alpha` Longhorn volume metadata is unsupported.'
+        bodies = {SOURCE + '-' + str(i): positive for i in range(6)}
+        bodies[list(bodies)[-1]] = 'summary: >\n\n  ' + denial
+        p = packet(bodies)
+        answer = 'Use `alpha` for Longhorn volume metadata.'
+        self.assertIsNone(validate(answer, p, list(bodies), question)['answer'])
+        g = SimpleNamespace(search_=mock.AsyncMock(return_value=SimpleNamespace(nodes=[], edges=[], episodes=[])))
+        hits = [{'name': name, 'score': .7 - index * .005} for index, name in enumerate(bodies)]
+        with mock.patch.object(graph, '_get_graph', new=mock.AsyncMock(return_value=g)), \
+             mock.patch.object(graph, '_resolve_episode_slugs', new=mock.AsyncMock(return_value={})), \
+             mock.patch.object(graph, 'FUSION', True), \
+             mock.patch.object(wiki.idx, 'search', return_value=hits), \
+             mock.patch.object(wiki.idx, 'get', side_effect=lambda name: {'body': bodies[name]}), \
+             mock.patch.object(graph, '_distill', new=mock.AsyncMock(return_value={
+                 'answer': answer, 'confidence': 'high', 'sources': list(bodies), 'escalate': False,
+             })) as distill, mock.patch.object(graph, '_record_query'):
+            result = await graph._graph_answer_impl(question)
+        self.assertIsNone(result['answer'])
+        self.assertTrue(result['escalate'])
+        self.assertNotIn('source_validation_texts', distill.call_args.args[1])
+        self.assertNotIn(denial, distill.call_args.args[1])
+
     def test_coordinated_simple_methods_do_not_share_one_method_support(self):
         question = 'Which supported read-only method reads Longhorn volume metadata?'
         body = '`alpha` is the supported read-only method for Longhorn volume metadata.'
