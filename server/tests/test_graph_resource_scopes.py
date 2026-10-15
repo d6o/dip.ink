@@ -48,6 +48,26 @@ class ResourceScopeAnswerTests(unittest.IsolatedAsyncioTestCase):
         p = packet({SOURCE: '`devbox-kube-read` is the supported method for Kubernetes workload metadata.'})
         self.assertIsNone(validate(WRONG, p)['answer'])
 
+    def test_full_source_metadata_cannot_supply_positive_excerpt_scope(self):
+        positive = '`scope-reader` is the supported read-only metadata method for Longhorn volumes.'
+        question = 'Which supported read-only metadata method reads Longhorn volume metadata?'
+        for raw in ('# ' + positive, '---\ndescription: ' + positive + '\n---',
+                    '## Example\n\n```text\n' + positive + '\n```',
+                    '```text\n~~~\n' + positive + '\n```'):
+            p = packet({SOURCE: positive})
+            p['source_validation_texts'][SOURCE] = raw
+            self.assertIsNone(validate(POSITIVE, p, question=question)['answer'])
+        body = '# Scoped source\n\n## Recorded scope\n\nAs of 2026-10-13, ' + positive
+        p = packet({SOURCE: positive})
+        p['source_validation_texts'][SOURCE] = body
+        self.assertIsNotNone(validate(POSITIVE, p, question=question)['answer'])
+
+    def test_sixth_raw_metadata_limit_is_not_lost_in_the_body_filter(self):
+        bodies = {f'2026-10-13-12000{i}-metadata': SUPPORT for i in range(6)}
+        p = packet(bodies)
+        p['source_validation_texts'][list(bodies)[-1]] = '# ' + CONTRARY
+        self.assertIsNone(validate(POSITIVE, p, list(bodies), SCOPED_QUESTION)['answer'])
+
     def test_direct_synthetic_scoped_support_remains_medium_and_escalates(self):
         p = packet({SOURCE: SUPPORT})
         result = validate(POSITIVE, p, question=SCOPED_QUESTION)

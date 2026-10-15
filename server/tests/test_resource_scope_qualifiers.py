@@ -293,6 +293,89 @@ class ContraryScopeTests(unittest.TestCase):
             self.assertEqual(resource_scope_problem(question, answer, [source]), RESOURCE_SCOPE_REASON)
 
 
+class SourceBodyBoundaryTests(unittest.TestCase):
+    QUESTION = 'Which supported read-only metadata method reads Longhorn volume metadata?'
+    SUPPORT = '`scope-reader` is the supported read-only metadata method for Longhorn volumes.'
+    ANSWER = 'Use `scope-reader` for Longhorn volumes metadata.'
+
+    def reject(self, body):
+        self.assertEqual(resource_scope_problem(self.QUESTION, self.ANSWER, [body]), RESOURCE_SCOPE_REASON)
+
+    def test_positive_headings_cannot_establish_scope(self):
+        self.reject('# ' + self.SUPPORT)
+        self.reject('## ' + self.SUPPORT)
+        self.reject('   ### ' + self.SUPPORT)
+        self.reject(self.SUPPORT + '\n===')
+        self.reject(self.SUPPORT + '\n---')
+
+    def test_frontmatter_and_metadata_fields_cannot_establish_scope(self):
+        self.reject('---\ndescription: ' + self.SUPPORT + '\n---')
+        self.reject('\n---\ndescription: ' + self.SUPPORT + '\n---\nNo body evidence.')
+        self.reject('description: ' + self.SUPPORT)
+        self.reject('title: ' + self.SUPPORT)
+        self.reject('\ufeff\n---\ndescription: ' + self.SUPPORT + '\n---')
+
+    def test_example_sections_cannot_establish_scope(self):
+        for body in ('## Example\n\n' + self.SUPPORT,
+                     '## Example\n\n```text\n' + self.SUPPORT + '\n```',
+                     '## Example\n\n### Details\n\n' + self.SUPPORT,
+                     'Example:\n\n' + self.SUPPORT,
+                     'For example,\n\n' + self.SUPPORT,
+                     'Example:\n===\n\n## Nested detail\n\n' + self.SUPPORT):
+            self.reject(body)
+
+    def test_foreign_short_and_nested_fence_markers_cannot_promote_scope(self):
+        for opening, nested, closing in (
+            ('```text', '~~~', '```'), ('~~~text', '```', '~~~'),
+            ('````text', '```', '````'), ('~~~~text', '~~~', '~~~~'),
+            ('```text', '````text', '```'), ('~~~text', '~~~~text', '~~~'),
+        ):
+            with self.subTest(opening=opening, nested=nested):
+                self.reject(opening + '\n' + nested + '\n' + self.SUPPORT + '\n' + closing)
+
+    def test_fenced_unclosed_and_indented_code_cannot_establish_scope(self):
+        self.reject('```text\n' + self.SUPPORT + '\n```')
+        self.reject('~~~text\n' + self.SUPPORT + '\n~~~')
+        self.reject('```text\n' + self.SUPPORT)
+        self.reject('~~~text\n' + self.SUPPORT)
+        self.reject('    ' + self.SUPPORT)
+        self.reject('\t' + self.SUPPORT)
+        self.reject('> ' + self.SUPPORT)
+
+    def test_ordinary_scoped_body_remains_positive(self):
+        bodies = (
+            '# Scoped source\n\n## Durable claims\n\n' + self.SUPPORT,
+            'Scoped source\n===\n\n' + self.SUPPORT,
+            '## Metadata scope\n\n' + self.SUPPORT,
+            '---\ntitle: Scoped source\n---\n\n' + self.SUPPORT,
+            '## Example\n\n```text\nIgnored text.\n```\n\n## Observed scope\n\n' + self.SUPPORT,
+        )
+        for body in bodies:
+            self.assertIsNone(resource_scope_problem(self.QUESTION, self.ANSWER, [body]))
+
+    def test_matching_and_longer_closes_preserve_later_scope(self):
+        for opening, closing in (('```text', '```'), ('```text', '````'),
+                                 ('~~~text', '~~~'), ('~~~text', '~~~~')):
+            body = opening + '\nIgnored text.\n' + closing + '\n\n' + self.SUPPORT
+            self.assertIsNone(resource_scope_problem(self.QUESTION, self.ANSWER, [body]))
+
+    def test_raw_contrary_limits_remain_visible_in_metadata_and_code(self):
+        contrary = '`scope-reader` has no Longhorn volume operation.'
+        for raw in ('# ' + contrary,
+                    '---\ndescription: ' + contrary + '\n---',
+                    '## Example\n\n```text\n' + contrary + '\n```'):
+            self.assertEqual(resource_scope_problem(self.QUESTION, self.ANSWER,
+                                                   [self.SUPPORT, raw]), RESOURCE_SCOPE_REASON)
+            self.assertEqual(resource_scope_problem(self.QUESTION, self.ANSWER,
+                                                   [self.SUPPORT] * 5 + [raw]), RESOURCE_SCOPE_REASON)
+
+    def test_metadata_limit_can_veto_but_cannot_establish_actual_negative_scope(self):
+        question = 'Which supported read-only metadata method reads Longhorn volume metadata?'
+        answer = '`scope-reader` has no Longhorn volume operation.'
+        raw = '# ' + answer
+        self.assertEqual(resource_scope_problem(question, answer, [raw]), RESOURCE_SCOPE_REASON)
+
+
 class BatchResourceScopeTests(unittest.TestCase):
     # Synthetic static text. These tests do not inspect an installed reader.
     BASE_BATCH = BASE_SCOPE + ' `devbox-kube-read` has no CronJobs or Jobs metadata operation.'

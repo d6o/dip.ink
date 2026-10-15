@@ -2,8 +2,9 @@
 
 A positive needs one explicit method and all claimed resources in one source
 clause. A later clause, another method, a heading, or another source cannot
-supply missing scope. All source clauses can supply contrary limits. This is
-not an entailment parser or an authorization check.
+supply missing scope. Only narrative body clauses can support a capability.
+All raw source clauses can supply contrary limits. This is not an entailment
+parser or an authorization check.
 
 False negatives are intentional. Positive names need backticks, a path, or a
 compound identifier. Pronouns, coordinated methods, generic workload scope,
@@ -12,6 +13,8 @@ and indirect positive descriptions cannot establish a capability.
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+
+from temporal_negative_qualifiers import _source_body_text
 
 RESOURCE_SCOPE_REASON = (
     "The cited text does not establish the stated metadata method and resource "
@@ -238,8 +241,10 @@ def resource_scope_problem(
     """
     if not resource_scope_required(question):
         return None
-    values = source_texts.values() if isinstance(source_texts, Mapping) else source_texts
+    values = list(source_texts.values() if isinstance(source_texts, Mapping) else source_texts)
+    # Keep all raw limits. Only eligible body text can establish a capability.
     evidence = [clause for text in values for clause in _source_clauses(text)]
+    body_evidence = [clause for text in values for clause in _source_clauses(_source_body_text(text))]
     requested = _resources(question)
     previous: list[str] = []
     checked = False
@@ -264,7 +269,7 @@ def resource_scope_problem(
             checked = True
             continue
         if _NEGATIVE.search(claim) or _LIMIT.search(claim):
-            if not _negative_supported(claim, methods, resources, evidence):
+            if not _negative_supported(claim, methods, resources, body_evidence):
                 return RESOURCE_SCOPE_REASON
             checked = True
             continue
@@ -278,7 +283,7 @@ def resource_scope_problem(
             return RESOURCE_SCOPE_REASON
         method = explicit[0]
         if (any(_contrary(source, method, resources) for source in evidence)
-                or not any(_supported(source, method, resources, claim, question) for source in evidence)):
+                or not any(_supported(source, method, resources, claim, question) for source in body_evidence)):
             return RESOURCE_SCOPE_REASON
         checked = True
     return None if checked else RESOURCE_SCOPE_REASON
