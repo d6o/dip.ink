@@ -26,6 +26,18 @@ class TemporalNegativeTests(unittest.TestCase):
     def reject(self, answer, texts):
         self.assertEqual(temporal_negative_problem(QUESTION, answer, texts), TEMPORAL_NEGATIVE_REASON)
 
+    def test_question_cutoff_formatting_does_not_skip_the_guard(self):
+        for wrapper in ('`', '**', '__'):
+            question = QUESTION.replace(CUTOFF, wrapper + CUTOFF + wrapper)
+            self.assertTrue(temporal_negative_required(question))
+            self.assertEqual(temporal_negative_problem(question, WRONG, [OLD]), TEMPORAL_NEGATIVE_REASON)
+            self.assertIsNone(temporal_negative_problem(question, SAFE, [OLD]))
+        self.assertFalse(temporal_negative_required('What does `' + CUTOFF + '` mean?'))
+
+    def test_question_formatting_does_not_promote_code_dates_in_a_source(self):
+        body = OLD.replace('2026-10-11T12:05:54Z', '`2026-10-11T12:05:54Z`')
+        self.reject(SAFE, [body])
+
     def test_old_current_fact_cannot_establish_universal_absence(self):
         self.reject(WRONG, [OLD])
         self.reject('No.', [OLD])
@@ -33,6 +45,28 @@ class TemporalNegativeTests(unittest.TestCase):
         for prefix in ('Zero new custody receipts arrived after ', '0 new custody receipts arrived after ',
                        'A new custody receipt remains to be verified after '):
             self.reject(prefix + CUTOFF + '.', [OLD])
+
+    def test_contracted_temporal_absence_still_requires_retrieval_limits(self):
+        for apostrophe in ("'", '\u2019', '\u2018', '\u02bc', '\uff07'):
+            for phrase in ('There isn' + apostrophe + 't a new custody receipt after ',
+                           'There aren' + apostrophe + 't new custody receipts after ',
+                           'A new custody receipt hasn' + apostrophe + 't arrived after '):
+                self.reject(phrase + CUTOFF + '.', [OLD])
+
+    def test_restrictive_old_receipt_claims_do_not_establish_temporal_absence(self):
+        for phrase in ('All custody receipts are dated before ',
+                       'Every custody receipt is dated before ',
+                       'Only custody receipts dated prior to ',
+                       'The latest custody receipt is older than ',
+                       'All custody receipts are dated BEFORE'):
+            self.reject(phrase + CUTOFF + '.', [OLD])
+        self.reject('All custody receipts ' + ('with recorded context ' * 30) + 'are dated before ' + CUTOFF + '.', [OLD])
+
+    def test_universal_tail_cannot_hide_after_a_bounded_negative(self):
+        self.reject(SAFE + " There isn't a new custody receipt after " + CUTOFF + '.', [OLD])
+        self.reject(SAFE + ' All custody receipts are dated before ' + CUTOFF + '.', [OLD])
+        self.assertIsNone(temporal_negative_problem(QUESTION, LATER, [LATER]))
+        self.assertIsNone(temporal_negative_problem(QUESTION, SAFE, [OLD]))
 
     def test_later_timestamp_alone_never_establishes_complete_coverage(self):
         self.reject(WRONG, [LIMITED])
@@ -124,6 +158,58 @@ class TemporalNegativeTests(unittest.TestCase):
     def test_dated_body_observation_remains_valid_below_an_ordinary_title(self):
         body = '# 2026-10-14-120000-backup-evidence\n\n## Durable claims\n\n- ' + OLD
         self.assertIsNone(temporal_negative_problem(QUESTION, SAFE, [body]))
+
+    def test_list_contained_fences_do_not_date_an_observation(self):
+        for opening, indent, closing in (('- ```text', '  ', '  ```'),
+                                         ('1. ```text', '   ', '   ```'),
+                                         ('10. ~~~text', '    ', '    ~~~'),
+                                         ('- - ```text', '    ', '    ```')):
+            self.reject(SAFE, [opening + '\n' + indent + OLD + '\n' + closing])
+            self.reject(SAFE, [opening + '\n' + indent + OLD])
+        for prefix in ('- ', '* ', '1. ', '1) '):
+            self.assertIsNone(temporal_negative_problem(QUESTION, SAFE, [prefix + OLD]))
+
+    def test_html_code_and_comments_do_not_date_an_observation(self):
+        for opening, closing in (('<pre>', '</pre>'), ('<code>', '</code>'), ('<!--', '-->')):
+            self.reject(SAFE, [opening + '\n' + OLD + '\n' + closing])
+            self.reject(SAFE, [opening + '\n' + OLD])
+            body = opening + '\nNo observation.\n' + closing + '\n\n' + OLD
+            self.assertIsNone(temporal_negative_problem(QUESTION, SAFE, [body]))
+        self.reject(SAFE, ['<pre>\nNo observation.\n</pre><pre>\n' + OLD + '\n</pre>'])
+
+    def test_html_and_list_filters_do_not_hide_possible_receipts(self):
+        for candidate in ('- ```text\n  ' + LATER + '\n  ```', '<pre>\n' + LATER + '\n</pre>',
+                          '<!--\n' + LATER + '\n-->'):
+            self.reject(SAFE, [OLD + '\n\n' + candidate])
+
+    def test_metadata_scalar_continuations_do_not_date_an_observation(self):
+        for field in ('description', 'summary', 'metadata'):
+            for marker in ('|', '>', '|-', '>+', '|2', '>2-', '', 'plain scalar'):
+                body = field + ': ' + marker + '\n  ' + OLD
+                self.reject(SAFE, [body])
+                self.reject(SAFE, [field + ': ' + marker + '\n\n  ' + OLD])
+
+        for key in ('"description"', "'description'", '**description**', '__description__'):
+            self.reject(SAFE, [key + ': |\n\n  ' + OLD])
+
+    def test_metadata_scalar_context_survives_indentation_variants(self):
+        for header_indent in ('', ' ', '  ', '    ', '\t'):
+            for value_indent in ('', ' ', '  ', '   ', '    ', '\t', ' \t'):
+                with self.subTest(header=header_indent, value=value_indent):
+                    body = header_indent + 'description: |\n\n' + value_indent + OLD
+                    self.reject(SAFE, [body])
+        self.reject(SAFE, ['- description: |\n\n  ' + OLD])
+        self.reject(SAFE, ['1. description: |\n\n  ' + OLD])
+
+    def test_metadata_scalar_ends_only_at_an_explicit_body_boundary(self):
+        for boundary in ('## Observed custody', '---', '...'):
+            body = 'description: |\n  Metadata value.\n\n' + boundary + '\n\n' + OLD
+            self.assertIsNone(temporal_negative_problem(QUESTION, SAFE, [body]))
+        self.reject(SAFE, ['description: |\n\n  ## Observed custody\n\n  ' + OLD])
+
+    def test_metadata_scalar_does_not_hide_a_possible_contrary_receipt(self):
+        body = OLD + '\n\nsummary: >\n\n  ' + LATER
+        self.reject(SAFE, [body])
 
     def test_foreign_and_short_fence_markers_do_not_close_code(self):
         for opening, nested, closing in (

@@ -44,6 +44,22 @@ class TemporalAnswerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(result['answer'])
         self.assertTrue(result['escalate'])
 
+    def test_contracted_and_restrictive_absence_abstains_in_the_answer_path(self):
+        for text in ("There isn't a new custody receipt after " + CUTOFF + '.',
+                     'There isn\u2019t a new custody receipt after ' + CUTOFF + '.',
+                     'All custody receipts are dated before ' + CUTOFF + '.'):
+            result = validate(text)
+            self.assertIsNone(result['answer'])
+            self.assertEqual(result['confidence'], 'not_found')
+            self.assertTrue(result['escalate'])
+
+    def test_universal_temporal_tails_cannot_hide_after_the_display_cap(self):
+        for tail in ("There isn't a new custody receipt after " + CUTOFF + '.',
+                     'All custody receipts are dated before ' + CUTOFF + '.'):
+            text = SAFE + ' ' + ('Recorded background. ' * 110) + tail
+            self.assertGreater(len(text), 2000)
+            self.assertIsNone(validate(text)['answer'])
+
     def test_bounded_retrieved_negative_is_medium_and_escalates(self):
         result = validate(SAFE)
         self.assertIsNotNone(result['answer'])
@@ -79,6 +95,22 @@ class TemporalAnswerTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIsNone(result['answer'])
                 self.assertTrue(result['escalate'])
 
+    def test_full_metadata_scalar_cannot_supply_a_dated_observation(self):
+        for header, indent in (('description: |', '  '), ('summary: >', '\t'),
+                               ('  description: |-', ' '), ('- description: >+', '  ')):
+            p = packet()
+            p['source_validation_texts'][SOURCE] = header + '\n\n' + indent + OLD
+            self.assertIsNone(validate(SAFE, p)['answer'])
+        p = packet()
+        p['source_validation_texts'][SOURCE] = 'description: |\n  Metadata value.\n\n## Observed custody\n\n' + OLD
+        self.assertIsNotNone(validate(SAFE, p)['answer'])
+
+    def test_sixth_metadata_scalar_does_not_hide_a_possible_receipt(self):
+        bodies = {f'2026-10-13-12000{i}-backup': OLD for i in range(6)}
+        p = packet(bodies)
+        p['source_validation_texts'][list(bodies)[-1]] += '\n\nsummary: >\n\n  ' + LATER
+        self.assertIsNone(validate(SAFE, p, list(bodies))['answer'])
+
     def test_foreign_fence_marker_cannot_promote_a_full_source_observation(self):
         for opening, nested, closing in (('```text', '~~~', '```'),
                                          ('~~~text', '```', '~~~'),
@@ -87,10 +119,20 @@ class TemporalAnswerTests(unittest.IsolatedAsyncioTestCase):
             p['source_validation_texts'][SOURCE] = opening + '\n' + nested + '\n' + OLD + '\n' + closing
             self.assertIsNone(validate(SAFE, p)['answer'])
 
+    def test_list_and_html_code_cannot_supply_a_full_source_observation(self):
+        for wrapped in ('- ```text\n  ' + OLD + '\n  ```', '1. ```text\n   ' + OLD + '\n   ```',
+                        '<pre>\n' + OLD + '\n</pre>', '<code>\n' + OLD + '\n</code>', '<!--\n' + OLD + '\n-->'):
+            p = packet()
+            p['source_validation_texts'][SOURCE] = wrapped
+            self.assertIsNone(validate(SAFE, p)['answer'])
+
     def test_code_filter_preserves_the_raw_possible_receipt_veto(self):
-        p = packet()
-        p['source_validation_texts'][SOURCE] = OLD + '\n\n```text\n~~~\n' + LATER + '\n```'
-        self.assertIsNone(validate(SAFE, p)['answer'])
+        for wrapped in ('```text\n~~~\n' + LATER + '\n```',
+                        '- ```text\n  ' + LATER + '\n  ```', '<pre>\n' + LATER + '\n</pre>',
+                        '<!--\n' + LATER + '\n-->'):
+            p = packet()
+            p['source_validation_texts'][SOURCE] = OLD + '\n\n' + wrapped
+            self.assertIsNone(validate(SAFE, p)['answer'])
 
     def test_full_metadata_body_cannot_fall_back_to_a_dated_excerpt(self):
         p = packet()
@@ -147,6 +189,25 @@ class TemporalAnswerTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn('Background context. Background context.', sent)
         self.assertNotIn('source_validation_texts', search)
         self.assertNotIn('credential_validation_texts', search)
+
+    async def test_formatted_question_cutoff_keeps_full_source_validation_private(self):
+        g = SimpleNamespace(search_=mock.AsyncMock(return_value=SimpleNamespace(nodes=[], edges=[], episodes=[])))
+        for wrapper in ('`', '**', '__'):
+            question = QUESTION.replace(CUTOFF, wrapper + CUTOFF + wrapper)
+            with mock.patch.object(graph, '_get_graph', new=mock.AsyncMock(return_value=g)), \
+                 mock.patch.object(graph, '_resolve_episode_slugs', new=mock.AsyncMock(return_value={})), \
+                 mock.patch.object(graph, 'FUSION', True), \
+                 mock.patch.object(wiki.idx, 'search', return_value=[{'name': SOURCE, 'score': .7}]), \
+                 mock.patch.object(wiki.idx, 'get', return_value={'body': OLD}), \
+                 mock.patch.object(graph, '_distill', new=mock.AsyncMock(return_value={
+                     'answer': WRONG, 'confidence': 'high', 'sources': [SOURCE], 'escalate': False,
+                 })) as distill, mock.patch.object(graph, '_record_query'):
+                result = await graph._graph_answer_impl(question)
+                assembled = await graph._assemble_packet(question, 3, answer_evidence=True)
+            self.assertIsNone(result['answer'])
+            self.assertTrue(result['escalate'])
+            self.assertIn('source_validation_texts', assembled)
+            self.assertNotIn('source_validation_texts', distill.call_args.args[1])
 
     async def test_current_view_also_excludes_private_full_text(self):
         p = packet()
