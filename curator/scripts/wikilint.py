@@ -138,7 +138,8 @@ def is_source_note_page(fp: Path) -> bool:
     return False
 
 
-def lint(pages_info: dict[Path, dict]) -> list[dict]:
+def lint(pages_info: dict[Path, dict], link_targets: dict[str, str] | None = None) -> list[dict]:
+    """Lint selected pages with an optional wiki-wide target registry."""
     issues = []
 
     # Build name index for wikilink resolution (case-insensitive)
@@ -146,6 +147,8 @@ def lint(pages_info: dict[Path, dict]) -> list[dict]:
     for fp, info in pages_info.items():
         if "name" in info:
             name_to_path[info["name"].lower()] = info["name"]
+    if link_targets is not None:
+        name_to_path.update(link_targets)
 
     for fp, info in sorted(pages_info.items()):
         if "error" in info:
@@ -363,7 +366,11 @@ def main():
         return 0
 
     info = read_pages(pages)
-    issues = lint(info)
+    # Resolve links against all eligible wiki paths, but read and lint only selected pages.
+    link_targets = None
+    if args.paths:
+        link_targets = {fp.stem.lower(): fp.stem for fp in list_pages([])}
+    issues = lint(info, link_targets)
 
     by_severity = defaultdict(int)
     for i in issues:
