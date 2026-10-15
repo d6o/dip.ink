@@ -90,6 +90,42 @@ class ResourceScopeAnswerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(validate('Use `scope-reader` to read Longhorn volume metadata.', p,
                                       question=question)['answer'])
 
+    def test_contracted_denials_in_raw_late_citations_veto_the_answer(self):
+        question = 'Which supported read-only method reads Longhorn volume metadata?'
+        body = '`scope-reader` supports read-only Longhorn volume metadata.'
+        for denial in ("doesn't support", 'doesn\u2019t support', 'isn\u2019t supported for', "can't read"):
+            contrary = '`scope-reader` ' + denial + ' Longhorn volume metadata.'
+            bodies = {f'2026-10-13-12000{i}-metadata': body for i in range(6)}
+            p = packet(bodies)
+            p['source_validation_texts'][list(bodies)[-1]] = 'summary: >\n\n  ' + contrary
+            self.assertIsNone(validate(POSITIVE, p, list(bodies), question)['answer'])
+            safe = 'The cited text does not establish a supported Longhorn metadata method for `scope-reader`.'
+            result = validate(safe, packet({SOURCE: contrary}), question=question)
+            self.assertIsNotNone(result['answer'])
+            self.assertTrue(result['escalate'])
+
+    def test_property_negation_does_not_change_literal_method_identity(self):
+        question = 'Which supported read-only method reads Longhorn volume metadata?'
+        name = '/opt/bin/doesn\u2019t-client'
+        body = '`' + name + '` supports read-only Longhorn volume metadata.'
+        answer = 'Use `' + name + '` for Longhorn volume metadata.'
+        p = packet({SOURCE: body})
+        self.assertIsNotNone(validate(answer, p, question=question)['answer'])
+        self.assertIsNone(validate(answer.replace('\u2019', "'"), p, question=question)['answer'])
+
+    async def test_nominal_mutation_tails_fail_in_private_assembly_and_complete_drafts(self):
+        question = 'Which supported read-only method reads Longhorn volume metadata?'
+        body = '`scope-reader` supports read-only Longhorn volume metadata.'
+        for noun in ('deletion', 'removal', 'destruction', 'creation', 'modification'):
+            answer = POSITIVE + ' It allows ' + noun + '.'
+            result = await self.assembled_named_answer(question, body, answer)
+            self.assertIsNone(result['answer'])
+            long_answer = POSITIVE + ' ' + ('Recorded background. ' * 110) + ' It allows ' + noun + '.'
+            self.assertGreater(len(long_answer), 2000)
+            self.assertIsNone(validate(long_answer, packet({SOURCE: body}), question=question)['answer'])
+            background = POSITIVE + ' The ' + noun + ' date is recorded.'
+            self.assertIsNotNone(validate(background, packet({SOURCE: body}), question=question)['answer'])
+
     def test_requested_logs_and_list_are_required_for_a_recommendation(self):
         body = '`scope-reader` supports read-only pod metadata.'
         partial = 'The cited text records `scope-reader` support for pod metadata as a partial fact.'
@@ -299,6 +335,21 @@ class ResourceScopeAnswerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(result['answer'])
         self.assertTrue(result['escalate'])
 
+    async def test_simple_and_compound_read_verbs_keep_the_private_boundary(self):
+        for name in ('alpha', 'scope-client'):
+            for verb in ('get', 'fetch', 'query', 'inspect', 'access'):
+                question = 'Can `' + name + '` ' + verb + ' Longhorn volume metadata?'
+                answer = 'Use `' + name + '` to ' + verb + ' Longhorn volume metadata.'
+                pod = '`' + name + '` supports only read-only pod metadata.'
+                volume = '`' + name + '` supports read-only Longhorn volume metadata.'
+                rejected = await self.assembled_named_answer(question, pod, answer)
+                self.assertIsNone(rejected['answer'])
+                self.assertTrue(rejected['escalate'])
+                accepted = await self.assembled_named_answer(question, volume, answer)
+                self.assertIsNotNone(accepted['answer'])
+                self.assertEqual(accepted['confidence'], 'medium')
+                self.assertTrue(accepted['escalate'])
+
     async def test_named_read_and_generic_resource_questions_keep_supported_controls(self):
         cases = (
             ('Can `scope-client` read Longhorn volume metadata?',
@@ -324,7 +375,8 @@ class ResourceScopeAnswerTests(unittest.IsolatedAsyncioTestCase):
              mock.patch.object(graph, '_wiki_semantic_hits', new=mock.AsyncMock(return_value=[])), \
              mock.patch.object(graph, '_source_validation_context', new=mock.AsyncMock()) as full:
             for question in ('What is a volume?', 'What is the `scope-client` version?',
-                             'Where is `scope-reader`?'):
+                             'Where is `scope-reader`?', 'What is the `alpha` version?',
+                             'What is the `get` version?'):
                 p = await graph._assemble_packet(question, 3, answer_evidence=True)
                 self.assertNotIn('source_validation_texts', p)
         full.assert_not_awaited()

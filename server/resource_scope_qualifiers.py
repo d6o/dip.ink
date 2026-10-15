@@ -14,7 +14,7 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
-from temporal_negative_qualifiers import _source_body_text
+from temporal_negative_qualifiers import _normalize_negation, _source_body_text
 
 RESOURCE_SCOPE_REASON = (
     "The cited text does not establish the stated metadata method and resource "
@@ -65,6 +65,11 @@ _MUTATING = re.compile(
     r"destroy(?:s|ed|ing)?|modif(?:y|ies|ied|ying)|creat(?:e|es|ed|ing)|"
     r"apply|applies|applied|applying|mutat(?:e|es|ed|ing))\b", re.I,
 )
+_MUTATION_NOUN = re.compile(r"\b(?:deletions?|removals?|destructions?|creations?|modifications?|mutations?)\b", re.I)
+_CAPABILITY_PREDICATE = re.compile(
+    r"\b(?:allows?|permits?|enables?|provides?|supports?|offers?|includes?|has|performs?|"
+    r"capabilit\w*|operations?|functions?|access)\b", re.I,
+)
 _SPLIT_PREDICATE = re.compile(
     r"\b(?:is|are|has|have|must|should|requires?|needs?|uses?|supports|reads|provides|"
     r"allows|can|could|may|might|will|would|separate|another|different|instead)\b", re.I,
@@ -83,9 +88,13 @@ _LACK = re.compile(
     r"|\bno\b.{0,100}\b(?:found|recorded|identified|established|contains?|channel|method)\b", re.I,
 )
 _NAME = r"`[^`\n]+`|[A-Za-z0-9_/.:-]+"
+_CONTRACTED_AUX = (
+    r"(?:isn|aren|wasn|weren|hasn|haven|hadn|doesn|don|didn|can|won|wouldn|couldn|"
+    r"shouldn|mustn|needn|ain)['\u2018\u2019\u02bc\uff07\u201b]t"
+)
 _NAMED = re.compile(
     rf"\b(?:use|uses|using|via|through)\s+(?:the\s+)?(?P<after>{_NAME})"
-    rf"|(?P<before>{_NAME})\s+(?:(?:only|currently|explicitly|also)\s+)?(?:is|supports?|reads?|lists?|provides?|allows?|cannot|does\s+not|has)\b"
+    rf"|(?P<before>{_NAME})\s+(?:(?:only|currently|explicitly|also)\s+)?(?:is|supports?|reads?|lists?|provides?|allows?|cannot|does\s+not|has|{_CONTRACTED_AUX})\b"
     rf"|\b(?:method|channel|reader|tool|endpoint)\s*(?:is|:|=)\s*(?:the\s+)?(?P<is>{_NAME})"
     rf"|\b(?:by|for)\s+(?P<for>{_NAME})", re.I,
 )
@@ -101,6 +110,8 @@ _STORAGE = {"longhorn", "volume", "replica", "disk", "node_disk", "capacity", "b
 _UNAVAILABLE = re.compile(
     r"\b(?:is|remains)\s+(?:(?:currently|still)\s+)?(?:unavailable|unsupported|"
     r"uninstalled|blocked|not\s+(?:supported|installed|available|approved))\b"
+    r"|\b(?:does|do)\s+not\s+support\b"
+    r"|\b(?:cannot|can not|ca not)\s+(?:read|list|get|fetch|query|inspect|access)\b"
     r"|binding_window_unsupported", re.I,
 )
 _GLOBAL_ABSENCE = re.compile(
@@ -114,7 +125,16 @@ def _scope_text(text: str) -> str:
         text = text.replace('`' + method + '`', ' ')
         if re.search(r'[-_/:.]', method):
             text = re.sub(r'(?<![\w./:-])' + re.escape(method) + r'(?![\w./:-])', ' ', text)
-    return text
+    # Normalize property words, never a quoted literal or identity token.
+    parts = re.split(r'(`+[^`\n]*`+)', text)
+    return ''.join(part if index % 2 else _normalize_negation(part)
+                   for index, part in enumerate(parts))
+
+
+def _mutation_claim(scope: str) -> bool:
+    return bool(_MUTATING.search(scope) or (
+        _MUTATION_NOUN.search(scope) and _CAPABILITY_PREDICATE.search(scope)
+    ))
 
 
 def _resources(text: str) -> set[str]:
@@ -186,7 +206,8 @@ def _source_clauses(text: str) -> list[_Clause]:
         explicit = _methods(text_clause)
         # Only contrary clauses can use an earlier method in the same source.
         # This preserves a following "logs fail" qualifier, not positive scope.
-        methods = explicit or (previous if _NEGATIVE.search(text_clause) or _LIMIT.search(text_clause) else [])
+        scope = _scope_text(text_clause)
+        methods = explicit or (previous if _NEGATIVE.search(scope) or _LIMIT.search(scope) or _mutation_claim(scope) else [])
         result.append(_Clause(text_clause, explicit, methods, _resources(text_clause)))
         if explicit:
             previous = explicit
@@ -195,8 +216,10 @@ def _source_clauses(text: str) -> list[_Clause]:
 
 def resource_scope_required(question: str) -> bool:
     """Select named read/scope questions without using words inside a name."""
-    methods = _methods(question)
+    methods = list(dict.fromkeys(_methods(question) + _quoted_names(question)))
     scope = _scope_text(question)
+    for method in methods:
+        scope = scope.replace('`' + method + '`', ' ')
     named_read = methods and (_NAMED_READ.search(scope) or _GENERIC_SCOPE.search(scope))
     described_scope = (
         (_READ.search(scope) or _GENERIC_SCOPE.search(scope))
@@ -228,8 +251,8 @@ def _contrary(clause: _Clause, method: str, resources: set[str]) -> bool:
         return False
     if not clause.resources and _UNAVAILABLE.search(scope):
         return True
-    if (_MUTATING.search(scope) and not _NEGATIVE.search(scope)
-            and _overlap(clause.resources, resources)):
+    if (_mutation_claim(scope) and not _NEGATIVE.search(scope)
+            and (not clause.resources or _overlap(clause.resources, resources))):
         return True
     if _LIMIT.search(scope) and clause.resources and _limit_excludes(clause.resources, resources):
         return True
@@ -249,7 +272,7 @@ def _supported(clause: _Clause, method: str, resources: set[str], claim: str, qu
     if not (not coordinated and clause.explicit == [method] and (not quoted or quoted == [method])
             and binding and resources <= _resources(target)
             and _AFFIRM.search(scope) and _READ.search(scope)
-            and not _UNCERTAIN.search(scope) and not _MUTATING.search(scope)
+            and not _UNCERTAIN.search(scope) and not _mutation_claim(scope)
             and not _SPLIT_PREDICATE.search(_scope_text(target))):
         return False
     # Preserve a source's narrow operation shapes in the answer.
@@ -319,7 +342,7 @@ def resource_scope_problem(
             for action in actions
         ):
             return RESOURCE_SCOPE_REASON
-        if _MUTATING.search(claim_scope) and not (
+        if _mutation_claim(claim_scope) and not (
             _BOUNDED.search(claim_scope) and _LACK.search(claim_scope) and not _SELECTION.search(claim_scope)
         ):
             # This read-oriented guard never establishes a mutating operation.

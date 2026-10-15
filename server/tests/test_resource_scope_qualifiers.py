@@ -60,6 +60,21 @@ class IntentTests(unittest.TestCase):
                 with self.subTest(question=question):
                     self.assertTrue(resource_scope_required(question))
 
+    def test_simple_quoted_names_select_every_declared_read_verb(self):
+        for name in ('alpha', 'scope-client'):
+            for verb in ('get', 'fetch', 'query', 'inspect', 'access'):
+                question = 'Can `' + name + '` ' + verb + ' Longhorn volume metadata?'
+                self.assertTrue(resource_scope_required(question))
+                answer = 'Use `' + name + '` to ' + verb + ' Longhorn volume metadata.'
+                pod = '`' + name + '` supports only read-only pod metadata.'
+                volume = '`' + name + '` supports read-only Longhorn volume metadata.'
+                self.assertEqual(resource_scope_problem(question, answer, [pod]), RESOURCE_SCOPE_REASON)
+                self.assertIsNone(resource_scope_problem(question, answer, [volume]))
+        for name in ('get', 'reader', 'alpha'):
+            self.assertFalse(resource_scope_required('What is the `' + name + '` version?'))
+        for resource in ('pod', 'Longhorn', 'volume'):
+            self.assertFalse(resource_scope_required('Can `' + resource + '` get Longhorn volume metadata?'))
+
     def test_names_cannot_supply_the_scope_question_intent(self):
         for name in ('scope-client', 'scope-reader', 'metadata-cli'):
             for question in ('Where is `' + name + '`?',
@@ -344,6 +359,19 @@ class PredicateAndOperationTests(unittest.TestCase):
             self.assertGreater(len(long_answer), 2000)
             self.reject(long_answer, self.SUPPORT)
 
+    def test_nominal_capability_tails_are_not_read_only_operations(self):
+        for noun in ('deletion', 'removal', 'destruction', 'creation', 'modification'):
+            self.reject(self.ANSWER + ' It allows ' + noun + '.', self.SUPPORT)
+            long_answer = self.ANSWER + ' ' + ('Recorded background. ' * 110) + ' It allows ' + noun + '.'
+            self.reject(long_answer, self.SUPPORT)
+            background = self.ANSWER + ' The ' + noun + ' date is recorded.'
+            self.assertIsNone(resource_scope_problem(self.QUESTION, background, [self.SUPPORT]))
+
+    def test_raw_nominal_mutation_tails_remain_possible_vetoes(self):
+        body = self.SUPPORT + ' It allows deletion.'
+        self.reject(self.ANSWER, body)
+        self.reject(self.ANSWER, self.SUPPORT, 'summary: >\n  `scope-reader` allows deletion.')
+
     def test_explicit_read_operation_and_source_limited_negatives_remain_safe(self):
         self.assertIsNone(resource_scope_problem(self.QUESTION,
                           'Use `scope-reader` to read Longhorn volume metadata.', [self.SUPPORT]))
@@ -384,6 +412,41 @@ class PredicateAndOperationTests(unittest.TestCase):
         self.reject(self.ANSWER, *([self.SUPPORT] * 5 + [write]))
         other = write.replace('scope-reader', 'other-client')
         self.assertIsNone(resource_scope_problem(self.QUESTION, self.ANSWER, [self.SUPPORT, other]))
+
+
+class ContractedResourceDenialTests(unittest.TestCase):
+    QUESTION = 'Which supported read-only method reads Longhorn volume metadata?'
+
+    def test_contracted_raw_denials_veto_read_only_selections(self):
+        for name in ('alpha', 'scope-reader'):
+            positive = '`' + name + '` supports read-only Longhorn volume metadata.'
+            answer = 'Use `' + name + '` for Longhorn volume metadata.'
+            for apostrophe in ("'", '\u2019', '\u2018', '\u02bc', '\uff07'):
+                for denial in ('doesn' + apostrophe + 't support', 'isn' + apostrophe + 't supported for',
+                               'can' + apostrophe + 't read'):
+                    contrary = '`' + name + '` ' + denial + ' Longhorn volume metadata.'
+                    self.assertEqual(resource_scope_problem(self.QUESTION, answer, [positive, contrary]), RESOURCE_SCOPE_REASON)
+                    self.assertIsNone(resource_scope_problem(self.QUESTION,
+                                      '`' + name + '` does not support Longhorn volume metadata.', [contrary]))
+
+    def test_late_scalar_and_pronominal_denials_remain_raw_vetoes(self):
+        positive = '`scope-reader` supports read-only Longhorn volume metadata.'
+        answer = 'Use `scope-reader` for Longhorn volume metadata.'
+        denial = '`scope-reader` doesn\u2019t support Longhorn volume metadata.'
+        for raw in ('summary: >\n\n  ' + denial, '# ' + denial, '<pre>\n' + denial + '\n</pre>'):
+            self.assertEqual(resource_scope_problem(self.QUESTION, answer, [positive] * 5 + [raw]), RESOURCE_SCOPE_REASON)
+        self.assertEqual(resource_scope_problem(self.QUESTION, answer,
+                         [positive + ' It doesn\u2019t support Longhorn volume metadata.']), RESOURCE_SCOPE_REASON)
+        self.assertEqual(resource_scope_problem(self.QUESTION, answer,
+                         [positive + ' It can\u2019t read.']), RESOURCE_SCOPE_REASON)
+
+    def test_negation_normalization_does_not_alias_literal_identities(self):
+        for name in ('/opt/bin/doesn\u2019t-client', 'doesn\u2019t'):
+            body = '`' + name + '` supports read-only Longhorn volume metadata.'
+            answer = 'Use `' + name + '` for Longhorn volume metadata.'
+            self.assertIsNone(resource_scope_problem(self.QUESTION, answer, [body]))
+            wrong = answer.replace('\u2019', "'")
+            self.assertEqual(resource_scope_problem(self.QUESTION, wrong, [body]), RESOURCE_SCOPE_REASON)
 
 
 class LiteralIdentityTests(unittest.TestCase):
