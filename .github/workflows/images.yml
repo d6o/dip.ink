@@ -92,6 +92,9 @@ jobs:
           docker pull "$RUNNER_IMAGE"
           docker run --rm --network none --user 1001:1001 --entrypoint python3 \
             "$RUNNER_IMAGE" /opt/dip.ink/scripts/test-processnotes-batch-guard.py
+          docker run --rm --network none --user 1001:1001 --entrypoint python3 \
+            "$RUNNER_IMAGE" /opt/dip.ink/scripts/test-wikilint-targets.py \
+            --wikilint /opt/dip.ink/scripts/wikilint.py
           docker run --rm --network none --user 1001:1001 --entrypoint bash \
             -v "$GITHUB_WORKSPACE/curator/pi-runner/tests:/opt/dip.ink/pi-runner/tests:ro" \
             -e PREPARED_TEST_ENTRYPOINT=/opt/pi-runner/entrypoint.sh \
