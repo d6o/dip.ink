@@ -60,11 +60,60 @@ class TemporalAnswerTests(unittest.IsolatedAsyncioTestCase):
             self.assertGreater(len(text), 2000)
             self.assertIsNone(validate(text)['answer'])
 
+    def test_coordinated_restrictive_absence_does_not_survive_validation(self):
+        for clause in ('All custody receipts are verified and dated before ',
+                       'All custody\nreceipts are verified and\ndated before '):
+            draft = clause + CUTOFF + '.'
+            result = validate(draft)
+            self.assertIsNone(result['answer'])
+            self.assertEqual(result['confidence'], 'not_found')
+            self.assertTrue(result['escalate'])
+            self.assertIn('temporal absence claim', result['superseded_note'])
+            long_draft = SAFE + ' ' + ('Recorded background. ' * 110) + draft
+            self.assertGreater(len(long_draft), 2000)
+            late_result = validate(long_draft)
+            self.assertIsNone(late_result['answer'])
+            self.assertIn('temporal absence claim', late_result['superseded_note'])
+
+    def test_coordinated_raw_receipt_veto_reaches_a_sixth_scalar_body(self):
+        bodies = {f'2026-10-13-12000{i}-backup': OLD for i in range(6)}
+        for candidate in ('As of 2026-10-14T12:00:00Z, a custody receipt is new and verified.',
+                          'As of 2026-10-14T12:00:00Z,\na custody receipt is new and\nverified.'):
+            p = packet(bodies)
+            p['source_validation_texts'][list(bodies)[-1]] += '\n\nsummary: >\n\n  ' + candidate.replace('\n', '\n  ')
+            result = validate(SAFE, p, list(bodies))
+            self.assertIsNone(result['answer'])
+            self.assertIn('temporal absence claim', result['superseded_note'])
+
+    async def test_private_assembly_preserves_conjoined_raw_receipt_context(self):
+        question = 'Is there a new custody receipt after ' + CUTOFF + '?'
+        candidate = 'As of 2026-10-14T12:00:00Z,\na custody receipt is new and\nverified.'
+        bodies = {SOURCE + '-' + str(index): OLD for index in range(6)}
+        bodies[list(bodies)[-1]] += '\n\nsummary: >\n\n  ' + candidate.replace('\n', '\n  ')
+        g = SimpleNamespace(search_=mock.AsyncMock(return_value=SimpleNamespace(nodes=[], edges=[], episodes=[])))
+        hits = [{'name': name, 'score': .7 - index * .005} for index, name in enumerate(bodies)]
+        with mock.patch.object(graph, '_get_graph', new=mock.AsyncMock(return_value=g)), \
+             mock.patch.object(graph, '_resolve_episode_slugs', new=mock.AsyncMock(return_value={})), \
+             mock.patch.object(graph, 'FUSION', True), \
+             mock.patch.object(wiki.idx, 'search', return_value=hits), \
+             mock.patch.object(wiki.idx, 'get', side_effect=lambda name: {'body': bodies[name]}), \
+             mock.patch.object(graph, '_distill', new=mock.AsyncMock(return_value={
+                 'answer': SAFE, 'confidence': 'high', 'sources': list(bodies), 'escalate': False,
+             })) as distill, mock.patch.object(graph, '_record_query'):
+            result = await graph._graph_answer_impl(question)
+        self.assertIsNone(result['answer'])
+        self.assertTrue(result['escalate'])
+        self.assertIn('temporal absence claim', result['superseded_note'])
+        self.assertNotIn('source_validation_texts', distill.call_args.args[1])
+        self.assertNotIn('receipt is new', distill.call_args.args[1])
+
     def test_bounded_retrieved_negative_is_medium_and_escalates(self):
         result = validate(SAFE)
         self.assertIsNotNone(result['answer'])
         self.assertEqual(result['confidence'], 'medium')
         self.assertTrue(result['escalate'])
+        bold = OLD.replace('2026-10-11T12:05:54Z', '**2026-10-11T12:05:54Z**')
+        self.assertIsNotNone(validate(SAFE, packet({SOURCE: bold}))['answer'])
 
     def test_sixth_raw_citation_conflict_is_checked_before_display_cap(self):
         bodies = {f'2026-10-13-12000{i}-backup': OLD for i in range(6)}

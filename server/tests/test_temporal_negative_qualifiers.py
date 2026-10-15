@@ -62,6 +62,34 @@ class TemporalNegativeTests(unittest.TestCase):
             self.reject(phrase + CUTOFF + '.', [OLD])
         self.reject('All custody receipts ' + ('with recorded context ' * 30) + 'are dated before ' + CUTOFF + '.', [OLD])
 
+    def test_bold_narrative_observation_is_not_a_metadata_date(self):
+        stamp = '2026-10-11T12:05:54Z'
+        bold = OLD.replace(stamp, '**' + stamp + '**')
+        self.assertIsNone(temporal_negative_problem(QUESTION, SAFE, [bold]))
+        for body in ('**' + stamp + '**\nBackup custody remains unverified.',
+                     '# ' + bold, 'captured: **' + stamp + '**\nBackup custody remains unverified.',
+                     '## Example\n\n' + bold):
+            self.reject(SAFE, [body])
+
+    def test_restrictive_absence_keeps_conjunction_and_wrapped_sentence_context(self):
+        for clause in ('All custody receipts are verified and dated before ',
+                       'All custody\nreceipts are verified and\ndated before ',
+                       'All custody receipts are verified\nand dated\nbefore '):
+            self.reject(clause + CUTOFF + '.', [OLD])
+            self.reject(SAFE + ' ' + ('Recorded background. ' * 110) + clause + CUTOFF + '.', [OLD])
+
+    def test_raw_possible_receipt_keeps_its_shared_date_topic_and_predicate(self):
+        for candidate in (
+            'As of 2026-10-14T12:00:00Z, a custody receipt is new and verified.',
+            'As of 2026-10-14T12:00:00Z,\na custody receipt is new and\nverified.',
+            'As of 2026-10-14T12:00:00Z, a custody\nreceipt is new\nand verified.',
+        ):
+            self.reject(SAFE, [OLD + '\n' + candidate])
+            self.reject(SAFE, [OLD + '\n\nsummary: >\n\n  ' + candidate.replace('\n', '\n  ')])
+            self.reject(SAFE, [OLD] * 5 + [OLD + '\n' + candidate])
+        self.assertIsNone(temporal_negative_problem(QUESTION, SAFE, [OLD]))
+        self.assertIsNone(temporal_negative_problem(QUESTION, LATER, [LATER]))
+
     def test_universal_tail_cannot_hide_after_a_bounded_negative(self):
         self.reject(SAFE + " There isn't a new custody receipt after " + CUTOFF + '.', [OLD])
         self.reject(SAFE + ' All custody receipts are dated before ' + CUTOFF + '.', [OLD])

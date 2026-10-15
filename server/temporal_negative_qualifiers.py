@@ -249,6 +249,13 @@ def _clauses(text: str, *, source: bool = False) -> list[str]:
     ) if part.strip()]
 
 
+def _safety_contexts(text: str) -> list[str]:
+    # Keep conjunctions and wrapped lines until the sentence-level vetoes run.
+    text = _normalize_negation(text.replace('`', '').replace('*', ''))
+    return [re.sub(r'\s+', ' ', part).strip()
+            for part in re.split(r'(?<=[.!?])\s+', text) if part.strip()]
+
+
 def _affirmative_observation(clause: str) -> bool:
     return any(not _NEGATED_OBSERVATION.search(clause[:match.start()])
                for match in _OBSERVATION.finditer(clause))
@@ -267,9 +274,10 @@ def temporal_negative_problem(
     if not temporal_negative_required(question):
         return None
     cutoff = _time(_question_cutoff(question)['stamp'])
-    claims = _clauses(answer)
-    if any(_TOPIC.search(clause) and _RESTRICTIVE_ABSENCE.search(clause) for clause in claims):
+    if any(_TOPIC.search(context) and _RESTRICTIVE_ABSENCE.search(context)
+           for context in _safety_contexts(answer)):
         return TEMPORAL_NEGATIVE_REASON
+    claims = _clauses(answer)
     negatives = [clause for clause in claims if _NEGATIVE.search(clause)]
     if not negatives:
         return None
@@ -283,10 +291,10 @@ def temporal_negative_problem(
     for text in values:
         # Do not hide possible contrary receipts with the metadata filter.
         # A positive candidate can require abstention without proving delivery.
-        for clause in _clauses(text):
-            if _TOPIC.search(clause) and _affirmative_observation(clause) and any(
+        for context in _safety_contexts(text):
+            if _TOPIC.search(context) and _affirmative_observation(context) and any(
                 (when := _time(match['stamp'])) and when > cutoff
-                for match in _CANDIDATE_DATE.finditer(clause)
+                for match in _CANDIDATE_DATE.finditer(context)
             ):
                 return TEMPORAL_NEGATIVE_REASON
         observations = []
