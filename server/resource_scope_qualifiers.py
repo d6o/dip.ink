@@ -41,7 +41,12 @@ _RESOURCE_PATTERNS = {
     "list": r"\blist(?:s|ing)?\b",
 }
 _RESOURCE_RE = {name: re.compile(pattern, re.I) for name, pattern in _RESOURCE_PATTERNS.items()}
-_INTENT = re.compile(r"\b(?:channels?|methods?|readers?|tools?|CLI|REST|API|endpoints?|supports?|capabilit\w*)\b", re.I)
+_INTENT = re.compile(
+    r"(?<![\w./:-])(?:channels?|methods?|readers?|tools?|CLI|REST|API|endpoints?|"
+    r"supports?|capabilit\w*)(?![\w/:-]|\.[A-Za-z0-9])", re.I,
+)
+_NAMED_READ = re.compile(r"\b(?:read[- ]only|reads?|lists?|gets?|fetch(?:es)?|queries|query|access(?:es)?|inspects?)\b", re.I)
+_GENERIC_SCOPE = re.compile(r"\b(?:resources?|kinds?|operations?|scope|capabilit\w*)\b", re.I)
 _READ = re.compile(r"\b(?:metadata|read[- ]only|reads?|lists?|logs?)\b", re.I)
 _AFFIRM = re.compile(r"\b(?:supports?|supported|approved)\b", re.I)
 _LIMIT = re.compile(r"(?<!read[- ])(?<![-\w])(?:only|limited\s+to|limits?\b.{0,60}\bto|restricted\s+to)\b", re.I)
@@ -54,6 +59,24 @@ _UNCERTAIN = re.compile(
     r"unsupported|unavailable|fails?|failed|failure|denied|blocked|pending|planned|proposed|"
     r"draft|fixture|example|stub|intent|intended|source[- ]only|source code|reviewed source)\b|\?", re.I,
 )
+_MUTATING = re.compile(
+    r"\bread[- /]?write\b|\b(?:delet(?:e|es|ed|ing)|writ(?:e|es|ing)|wrote|written|"
+    r"updat(?:e|es|ed|ing)|patch(?:es|ed|ing)?|remov(?:e|es|ed|ing)|"
+    r"destroy(?:s|ed|ing)?|modif(?:y|ies|ied|ying)|creat(?:e|es|ed|ing)|"
+    r"apply|applies|applied|applying|mutat(?:e|es|ed|ing))\b", re.I,
+)
+_SPLIT_PREDICATE = re.compile(
+    r"\b(?:is|are|has|have|must|should|requires?|needs?|uses?|supports|reads|provides|"
+    r"allows|can|could|may|might|will|would|separate|another|different|instead)\b", re.I,
+)
+_SELECTION = re.compile(r"\b(?:use|uses|using|via|through)\b", re.I)
+_TO_ACTION = re.compile(r"\bto\s+(?P<verb>[A-Za-z]+(?:-[A-Za-z]+)?)\b", re.I)
+_MODAL_ACTION = re.compile(
+    r"\b(?:can|could|may|might|will|would)\s+(?:(?:also|only|still)\s+)*"
+    r"(?P<verb>[A-Za-z]+(?:-[A-Za-z]+)?)\b", re.I,
+)
+_READ_ACTIONS = {'read', 'list', 'get', 'fetch', 'query', 'inspect', 'show', 'describe', 'retrieve', 'access'}
+_PARTIAL = re.compile(r"\b(?:partial|source[- ]only)\b", re.I)
 _BOUNDED = re.compile(r"\b(?:cited|retrieved|supplied|recorded)\s+(?:source\s+)?(?:text|sources?|evidence|notes?)\b", re.I)
 _LACK = re.compile(
     r"\b(?:does?\s+not|cannot)\s+(?:establish|identify|confirm|verify|show)\b"
@@ -67,6 +90,9 @@ _NAMED = re.compile(
     rf"|\b(?:by|for)\s+(?P<for>{_NAME})", re.I,
 )
 _BACKTICK = re.compile(r"`([^`\n]+)`")
+_COORDINATED_NAMES = re.compile(
+    r'`[^`\n]+`(?:\s*(?:,|\b(?:and/or|and|or|with)\b)\s*`[^`\n]+`)+', re.I,
+)
 _NOT_METHOD = {
     "read-only", "read_only", "node-disk", "node-disks", "pod-list", "pod-logs",
     "binding_window_unsupported", "exact-user-agent", "kinds", "cron-job", "cron-jobs",
@@ -85,7 +111,9 @@ _GLOBAL_ABSENCE = re.compile(
 
 def _scope_text(text: str) -> str:
     for method in _methods(text):
-        text = re.sub(re.escape(method), " ", text, flags=re.I)
+        text = text.replace('`' + method + '`', ' ')
+        if re.search(r'[-_/:.]', method):
+            text = re.sub(r'(?<![\w./:-])' + re.escape(method) + r'(?![\w./:-])', ' ', text)
     return text
 
 
@@ -99,13 +127,28 @@ def _resources(text: str) -> set[str]:
 
 
 def _name(value: str) -> str | None:
-    quoted = value.startswith("`")
-    value = value.strip("`").rstrip(".").casefold()
-    if (not value or value in _NOT_METHOD or value in _RESOURCE_RE
-            or value.removesuffix('s') in _RESOURCE_RE
-            or (not quoted and not re.search(r"[-_/:.]", value))):
+    quoted = value.startswith('`') and value.endswith('`')
+    value = value[1:-1] if quoted else value
+    if not quoted and '/' not in value:
+        value = value.rstrip('.')
+    label = value.casefold()
+    if (not value or label in _NOT_METHOD or label in _RESOURCE_RE
+            or label.removesuffix('s') in _RESOURCE_RE
+            or (not quoted and not re.search(r'[-_/:.]', value))):
         return None
+    if not value.startswith(('/', './', '../', '~/')):
+        remainder = value
+        for pattern in _RESOURCE_RE.values():
+            remainder = pattern.sub(' ', remainder)
+        remainder = re.sub(r'\b(?:metadata|and|or|read[- ]only|narrow|named|fixed|kinds?)\b', ' ', remainder, flags=re.I)
+        if not re.sub(r'[\s,/|()+-]', '', remainder):
+            return None
     return value
+
+
+def _quoted_names(text: str) -> list[str]:
+    return list(dict.fromkeys(name for value in _BACKTICK.findall(text)
+                             if (name := _name('`' + value + '`'))))
 
 
 def _methods(text: str) -> list[str]:
@@ -113,11 +156,12 @@ def _methods(text: str) -> list[str]:
     # A quoted compound name can also occur in a negative or a scope limit.
     names += [_name("`" + value + "`") for value in _BACKTICK.findall(text)
               if re.search(r"[-_/:.]", value)]
+    names += [name for chain in _COORDINATED_NAMES.finditer(text) for name in _quoted_names(chain[0])]
     return list(dict.fromkeys(name for name in names if name))
 
 
 def _mentions(text: str, name: str) -> bool:
-    return bool(re.search(r"(?<![\w./:-])" + re.escape(name) + r"(?![\w./:-])", text, re.I))
+    return bool(re.search(r"(?<![\w./:-])" + re.escape(name) + r"(?![\w./:-])", text))
 
 
 def _clauses(text: str) -> list[str]:
@@ -150,13 +194,15 @@ def _source_clauses(text: str) -> list[_Clause]:
 
 
 def resource_scope_required(question: str) -> bool:
-    """Select explicit metadata scope questions, not general storage questions."""
-    scope = re.sub(r"(?:[\w./:-]+/)?devbox-kube-read", " ", _scope_text(question), flags=re.I)
-    return bool(
-        (_READ.search(scope) or re.search(r"\b(?:resources?|kinds?|operations?|scope)\b", scope, re.I))
-        and ((_resources(question) and _INTENT.search(question))
-             or _mentions(question, "devbox-kube-read"))
+    """Select named read/scope questions without using words inside a name."""
+    methods = _methods(question)
+    scope = _scope_text(question)
+    named_read = methods and (_NAMED_READ.search(scope) or _GENERIC_SCOPE.search(scope))
+    described_scope = (
+        (_READ.search(scope) or _GENERIC_SCOPE.search(scope))
+        and _resources(question) and _INTENT.search(scope)
     )
+    return bool(named_read or described_scope)
 
 
 def _overlap(left: set[str], right: set[str]) -> bool:
@@ -175,28 +221,36 @@ def _limit_excludes(allowed: set[str], claimed: set[str]) -> bool:
 
 
 def _contrary(clause: _Clause, method: str, resources: set[str]) -> bool:
-    if not clause.methods and _GLOBAL_ABSENCE.search(clause.text) and _overlap(clause.resources, resources):
+    scope = _scope_text(clause.text)
+    if not clause.methods and _GLOBAL_ABSENCE.search(scope) and _overlap(clause.resources, resources):
         return True
-    if clause.methods != [method]:
+    if method not in clause.methods:
         return False
-    if not clause.resources and _UNAVAILABLE.search(clause.text):
+    if not clause.resources and _UNAVAILABLE.search(scope):
         return True
-    if _LIMIT.search(clause.text) and clause.resources and _limit_excludes(clause.resources, resources):
+    if (_MUTATING.search(scope) and not _NEGATIVE.search(scope)
+            and _overlap(clause.resources, resources)):
         return True
-    return bool(_NEGATIVE.search(clause.text) and _overlap(clause.resources, resources))
+    if _LIMIT.search(scope) and clause.resources and _limit_excludes(clause.resources, resources):
+        return True
+    return bool(_NEGATIVE.search(scope) and _overlap(clause.resources, resources))
 
 
 def _supported(clause: _Clause, method: str, resources: set[str], claim: str, question: str) -> bool:
     scope = _scope_text(clause.text)
     binding = re.search(
         r"(?<![\w./:-])`?" + re.escape(method)
-        + r"`?\s+(?:(?:only|currently|explicitly)\s+)?(?:is|supports?)\b",
-        clause.text, re.I,
+        + r"`?\s+(?i:(?:(?:only|currently|explicitly)\s+)?(?:is|supports?))\b",
+        clause.text,
     )
     target = clause.text[binding.end():] if binding else ""
-    if not (clause.explicit == [method] and binding and resources <= _resources(target)
+    quoted = _quoted_names(clause.text)
+    coordinated = any(_quoted_names(chain[0]) for chain in _COORDINATED_NAMES.finditer(clause.text))
+    if not (not coordinated and clause.explicit == [method] and (not quoted or quoted == [method])
+            and binding and resources <= _resources(target)
             and _AFFIRM.search(scope) and _READ.search(scope)
-            and not _UNCERTAIN.search(scope)):
+            and not _UNCERTAIN.search(scope) and not _MUTATING.search(scope)
+            and not _SPLIT_PREDICATE.search(_scope_text(target))):
         return False
     # Preserve a source's narrow operation shapes in the answer.
     if any(re.search(r"\b" + word + r"\b", target, re.I)
@@ -216,14 +270,16 @@ def _negative_supported(claim: str, methods: list[str], resources: set[str], evi
     if len(methods) != 1 or not resources:
         return False
     method = methods[0]
+    claim_scope = _scope_text(claim)
     for source in evidence:
         if source.methods != [method]:
             continue
-        if _LIMIT.search(claim):
-            if _LIMIT.search(source.text) and resources == source.resources:
+        scope = _scope_text(source.text)
+        if _LIMIT.search(claim_scope):
+            if _LIMIT.search(scope) and resources == source.resources:
                 return True
-        elif (_NEGATIVE.search(source.text) and resources <= source.resources) or (
-            _LIMIT.search(source.text) and source.resources and not resources & source.resources
+        elif (_NEGATIVE.search(scope) and resources <= source.resources) or (
+            _LIMIT.search(scope) and source.resources and not resources & source.resources
         ):
             # Preserve the exact failure token if the answer states it.
             if "binding_window_unsupported" not in claim.casefold() or "binding_window_unsupported" in source.text.casefold():
@@ -254,7 +310,21 @@ def resource_scope_problem(
         methods = explicit or previous
         if explicit:
             previous = explicit
-        if _BOUNDED.search(claim) and _LACK.search(claim):
+        claim_scope = _scope_text(claim)
+        actions = list(_MODAL_ACTION.finditer(claim_scope))
+        if _SELECTION.search(claim_scope):
+            actions.extend(_TO_ACTION.finditer(claim_scope))
+        if actions and not _NEGATIVE.search(claim_scope) and any(
+            action['verb'].casefold() not in _READ_ACTIONS or len(explicit) != 1 or not resources
+            for action in actions
+        ):
+            return RESOURCE_SCOPE_REASON
+        if _MUTATING.search(claim_scope) and not (
+            _BOUNDED.search(claim_scope) and _LACK.search(claim_scope) and not _SELECTION.search(claim_scope)
+        ):
+            # This read-oriented guard never establishes a mutating operation.
+            return RESOURCE_SCOPE_REASON
+        if _BOUNDED.search(claim_scope) and _LACK.search(claim_scope):
             target = resources or requested
             relevant = [source for source in evidence if source.resources & target
                         or any(_mentions(source.text, method) for method in methods)]
@@ -262,13 +332,13 @@ def resource_scope_problem(
                 source.explicit and (not methods or source.explicit == methods)
                 and _AFFIRM.search(_scope_text(source.text)) and not _UNCERTAIN.search(_scope_text(source.text))
                 and _overlap(source.resources, target)
-                and not _LIMIT.search(source.text)
+                and not _LIMIT.search(_scope_text(source.text))
                 for source in relevant
             ):
                 return RESOURCE_SCOPE_REASON
             checked = True
             continue
-        if _NEGATIVE.search(claim) or _LIMIT.search(claim):
+        if _NEGATIVE.search(claim_scope) or _LIMIT.search(claim_scope):
             if not _negative_supported(claim, methods, resources, body_evidence):
                 return RESOURCE_SCOPE_REASON
             checked = True
@@ -277,11 +347,21 @@ def resource_scope_problem(
             continue
         # An unnamed or unscoped selection refers to the requested scope.
         resources = resources or requested
+        partial_fact = (
+            _BOUNDED.search(claim_scope) and _PARTIAL.search(claim_scope)
+            and not _SELECTION.search(claim_scope) and not actions
+        )
+        if not partial_fact:
+            # A named resource cannot erase the requested read operation.
+            resources |= requested & {'logs', 'list'}
         if resources == {"longhorn"}:
             resources |= requested
-        if not resources or len(explicit) != 1:
+        if any(_quoted_names(chain[0]) for chain in _COORDINATED_NAMES.finditer(claim)):
             return RESOURCE_SCOPE_REASON
-        method = explicit[0]
+        selected = list(dict.fromkeys(explicit + _quoted_names(claim)))
+        if not resources or len(selected) != 1:
+            return RESOURCE_SCOPE_REASON
+        method = selected[0]
         if (any(_contrary(source, method, resources) for source in evidence)
                 or not any(_supported(source, method, resources, claim, question) for source in body_evidence)):
             return RESOURCE_SCOPE_REASON
