@@ -365,11 +365,21 @@ class PredicateAndOperationTests(unittest.TestCase):
 
     def test_nominal_capability_tails_are_not_read_only_operations(self):
         for noun in ('deletion', 'removal', 'destruction', 'creation', 'modification'):
-            self.reject(self.ANSWER + ' It allows ' + noun + '.', self.SUPPORT)
-            long_answer = self.ANSWER + ' ' + ('Recorded background. ' * 110) + ' It allows ' + noun + '.'
-            self.reject(long_answer, self.SUPPORT)
-            background = self.ANSWER + ' The ' + noun + ' date is recorded.'
-            self.assertIsNone(resource_scope_problem(self.QUESTION, background, [self.SUPPORT]))
+            for tail in ('It allows ' + noun + '.', noun.capitalize() + ' is possible.',
+                         noun.capitalize() + ' remains available.', noun.capitalize() + ' is enabled.'):
+                self.reject(self.ANSWER + ' ' + tail, self.SUPPORT)
+                long_answer = self.ANSWER + ' ' + ('Recorded background. ' * 110) + tail
+                self.reject(long_answer, self.SUPPORT)
+            for record in ('date is recorded.', 'history is documented.'):
+                background = self.ANSWER + ' The ' + noun + ' ' + record
+                self.assertIsNone(resource_scope_problem(self.QUESTION, background, [self.SUPPORT]))
+
+    def test_unbound_capability_states_and_unknown_operative_words_fail_closed(self):
+        for tail in ('Erasure is possible.', 'Destructive access is enabled.'):
+            self.reject(self.ANSWER + ' ' + tail, self.SUPPORT)
+        self.reject('Use `scope-reader` for Longhorn volume metadata erasure.', self.SUPPORT)
+        for background in ('Recorded background.', 'Background context.', 'This is historical background.'):
+            self.assertIsNone(resource_scope_problem(self.QUESTION, self.ANSWER + ' ' + background, [self.SUPPORT]))
 
     def test_raw_nominal_mutation_tails_remain_possible_vetoes(self):
         body = self.SUPPORT + ' It allows deletion.'

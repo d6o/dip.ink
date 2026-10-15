@@ -117,14 +117,28 @@ class ResourceScopeAnswerTests(unittest.IsolatedAsyncioTestCase):
         question = 'Which supported read-only method reads Longhorn volume metadata?'
         body = '`scope-reader` supports read-only Longhorn volume metadata.'
         for noun in ('deletion', 'removal', 'destruction', 'creation', 'modification'):
-            answer = POSITIVE + ' It allows ' + noun + '.'
-            result = await self.assembled_named_answer(question, body, answer)
+            for tail in ('It allows ' + noun + '.', noun.capitalize() + ' is possible.',
+                         noun.capitalize() + ' remains available.', noun.capitalize() + ' is enabled.'):
+                answer = POSITIVE + ' ' + tail
+                result = await self.assembled_named_answer(question, body, answer)
+                self.assertIsNone(result['answer'])
+                long_answer = POSITIVE + ' ' + ('Recorded background. ' * 110) + tail
+                self.assertGreater(len(long_answer), 2000)
+                self.assertIsNone(validate(long_answer, packet({SOURCE: body}), question=question)['answer'])
+            for record in ('date is recorded.', 'history is documented.'):
+                background = POSITIVE + ' The ' + noun + ' ' + record
+                self.assertIsNotNone(validate(background, packet({SOURCE: body}), question=question)['answer'])
+
+    async def test_unbound_capability_states_do_not_become_background(self):
+        question = 'Which supported read-only method reads Longhorn volume metadata?'
+        body = '`scope-reader` supports read-only Longhorn volume metadata.'
+        for tail in ('Erasure is possible.', 'Destructive access is enabled.'):
+            result = await self.assembled_named_answer(question, body, POSITIVE + ' ' + tail)
             self.assertIsNone(result['answer'])
-            long_answer = POSITIVE + ' ' + ('Recorded background. ' * 110) + ' It allows ' + noun + '.'
-            self.assertGreater(len(long_answer), 2000)
+            long_answer = POSITIVE + ' ' + ('Recorded background. ' * 110) + tail
             self.assertIsNone(validate(long_answer, packet({SOURCE: body}), question=question)['answer'])
-            background = POSITIVE + ' The ' + noun + ' date is recorded.'
-            self.assertIsNotNone(validate(background, packet({SOURCE: body}), question=question)['answer'])
+        for background in ('Recorded background.', 'Background context.', 'This is historical background.'):
+            self.assertIsNotNone(validate(POSITIVE + ' ' + background, packet({SOURCE: body}), question=question)['answer'])
 
     def test_requested_logs_and_list_are_required_for_a_recommendation(self):
         body = '`scope-reader` supports read-only pod metadata.'

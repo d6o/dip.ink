@@ -10,7 +10,8 @@ False negatives are intentional. Positive names need backticks, a path, or a
 compound identifier. Pronouns, coordinated methods, generic workload scope,
 and indirect positive descriptions cannot establish a capability. A positive
 target accepts only the declared resource and qualifier vocabulary. Other
-predicate words and unquoted identities fail closed.
+predicate words and unquoted identities fail closed. Unbound answer clauses
+need a known background or recorded-history form. Unknown clauses abstain.
 """
 import re
 from collections.abc import Mapping, Sequence
@@ -68,9 +69,9 @@ _MUTATING = re.compile(
     r"apply|applies|applied|applying|mutat(?:e|es|ed|ing))\b", re.I,
 )
 _MUTATION_NOUN = re.compile(r"\b(?:deletions?|removals?|destructions?|creations?|modifications?|mutations?)\b", re.I)
-_CAPABILITY_PREDICATE = re.compile(
-    r"\b(?:allows?|permits?|enables?|provides?|supports?|offers?|includes?|has|performs?|"
-    r"capabilit\w*|operations?|functions?|access)\b", re.I,
+_BENIGN_MUTATION_RECORD = re.compile(
+    r"\s*(?:The\s+)?(?:deletion|removal|destruction|creation|modification|mutation)\s+"
+    r"(?:date|history)\s+(?:is|was|remains)\s+(?:recorded|documented|historical)[.!]?\s*", re.I,
 )
 _SCOPE_WORDS = {
     'a', 'an', 'the', 'and', 'or', 'with', 'for', 'of', 'to', 'in', 'on', 'from', 'via', 'through',
@@ -94,6 +95,14 @@ _MODAL_ACTION = re.compile(
     r"(?P<verb>[A-Za-z]+(?:-[A-Za-z]+)?)\b", re.I,
 )
 _READ_ACTIONS = {'read', 'list', 'get', 'fetch', 'query', 'inspect', 'show', 'describe', 'retrieve', 'access'}
+_CLAIM_WORDS = _SCOPE_WORDS | _READ_ACTIONS | {
+    'use', 'uses', 'using', 'is', 'are', 'can', 'could', 'cited', 'retrieved', 'supplied', 'recorded',
+    'text', 'source', 'sources', 'evidence', 'notes', 'records', 'support', 'as', 'partial', 'fact',
+}
+_BENIGN_BACKGROUND = re.compile(
+    r'\s*(?:(?:This|It)\s+is\s+)?(?:(?:Recorded|Historical|Background)\s+)?'
+    r'(?:background|context|information)[.!]?\s*', re.I,
+)
 _PARTIAL = re.compile(r"\b(?:partial|source[- ]only)\b", re.I)
 _BOUNDED = re.compile(r"\b(?:cited|retrieved|supplied|recorded)\s+(?:source\s+)?(?:text|sources?|evidence|notes?)\b", re.I)
 _LACK = re.compile(
@@ -145,9 +154,10 @@ def _scope_text(text: str) -> str:
 
 
 def _mutation_claim(scope: str) -> bool:
-    return bool(_MUTATING.search(scope) or (
-        _MUTATION_NOUN.search(scope) and _CAPABILITY_PREDICATE.search(scope)
-    ))
+    if _MUTATING.search(scope):
+        return True
+    # Unknown mutation-noun clauses cannot become harmless background.
+    return bool(_MUTATION_NOUN.search(scope) and not _BENIGN_MUTATION_RECORD.fullmatch(scope))
 
 
 def _resources(text: str) -> set[str]:
@@ -410,8 +420,11 @@ def resource_scope_problem(
                 return RESOURCE_SCOPE_REASON
             checked = True
             continue
-        if not explicit and not resources and not _INTENT.search(claim):
-            continue
+        if not explicit and not resources and not _INTENT.search(claim_scope):
+            if _BENIGN_BACKGROUND.fullmatch(claim_scope) or _BENIGN_MUTATION_RECORD.fullmatch(claim_scope):
+                continue
+            # Unknown capability-looking tails do not count as background.
+            return RESOURCE_SCOPE_REASON
         # An unnamed or unscoped selection refers to the requested scope.
         resources = resources or requested
         partial_fact = (
@@ -423,6 +436,8 @@ def resource_scope_problem(
             resources |= requested & {'logs', 'list'}
         if resources == {"longhorn"}:
             resources |= requested
+        if any(word.casefold() not in _CLAIM_WORDS for word in re.findall(r'[A-Za-z][A-Za-z0-9_]*', claim_scope)):
+            return RESOURCE_SCOPE_REASON
         if any(_quoted_names(chain[0]) for chain in _COORDINATED_NAMES.finditer(claim)):
             return RESOURCE_SCOPE_REASON
         selected = list(dict.fromkeys(explicit + _quoted_names(claim)))
