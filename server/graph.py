@@ -39,6 +39,7 @@ from starlette.routing import Route
 from chat_fallback import OrderedModelFallback, is_recoverable_provider_error, parse_model_ladder
 from answer_qualifiers import copy_state_supporting_sources, operational_supporting_sources, qualifier_problem, qualifier_requirements
 from credential_method_qualifiers import credential_method_problem, credential_services
+from temporal_negative_qualifiers import temporal_negative_problem, temporal_negative_required
 from ingest import DEFAULT_GROUP_ID, build_graphiti
 from vector_search import install_read_search
 from graphiti_core.search.search_config_recipes import COMBINED_HYBRID_SEARCH_RRF
@@ -775,8 +776,8 @@ async def _wiki_semantic_hits(
         return []
 
 
-async def _credential_validation_context(packet: dict) -> dict[str, str]:
-    """Read coherent indexed source bodies for credential-method validation.
+async def _source_validation_context(packet: dict) -> dict[str, str]:
+    """Read coherent indexed source bodies for private qualifier validation.
 
     The packet already bounds the number of source identities. This does not
     scan files, follow paths, access a credential store, or add a model call.
@@ -792,8 +793,20 @@ async def _credential_validation_context(packet: dict) -> dict[str, str]:
     try:
         return await asyncio.to_thread(fetch)
     except Exception as error:
-        log.warning("credential source validation unavailable error_type=%s", type(error).__name__)
+        log.warning("source validation unavailable error_type=%s", type(error).__name__)
         return {name: "" for name in names}
+
+
+async def _credential_validation_context(packet: dict) -> dict[str, str]:
+    # Keep the credential boundary available for its existing callers.
+    return await _source_validation_context(packet)
+
+
+def _validation_cited_texts(packet: dict, sources: list[str]) -> dict[str, str]:
+    full = packet.get("source_validation_texts")
+    if full is not None:
+        return {source: str(full.get(source) or "") for source in sources}
+    return _credential_cited_texts(packet, sources)
 
 
 def _credential_cited_texts(packet: dict, sources: list[str]) -> dict[str, str]:
@@ -862,6 +875,11 @@ async def _assemble_packet(
     }
     if answer_evidence and credential_services(query):
         packet["credential_validation_texts"] = await _credential_validation_context(packet)
+    if answer_evidence and temporal_negative_required(query):
+        packet["source_validation_texts"] = (
+            packet["credential_validation_texts"] if "credential_validation_texts" in packet
+            else await _source_validation_context(packet)
+        )
     return packet
 
 
@@ -1121,8 +1139,18 @@ def _validate_distilled_answer(
             "answer": None, "confidence": "not_found", "sources": [], "escalate": True,
             "superseded_note": "Complete cited source text is unavailable for credential-method validation.",
         }, True, "qualifier_mismatch"
-    qualifier_error = credential_method_problem(question, answer, credential_texts) or qualifier_problem(
-        question, answer, cited_texts,
+    validation_texts = _validation_cited_texts(packet, cited_sources)
+    if temporal_negative_required(question) and "source_validation_texts" in packet and any(
+        not text.strip() for text in validation_texts.values()
+    ):
+        return {
+            "answer": None, "confidence": "not_found", "sources": [], "escalate": True,
+            "superseded_note": "Complete cited source text is unavailable for temporal validation.",
+        }, True, "qualifier_mismatch"
+    qualifier_error = (
+        temporal_negative_problem(question, answer, validation_texts)
+        or credential_method_problem(question, answer, credential_texts)
+        or qualifier_problem(question, answer, cited_texts)
     )
     if qualifier_error:
         return {
@@ -1204,8 +1232,8 @@ def _validate_distilled_answer(
         _qualify_snapshot(result, observation_dates)
         action = "downgraded" if conf == "high" else action
 
-    if credential_services(question):
-        # A memory capability record is not current caller authorization.
+    if credential_services(question) or temporal_negative_required(question):
+        # A memory record does not verify external state or caller authority.
         result["escalate"] = True
         result["confidence"] = "medium" if result["confidence"] == "high" else result["confidence"]
         action = "downgraded" if conf == "high" else action
@@ -1250,7 +1278,7 @@ async def _graph_answer_impl(question: str, is_test: bool = False) -> dict:
         if current_state:
             packet["temporal_context"] = _temporal_context(packet)
         distill_packet = _current_evidence_packet(packet) if current_state else {
-            key: value for key, value in packet.items() if key not in {"temporal_candidates", "credential_validation_texts"}
+            key: value for key, value in packet.items() if key not in {"temporal_candidates", "credential_validation_texts", "source_validation_texts"}
         }
         packet_json = json.dumps(distill_packet, ensure_ascii=False)
         packet_tokens_est = len(packet_json) // 4
