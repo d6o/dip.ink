@@ -78,54 +78,73 @@ class BlockingHandlerThreadTests(unittest.TestCase):
 
 
 class EventLoopResponsivenessTests(unittest.TestCase):
+    """Require /live to finish before the blocked worker can finish.
+
+    A fixed sleep can end before /live starts after a process pause. A held
+    worker proves concurrent progress without a wall-clock latency benchmark.
+    """
+
+    CASES = (
+        ("/api/search?q=slow", "GET", wiki, "_http_search_impl"),
+        ("/api/reindex", "POST", wiki, "_reindex_once"),
+        ("/api/metrics?days=1", "GET", core, "read_metrics"),
+    )
+
+    async def assert_live_before_worker_release(self, path, method, target, attribute):
+        loop = asyncio.get_running_loop()
+        loop_thread = threading.current_thread()
+        started = asyncio.Event()
+        release = threading.Event()
+        worker_threads = []
+
+        def blocked(*_args, **_kwargs):
+            worker_threads.append(threading.current_thread())
+            loop.call_soon_threadsafe(started.set)
+            if threading.current_thread() is loop_thread:
+                raise AssertionError("worker ran on the event loop")
+            # This timeout guards fixture deadlocks, not response latency.
+            if not release.wait(10):
+                raise AssertionError("fixture did not release the worker")
+            if path == "/api/reindex":
+                return {"ok": True, "ready": True}
+            return []
+
+        transport = httpx.ASGITransport(app=server.app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            with mock.patch.object(target, attribute, side_effect=blocked):
+                request = client.get(path) if method == "GET" else client.post(path)
+                slow_task = asyncio.create_task(request)
+                try:
+                    await asyncio.wait_for(started.wait(), timeout=5)
+                    self.assertNotEqual(worker_threads[0], loop_thread, "worker ran on the event loop")
+                    self.assertFalse(slow_task.done(), f"worker ended before /live for {path}")
+                    live = await asyncio.wait_for(client.get("/live"), timeout=5)
+                    # The request must finish while its sibling worker stays held.
+                    self.assertFalse(release.is_set())
+                    self.assertFalse(slow_task.done(), f"/live waited for the worker at {path}")
+                    self.assertEqual(live.status_code, 200)
+                finally:
+                    release.set()
+                    slow_response = await asyncio.wait_for(slow_task, timeout=5)
+        self.assertEqual(slow_response.status_code, 200)
+
     def test_slow_search_reindex_and_metrics_do_not_delay_live(self):
-        async def run_case(path: str, method: str, patcher, expected_status: int = 200):
-            started = threading.Event()
-
-            def slow(*_args, **_kwargs):
-                started.set()
-                time.sleep(0.35)
-                if path.startswith("/api/search"):
-                    return []
-                if path == "/api/reindex":
-                    return {"ok": True, "ready": True}
-                return []
-
-            transport = httpx.ASGITransport(app=server.app)
-            async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-                with patcher(slow):
-                    request = client.get(path) if method == "GET" else client.post(path)
-                    slow_task = asyncio.create_task(request)
-                    deadline = time.monotonic() + 1.0
-                    while not started.is_set() and time.monotonic() < deadline:
-                        await asyncio.sleep(0.005)
-                    self.assertTrue(started.is_set(), f"slow handler did not start for {path}")
-                    t0 = time.monotonic()
-                    live = await client.get("/live")
-                    live_elapsed = time.monotonic() - t0
-                    slow_response = await slow_task
-            self.assertEqual(live.status_code, 200)
-            self.assertLess(live_elapsed, 0.15, f"/live delayed by {path}: {live_elapsed:.3f}s")
-            self.assertEqual(slow_response.status_code, expected_status)
-
         async def run():
-            await run_case(
-                "/api/search?q=slow",
-                "GET",
-                lambda slow: mock.patch.object(wiki, "_http_search_impl", side_effect=slow),
-            )
-            await run_case(
-                "/api/reindex",
-                "POST",
-                lambda slow: mock.patch.object(wiki, "_reindex_once", side_effect=slow),
-            )
-            await run_case(
-                "/api/metrics?days=1",
-                "GET",
-                lambda slow: mock.patch.object(core, "read_metrics", side_effect=slow),
-            )
+            for case in self.CASES:
+                with self.subTest(path=case[0]):
+                    await self.assert_live_before_worker_release(*case)
 
         asyncio.run(run())
+
+    def test_responsiveness_fixture_rejects_inline_workers(self):
+        async def inline(function, *args, **kwargs):
+            return function(*args, **kwargs)
+
+        for case in self.CASES:
+            with self.subTest(path=case[0]), \
+                 mock.patch.object(wiki.anyio.to_thread, "run_sync", new=inline), \
+                 self.assertRaisesRegex(AssertionError, "worker ran on the event loop"):
+                asyncio.run(self.assert_live_before_worker_release(*case))
 
 
 class BoundedMetricsLogTests(unittest.TestCase):
