@@ -292,6 +292,46 @@ class TemporalAnswerTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn('source_validation_texts', call.args[1])
             self.assertNotIn('PRIVATE_BODY_SENTINEL', call.args[1])
 
+    async def test_embedded_inference_fails_large_six_source_private_assembly(self):
+        prefix = 'The retrieved dated evidence contains no qualifying custody receipt'
+        middle = (', with exhaustive external coverage,', ', because all external sources are covered,',
+                  ' with a fully verified inventory', ' because retrieval is complete',
+                  ' whose absence confirms completeness',
+                  ', establishing exhaustive coverage of every external record,',
+                  ', confirming exhaustive external coverage,', ' because the external search is exhaustive',
+                  ', indicating the search includes every external receipt,')
+        drafts = [prefix + inference + ' after ' + CUTOFF + '.' for inference in middle]
+        drafts += [SAFE + ' ' + ('Recorded background. ' * 110) + draft for draft in drafts]
+        large = '## Durable claims\n' + OLD + '\n\n## Context\n' + ('Recorded context. ' * 250) + '\nPRIVATE_BODY_SENTINEL'
+        self.assertGreater(len(large), 4096)
+        bodies = {SOURCE + '-' + str(index): large for index in range(6)}
+        for draft in drafts:
+            result = validate(draft, packet(bodies), list(bodies))
+            self.assertIsNone(result['answer'])
+            self.assertIn('temporal absence claim', result['superseded_note'])
+        question = 'Is there a new custody receipt after ' + CUTOFF + '?'
+        g = SimpleNamespace(search_=mock.AsyncMock(return_value=SimpleNamespace(nodes=[], edges=[], episodes=[])))
+        hits = [{'name': name, 'score': .7 - index * .005} for index, name in enumerate(bodies)]
+        outputs = [{'answer': draft, 'confidence': 'high', 'sources': list(bodies), 'escalate': False}
+                   for draft in drafts + [SAFE]]
+        with mock.patch.object(graph, '_get_graph', new=mock.AsyncMock(return_value=g)), \
+             mock.patch.object(graph, '_resolve_episode_slugs', new=mock.AsyncMock(return_value={})), \
+             mock.patch.object(graph, 'FUSION', True), \
+             mock.patch.object(wiki.idx, 'search', return_value=hits), \
+             mock.patch.object(wiki.idx, 'get', side_effect=lambda name: {'body': bodies[name]}), \
+             mock.patch.object(graph, '_distill', new=mock.AsyncMock(side_effect=outputs)) as distill, \
+             mock.patch.object(graph, '_record_query'):
+            rejected = [await graph._graph_answer_impl(question) for _ in drafts]
+            safe = await graph._graph_answer_impl(question)
+        for result in rejected:
+            self.assertIsNone(result['answer'])
+            self.assertIn('temporal absence claim', result['superseded_note'])
+        self.assertIsNotNone(safe['answer'])
+        self.assertTrue(safe['escalate'])
+        for call in distill.call_args_list:
+            self.assertNotIn('source_validation_texts', call.args[1])
+            self.assertNotIn('PRIVATE_BODY_SENTINEL', call.args[1])
+
     async def test_current_view_also_excludes_private_full_text(self):
         p = packet()
         p['temporal_context'] = graph._temporal_context(p)

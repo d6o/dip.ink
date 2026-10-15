@@ -107,6 +107,24 @@ class TemporalNegativeTests(unittest.TestCase):
             self.assertIsNone(temporal_negative_problem(QUESTION, SAFE + ' ' + background, [OLD]))
         self.assertIsNone(temporal_negative_problem(QUESTION, LATER, [LATER]))
 
+    def test_bounded_negative_object_rejects_embedded_assertions(self):
+        prefix = 'The retrieved dated evidence contains no qualifying custody receipt'
+        for inference in (', with exhaustive external coverage,', ', because all external sources are covered,',
+                          ' with a fully verified inventory', ' because retrieval is complete',
+                          ' whose absence confirms completeness',
+                          ', establishing exhaustive coverage of every external record,',
+                          ', confirming exhaustive external coverage,',
+                          ' because the external search is exhaustive',
+                          ', indicating the search includes every external receipt,'):
+            answer = prefix + inference + ' after ' + CUTOFF + '.'
+            self.reject(answer, [OLD])
+            self.reject(SAFE + ' ' + ('Recorded background. ' * 110) + answer, [OLD])
+        for noun_phrase in ('qualifying custody receipt', 'new verified independent off-cluster age recipient',
+                            'protected restore-identity path', 'independent backup custody record'):
+            safe = 'The retrieved dated evidence contains no ' + noun_phrase + ' after ' + CUTOFF + '.'
+            self.assertIsNone(temporal_negative_problem(QUESTION, safe, [OLD]))
+        self.assertIsNone(temporal_negative_problem(QUESTION, LATER, [LATER]))
+
     def test_later_timestamp_alone_never_establishes_complete_coverage(self):
         self.reject(WRONG, [LIMITED])
         self.reject(WRONG, [LATER])

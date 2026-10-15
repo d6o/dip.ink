@@ -40,6 +40,10 @@ _LIMIT = re.compile(
     r"(?:evidence|sources?|notes?|records?|texts?)\s+"
     r"(?:contains?|includes?|records?|documents?|provides?)\s+no\b", re.I
 )
+_BOUNDED_OBJECT = re.compile(
+    r'(?:(?:new|qualifying|verified|independent|protected|off[- ]cluster|age|backup|custody|'
+    r'restore[- ]identity|dated)\s+)*(?:receipts?|recipients?|paths?|custody|records?|evidence)', re.I,
+)
 _BOUNDED_BACKGROUND = re.compile(
     r'\s*(?:(?:This|It)\s+is\s+)?(?:(?:Recorded|Historical|Background)\s+)?'
     r'(?:background|context|information)[.!]?\s*', re.I,
@@ -260,6 +264,13 @@ def _safety_contexts(text: str) -> list[str]:
             for part in re.split(r'(?<=[.!?])\s+', text) if part.strip()]
 
 
+def _bounded_negative_object(clause: str) -> bool:
+    prefix = _LIMIT.match(clause)
+    cutoff = _CUTOFF.search(clause)
+    return bool(prefix and cutoff and cutoff.start() >= prefix.end()
+                and _BOUNDED_OBJECT.fullmatch(clause[prefix.end():cutoff.start()].strip()))
+
+
 def _affirmative_observation(clause: str) -> bool:
     return any(not _NEGATED_OBSERVATION.search(clause[:match.start()])
                for match in _OBSERVATION.finditer(clause))
@@ -271,8 +282,8 @@ def temporal_negative_problem(
     """Reject universal temporal absence; admit only bounded dated negatives.
 
     Positive answers are outside this guard. Each negative clause must limit
-    its claim to retrieved evidence. Every cited body needs a dated receipt
-    observation. A post-cutoff positive receipt defeats a retrieved absence.
+    its claim to retrieved evidence and use the noun-phrase scaffold.
+    Every cited body needs a dated receipt observation. A post-cutoff positive receipt defeats a retrieved absence.
     A source date alone never establishes external coverage.
     """
     if not temporal_negative_required(question):
@@ -290,7 +301,7 @@ def temporal_negative_problem(
            for clause in claims):
         return TEMPORAL_NEGATIVE_REASON
     # Do not permit a short "No" or an implicit universal in another clause.
-    if any(not _LIMIT.search(clause) or _UNIVERSAL.search(clause)
+    if any(not _bounded_negative_object(clause) or _UNIVERSAL.search(clause)
            or len(_NEGATIVE.findall(clause)) != 1 for clause in negatives):
         return TEMPORAL_NEGATIVE_REASON
     values = list(source_texts.values() if isinstance(source_texts, Mapping) else source_texts)
