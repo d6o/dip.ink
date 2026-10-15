@@ -40,6 +40,10 @@ _LIMIT = re.compile(
     r"(?:evidence|sources?|notes?|records?|texts?)\s+"
     r"(?:contains?|includes?|records?|documents?|provides?)\s+no\b", re.I
 )
+_BOUNDED_BACKGROUND = re.compile(
+    r'\s*(?:(?:This|It)\s+is\s+)?(?:(?:Recorded|Historical|Background)\s+)?'
+    r'(?:background|context|information)[.!]?\s*', re.I,
+)
 _UNIVERSAL = re.compile(
     r"\b(?:anywhere|everywhere|globally|externally|all sources|exists?|existence|"
     r"prov(?:e|es|ing)|means|therefore|thus|complete coverage)\b", re.I
@@ -281,6 +285,10 @@ def temporal_negative_problem(
     negatives = [clause for clause in claims if _NEGATIVE.search(clause)]
     if not negatives:
         return None
+    # An affirmative tail cannot widen a retrieved negative into global proof.
+    if any(not _NEGATIVE.search(clause) and not _BOUNDED_BACKGROUND.fullmatch(clause)
+           for clause in claims):
+        return TEMPORAL_NEGATIVE_REASON
     # Do not permit a short "No" or an implicit universal in another clause.
     if any(not _LIMIT.search(clause) or _UNIVERSAL.search(clause)
            or len(_NEGATIVE.findall(clause)) != 1 for clause in negatives):

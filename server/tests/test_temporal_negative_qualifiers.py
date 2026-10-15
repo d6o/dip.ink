@@ -96,6 +96,17 @@ class TemporalNegativeTests(unittest.TestCase):
         self.assertIsNone(temporal_negative_problem(QUESTION, LATER, [LATER]))
         self.assertIsNone(temporal_negative_problem(QUESTION, SAFE, [OLD]))
 
+    def test_bounded_negative_cannot_acquire_an_affirmative_coverage_tail(self):
+        for tail in ('This proves complete coverage.', 'The evidence is exhaustive.',
+                     'All external records are covered.', 'The search includes every external receipt.'):
+            self.reject(SAFE + ' ' + tail, [OLD])
+            long_answer = SAFE + ' ' + ('Recorded background. ' * 110) + tail
+            self.assertGreater(len(long_answer), 2000)
+            self.reject(long_answer, [OLD])
+        for background in ('Recorded background.', 'Historical context.', 'This is historical background.'):
+            self.assertIsNone(temporal_negative_problem(QUESTION, SAFE + ' ' + background, [OLD]))
+        self.assertIsNone(temporal_negative_problem(QUESTION, LATER, [LATER]))
+
     def test_later_timestamp_alone_never_establishes_complete_coverage(self):
         self.reject(WRONG, [LIMITED])
         self.reject(WRONG, [LATER])

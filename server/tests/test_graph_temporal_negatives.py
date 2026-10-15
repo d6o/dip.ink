@@ -258,6 +258,40 @@ class TemporalAnswerTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn('source_validation_texts', assembled)
             self.assertNotIn('source_validation_texts', distill.call_args.args[1])
 
+    async def test_coverage_inference_tail_fails_complete_draft_and_private_assembly(self):
+        tail = 'This proves complete coverage.'
+        prefix = SAFE + ' ' + ('Recorded background. ' * 100)
+        draft = prefix + (' ' * (2436 - len(prefix) - len(tail))) + tail
+        self.assertEqual(len(draft), 2436)
+        large = '## Durable claims\n' + OLD + '\n\n## Context\n' + ('Recorded context. ' * 250) + '\nPRIVATE_BODY_SENTINEL'
+        self.assertGreater(len(large), 4096)
+        bodies = {SOURCE + '-' + str(index): large for index in range(6)}
+        result = validate(draft, packet(bodies), list(bodies))
+        self.assertIsNone(result['answer'])
+        self.assertIn('temporal absence claim', result['superseded_note'])
+        question = 'Is there a new custody receipt after ' + CUTOFF + '?'
+        g = SimpleNamespace(search_=mock.AsyncMock(return_value=SimpleNamespace(nodes=[], edges=[], episodes=[])))
+        hits = [{'name': name, 'score': .7 - index * .005} for index, name in enumerate(bodies)]
+        outputs = [{'answer': answer, 'confidence': 'high', 'sources': list(bodies), 'escalate': False}
+                   for answer in (draft, SAFE)]
+        with mock.patch.object(graph, '_get_graph', new=mock.AsyncMock(return_value=g)), \
+             mock.patch.object(graph, '_resolve_episode_slugs', new=mock.AsyncMock(return_value={})), \
+             mock.patch.object(graph, 'FUSION', True), \
+             mock.patch.object(wiki.idx, 'search', return_value=hits), \
+             mock.patch.object(wiki.idx, 'get', side_effect=lambda name: {'body': bodies[name]}), \
+             mock.patch.object(graph, '_distill', new=mock.AsyncMock(side_effect=outputs)) as distill, \
+             mock.patch.object(graph, '_record_query'):
+            rejected = await graph._graph_answer_impl(question)
+            safe = await graph._graph_answer_impl(question)
+        self.assertIsNone(rejected['answer'])
+        self.assertIn('temporal absence claim', rejected['superseded_note'])
+        self.assertIsNotNone(safe['answer'])
+        self.assertEqual(safe['confidence'], 'medium')
+        self.assertTrue(safe['escalate'])
+        for call in distill.call_args_list:
+            self.assertNotIn('source_validation_texts', call.args[1])
+            self.assertNotIn('PRIVATE_BODY_SENTINEL', call.args[1])
+
     async def test_current_view_also_excludes_private_full_text(self):
         p = packet()
         p['temporal_context'] = graph._temporal_context(p)
