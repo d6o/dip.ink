@@ -3,8 +3,8 @@
 This is not a temporal entailment engine. Universal absence never follows
 from a retrieved subset, even when a source has a later timestamp. A bounded
 negative must name the retrieved evidence in each negative clause. Readable
-source clauses must contain a date, a receipt topic, and an observation.
-Metadata dates, source keys, and queue state cannot supply that observation.
+source clauses must start with an observation date and name a receipt topic.
+Metadata dates, source keys, examples, and queue state cannot supply it.
 Unsupported prose fails closed. This module does not verify external state.
 """
 import re
@@ -17,7 +17,12 @@ TEMPORAL_NEGATIVE_REASON = (
 )
 _STAMP = r"20\d{2}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2}))?"
 _CUTOFF = re.compile(r"\b(?:after|since|later than)\s*(?P<stamp>" + _STAMP + r")(?![\w:+-])", re.I)
-_DATE = re.compile(r"\b(?:as of|on|at)\s+(?P<stamp>" + _STAMP + r")(?![\w:+-])", re.I)
+_DATE = re.compile(
+    r"^(?:as of|on|at)\s+(?P<stamp>" + _STAMP + r")(?![\w:/+-]|\.[A-Za-z0-9])", re.I
+)
+_CANDIDATE_DATE = re.compile(
+    r"(?<![\w-])(?P<stamp>" + _STAMP + r")(?![\w:/+-]|\.[A-Za-z0-9])", re.I
+)
 _TOPIC = re.compile(r"\b(?:custody|recipients?|receipts?|restore[- ]identity|backups?)\b", re.I)
 _NEGATIVE = re.compile(
     r"\b(?:no|none|never|neither|absent|missing|unverified|unconfirmed|unavailable|unknown|"
@@ -42,6 +47,15 @@ _QUEUE = re.compile(r"\b(?:queues?|ingest|indexed|cataloged|backlog|index)\b", r
 _METADATA = re.compile(
     r"^\s*(?:captured|created|updated|modified|valid_at|invalid_at|indexed|ingested|timestamp|date|as_of)\s*:", re.I
 )
+_EXCLUDED_HEADING = re.compile(
+    r"\b(?:examples?|fixtures?|templates?|samples?|illustrative|hypothetical|publication|"
+    r"unrelated|metadata|generated|source[-_ ]slug|title)\b", re.I
+)
+_NON_OBSERVATION = re.compile(
+    r"\b(?:examples?|illustrative|hypothetical|synthetic|fixtures?|samples?|templates?|"
+    r"unrelated|publication|published|filename|file name|URL|source[-_ ]slug|title|"
+    r"build|built|maintenance|deployments?|releases?|images?)\b|https?://|\be\.g\.", re.I
+)
 
 
 def _time(stamp: str) -> datetime | None:
@@ -58,13 +72,57 @@ def temporal_negative_required(question: str) -> bool:
     return bool(match and _time(match['stamp']) and _TOPIC.search(question))
 
 
-def _clauses(text: str) -> list[str]:
-    # Metadata is not an observation. Keep timestamps intact within a clause.
-    lines = [line for line in text.replace('`', '').replace('*', '').splitlines()
-             if not _METADATA.match(line)]
+def _observation_text(text: str) -> str:
+    # Titles, frontmatter, and code examples do not date an observation.
+    lines = []
+    frontmatter = False
+    fenced = False
+    excluded_level = None
+    for index, line in enumerate(text.strip().splitlines()):
+        stripped = line.strip()
+        if index == 0 and stripped == '---':
+            frontmatter = True
+            continue
+        if frontmatter:
+            if stripped in {'---', '...'}:
+                frontmatter = False
+            continue
+        if stripped.startswith(('```', '~~~')):
+            fenced = not fenced
+            continue
+        if fenced:
+            continue
+        heading = re.match(r'^\s{0,3}(#{1,6})\s+(.+)', line)
+        if heading:
+            level = len(heading[1])
+            if excluded_level is not None and level > excluded_level:
+                continue
+            excluded_level = level if _EXCLUDED_HEADING.search(heading[2]) else None
+            lines.append('')
+            continue
+        if excluded_level is not None or _METADATA.match(line) or stripped.startswith('>'):
+            continue
+        lines.append(line)
+    paragraphs = [part for part in re.split(r'\n\s*\n', '\n'.join(lines))
+                  if not _NON_OBSERVATION.search(part)]
+    # An inline filename or quoted timestamp cannot supply the date.
+    body = re.sub(r'`+[^`\n]*`+', '', '\n\n'.join(paragraphs))
+    return re.sub(r'^\s*[-+*]\s+', '', body, flags=re.M)
+
+
+def _clauses(text: str, *, source: bool = False) -> list[str]:
+    if source:
+        text = _observation_text(text)
+    # Inspect every draft line, including metadata-shaped negative claims.
+    text = text.replace('`', '').replace('*', '')
     return [part.strip() for part in re.split(
-        r"[\n;]+|(?<=[.!?])\s+|\s+\b(?:and|but|however|whereas)\b\s+", '\n'.join(lines)
+        r"[\n;]+|(?<=[.!?])\s+|\s+\b(?:and|but|while|however|whereas)\b\s+", text
     ) if part.strip()]
+
+
+def _affirmative_observation(clause: str) -> bool:
+    return any(not _NEGATED_OBSERVATION.search(clause[:match.start()])
+               for match in _OBSERVATION.finditer(clause))
 
 
 def temporal_negative_problem(
@@ -92,19 +150,23 @@ def temporal_negative_problem(
     if not values:
         return TEMPORAL_NEGATIVE_REASON
     for text in values:
-        observations = []
+        # Do not hide possible contrary receipts with the metadata filter.
+        # A positive candidate can require abstention without proving delivery.
         for clause in _clauses(text):
+            if _TOPIC.search(clause) and _affirmative_observation(clause) and any(
+                (when := _time(match['stamp'])) and when > cutoff
+                for match in _CANDIDATE_DATE.finditer(clause)
+            ):
+                return TEMPORAL_NEGATIVE_REASON
+        observations = []
+        for clause in _clauses(text, source=True):
             if not _TOPIC.search(clause) or _QUEUE.search(clause):
                 continue
             dates = [when for match in _DATE.finditer(clause) if (when := _time(match['stamp']))]
             if not dates or not (_NEGATIVE.search(clause) or _OBSERVATION.search(clause)):
                 continue
             observations.append(clause)
-            affirmative = any(
-                not _NEGATED_OBSERVATION.search(clause[:match.start()])
-                for match in _OBSERVATION.finditer(clause)
-            )
-            if any(when > cutoff for when in dates) and affirmative:
+            if any(when > cutoff for when in dates) and _affirmative_observation(clause):
                 return TEMPORAL_NEGATIVE_REASON
         if not observations:
             return TEMPORAL_NEGATIVE_REASON

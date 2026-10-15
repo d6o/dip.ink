@@ -63,6 +63,37 @@ class TemporalAnswerTests(unittest.IsolatedAsyncioTestCase):
         p['source_validation_texts'][list(bodies)[-1]] = '  '
         self.assertIsNone(validate(SAFE, p, list(bodies))['answer'])
 
+    def test_metadata_disguised_as_body_cannot_date_a_retrieved_negative(self):
+        undated = 'Infisical PostgreSQL backup custody remains unverified.'
+        bodies = (
+            '# 2026-10-14-120000-infisical-postgresql-backup\n\n' + undated,
+            '## Infisical PostgreSQL backup custody publication on 2026-10-14\n\n' + undated,
+            'Infisical PostgreSQL backup custody remains unverified on `2026-10-14-receipt.md`.',
+            'Infisical PostgreSQL backup custody remains unverified; URL: https://example.invalid/2026-10-14/',
+            '## Example\n\n' + OLD,
+            'The maintenance completed on 2026-10-14, while ' + undated,
+        )
+        for body in bodies:
+            with self.subTest(body=body):
+                result = validate(SAFE, packet({SOURCE: body}))
+                self.assertIsNone(result['answer'])
+                self.assertTrue(result['escalate'])
+
+    def test_full_metadata_body_cannot_fall_back_to_a_dated_excerpt(self):
+        p = packet()
+        p['source_validation_texts'][SOURCE] = (
+            '# As of 2026-10-14, Infisical PostgreSQL backup custody remains unverified.')
+        self.assertIsNone(validate(SAFE, p)['answer'])
+
+    def test_sixth_possible_receipt_with_a_url_still_requires_abstention(self):
+        bodies = {f'2026-10-13-12000{i}-backup': OLD for i in range(6)}
+        p = packet(bodies)
+        p['source_validation_texts'][list(bodies)[-1]] += '\n\n' + LATER + ' https://example.invalid/receipt'
+        self.assertIsNone(validate(SAFE, p, list(bodies))['answer'])
+
+    def test_metadata_shaped_draft_is_not_removed_before_validation(self):
+        self.assertIsNone(validate(SAFE + '\nas_of: ' + WRONG)['answer'])
+
     def test_missing_full_body_cannot_use_old_positive_excerpt(self):
         p = packet()
         p['source_validation_texts'][SOURCE] = ''

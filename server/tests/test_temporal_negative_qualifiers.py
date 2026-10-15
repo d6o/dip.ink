@@ -75,6 +75,68 @@ class TemporalNegativeTests(unittest.TestCase):
         self.reject(SAFE, ['{"updated_at": "2026-10-14T12:00:00Z", "custody": "unverified"}'])
         self.reject(SAFE, ['The metadata date is 2026-10-14T12:00:00Z; custody is unverified.'])
 
+    def test_generated_title_date_is_not_an_observation_date(self):
+        body = '# 2026-10-11-120554-backup-custody-unverified\n\nBackup custody remains unverified.'
+        self.reject(SAFE, [body])
+        self.reject(SAFE, ['# As of 2026-10-11, backup custody remains unverified.'])
+
+    def test_publication_heading_does_not_date_the_custody_state(self):
+        for heading in ('## Backup custody publication on 2026-10-11',
+                        '## Published on 2026-10-11: backup custody unverified'):
+            self.reject(SAFE, [heading + '\n\nBackup custody remains unverified.'])
+
+    def test_filename_and_url_dates_are_not_observations(self):
+        for body in (
+            'Filename: backup-custody-unverified-2026-10-11.md',
+            'As of 2026-10-11.md, backup custody remains unverified.',
+            'Backup custody remains unverified on `2026-10-11-receipt.md`.',
+            'URL: https://example.invalid/2026-10-11/backup-custody-unverified',
+            'As of 2026-10-11, backup custody remains unverified at https://example.invalid/2026-10-11.',
+        ):
+            self.reject(SAFE, [body])
+
+    def test_unrelated_dates_do_not_bind_to_the_custody_state(self):
+        for body in (
+            'The maintenance completed on 2026-10-11, while backup custody remains unverified.',
+            'On 2026-10-11, a build completed; backup custody remains unverified.',
+            'The audit date is 2026-10-11. Backup custody remains unverified.',
+            'The unrelated release date is 2026-10-11, and backup custody remains unverified.',
+        ):
+            self.reject(SAFE, [body])
+
+    def test_example_dates_do_not_establish_an_observation(self):
+        for body in (
+            'For example, ' + OLD,
+            OLD + ' This is an example.',
+            '## Example\n\n' + OLD,
+            '## Example\n\n### Receipt details\n\n' + OLD,
+            '```text\n' + OLD + '\n```',
+            '> ' + OLD,
+            '`' + OLD + '`',
+        ):
+            self.reject(SAFE, [body])
+
+    def test_frontmatter_body_description_is_still_metadata(self):
+        body = '---\ndescription: ' + OLD + '\n---\nBackup custody remains unverified.'
+        self.reject(SAFE, [body])
+
+    def test_dated_body_observation_remains_valid_below_an_ordinary_title(self):
+        body = '# 2026-10-14-120000-backup-evidence\n\n## Durable claims\n\n- ' + OLD
+        self.assertIsNone(temporal_negative_problem(QUESTION, SAFE, [body]))
+
+    def test_metadata_filter_cannot_hide_a_possible_contrary_receipt(self):
+        for candidate in (LATER + ' https://example.invalid/receipt',
+                          '## Example\n\n' + LATER,
+                          '```text\n' + LATER + '\n```'):
+            self.reject(SAFE, [OLD + '\n\n' + candidate])
+        self.assertIsNone(temporal_negative_problem(
+            QUESTION, SAFE, [OLD + '\n\ncaptured: 2026-10-14T12:00:00Z']))
+
+    def test_metadata_shaped_draft_cannot_hide_a_universal_negative(self):
+        self.reject('as_of: ' + WRONG, [OLD])
+        self.reject('# ' + WRONG, [OLD])
+        self.reject(SAFE + '\nas_of: ' + WRONG, [OLD])
+
     def test_mapping_values_not_keys(self):
         self.assertIsNone(temporal_negative_problem(QUESTION, SAFE, {'source': OLD}))
         self.reject(SAFE, {OLD: 'No dated observation.'})
