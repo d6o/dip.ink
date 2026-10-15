@@ -79,6 +79,19 @@ class TemporalAnswerTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIsNone(result['answer'])
                 self.assertTrue(result['escalate'])
 
+    def test_foreign_fence_marker_cannot_promote_a_full_source_observation(self):
+        for opening, nested, closing in (('```text', '~~~', '```'),
+                                         ('~~~text', '```', '~~~'),
+                                         ('````text', '```', '````')):
+            p = packet()
+            p['source_validation_texts'][SOURCE] = opening + '\n' + nested + '\n' + OLD + '\n' + closing
+            self.assertIsNone(validate(SAFE, p)['answer'])
+
+    def test_code_filter_preserves_the_raw_possible_receipt_veto(self):
+        p = packet()
+        p['source_validation_texts'][SOURCE] = OLD + '\n\n```text\n~~~\n' + LATER + '\n```'
+        self.assertIsNone(validate(SAFE, p)['answer'])
+
     def test_full_metadata_body_cannot_fall_back_to_a_dated_excerpt(self):
         p = packet()
         p['source_validation_texts'][SOURCE] = (

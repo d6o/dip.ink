@@ -45,11 +45,12 @@ _NEGATED_OBSERVATION = re.compile(
 )
 _QUEUE = re.compile(r"\b(?:queues?|ingest|indexed|cataloged|backlog|index)\b", re.I)
 _METADATA = re.compile(
-    r"^\s*(?:captured|created|updated|modified|valid_at|invalid_at|indexed|ingested|timestamp|date|as_of)\s*:", re.I
+    r"^\s*(?:captured|created|updated|modified|valid_at|invalid_at|indexed|ingested|timestamp|"
+    r"date|as_of|title|name|description|summary|slug|source_slug|filename|url|published)\s*:", re.I
 )
 _EXCLUDED_HEADING = re.compile(
     r"\b(?:examples?|fixtures?|templates?|samples?|illustrative|hypothetical|publication|"
-    r"unrelated|metadata|generated|source[-_ ]slug|title)\b", re.I
+    r"unrelated|source metadata|note metadata|document metadata|frontmatter|generated|source[-_ ]slug|title)\b", re.I
 )
 _NON_OBSERVATION = re.compile(
     r"\b(?:examples?|illustrative|hypothetical|synthetic|fixtures?|samples?|templates?|"
@@ -72,38 +73,96 @@ def temporal_negative_required(question: str) -> bool:
     return bool(match and _time(match['stamp']) and _TOPIC.search(question))
 
 
-def _observation_text(text: str) -> str:
-    # Titles, frontmatter, and code examples do not date an observation.
+_SETEXT_HEADING = re.compile(r'^ {0,3}(?:=+|-+)[ \t]*$')
+
+
+def _source_body_text(text: str) -> str:
+    """Return narrative source text without metadata, titles, or code examples.
+
+    A closing fence uses the opening character and at least its length.
+    An unclosed fence excludes the remaining body. This private helper does
+    not establish capability or authority. Raw contrary checks stay separate.
+    """
     lines = []
+    first_content = True
     frontmatter = False
-    fenced = False
+    fence_character = None
+    fence_length = 0
     excluded_level = None
-    for index, line in enumerate(text.strip().splitlines()):
+    quoted_paragraph = False
+    source_lines = text.splitlines()
+    for index, line in enumerate(source_lines):
         stripped = line.strip()
-        if index == 0 and stripped == '---':
-            frontmatter = True
-            continue
+        if first_content:
+            first_value = stripped.lstrip('\ufeff')
+            if not first_value:
+                lines.append('')
+                continue
+            first_content = False
+            if first_value == '---':
+                frontmatter = True
+                continue
         if frontmatter:
             if stripped in {'---', '...'}:
                 frontmatter = False
             continue
-        if stripped.startswith(('```', '~~~')):
-            fenced = not fenced
+        if fence_character:
+            closing = re.fullmatch(
+                r' {0,3}' + re.escape(fence_character) + r'{' + str(fence_length) + r',}[ \t]*', line,
+            )
+            if closing:
+                fence_character = None
+                fence_length = 0
+                lines.append('')
             continue
-        if fenced:
+        opening = re.match(r'^ {0,3}(`{3,}|~{3,})(.*)$', line)
+        if opening:
+            fence_character = opening[1][0]
+            fence_length = len(opening[1])
+            lines.append('')
             continue
-        heading = re.match(r'^\s{0,3}(#{1,6})\s+(.+)', line)
+        if _SETEXT_HEADING.fullmatch(line) and lines and lines[-1].strip():
+            title_lines = []
+            while lines and lines[-1].strip():
+                title_lines.append(lines.pop())
+            level = 1 if stripped.startswith('=') else 2
+            if excluded_level is None or level <= excluded_level:
+                excluded_level = level if _EXCLUDED_HEADING.search(' '.join(title_lines)) else None
+            lines.append('')
+            continue
+        heading = re.match(r'^ {0,3}(#{1,6})\s+(.+)', line)
         if heading:
             level = len(heading[1])
             if excluded_level is not None and level > excluded_level:
                 continue
             excluded_level = level if _EXCLUDED_HEADING.search(heading[2]) else None
             lines.append('')
+            quoted_paragraph = False
             continue
-        if excluded_level is not None or _METADATA.match(line) or stripped.startswith('>'):
+        if not stripped:
+            quoted_paragraph = False
+            lines.append('')
+            continue
+        if stripped.startswith('>'):
+            quoted_paragraph = True
+        if (excluded_level is not None or quoted_paragraph or _METADATA.match(line)
+                or line.startswith(('    ', '\t'))):
+            continue
+        label = re.fullmatch(
+            r'(?:For example|Examples?|Fixtures?|Templates?|Samples?|Source metadata)\s*[:,]?', stripped, re.I,
+        )
+        next_is_heading = index + 1 < len(source_lines) and _SETEXT_HEADING.fullmatch(source_lines[index + 1])
+        if label and not next_is_heading:
+            # A plain example label ends at the next explicit section.
+            excluded_level = 7
+            lines.append('')
             continue
         lines.append(line)
-    paragraphs = [part for part in re.split(r'\n\s*\n', '\n'.join(lines))
+    return '\n'.join(lines)
+
+
+def _observation_text(text: str) -> str:
+    paragraphs = [part for part in re.split(r'\n\s*\n', _source_body_text(text))
                   if not _NON_OBSERVATION.search(part)]
     # An inline filename or quoted timestamp cannot supply the date.
     body = re.sub(r'`+[^`\n]*`+', '', '\n\n'.join(paragraphs))
