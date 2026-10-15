@@ -29,6 +29,8 @@ _RESOURCE_PATTERNS = {
     "pod": r"\bpods?\b",
     "deployment": r"\bdeployments?\b",
     "statefulset": r"\bstatefulsets?\b",
+    "cronjob": r"\bcron[- ]?jobs?\b",
+    "job": r"(?<!cron )(?<!cron-)\bjobs?\b",
     "pv": r"\b(?:pvs?|persistent[- ]volumes?)\b",
     "pvc": r"\b(?:pvcs?|persistent[- ]volume[- ]claims?)\b",
     "node": r"\bnodes?\b(?![- ]+disks?)",
@@ -47,7 +49,7 @@ _NEGATIVE = re.compile(
 _UNCERTAIN = re.compile(
     r"\b(?:no|not|never|cannot|may|might|could|would|should|if|whether|unknown|unverified|"
     r"unsupported|unavailable|fails?|failed|failure|denied|blocked|pending|planned|proposed|"
-    r"draft|fixture|example|stub|source[- ]only|source code|reviewed source)\b|\?", re.I,
+    r"draft|fixture|example|stub|intent|intended|source[- ]only|source code|reviewed source)\b|\?", re.I,
 )
 _BOUNDED = re.compile(r"\b(?:cited|retrieved|supplied|recorded)\s+(?:source\s+)?(?:text|sources?|evidence|notes?)\b", re.I)
 _LACK = re.compile(
@@ -64,7 +66,7 @@ _NAMED = re.compile(
 _BACKTICK = re.compile(r"`([^`\n]+)`")
 _NOT_METHOD = {
     "read-only", "read_only", "node-disk", "node-disks", "pod-list", "pod-logs",
-    "binding_window_unsupported", "exact-user-agent", "kinds",
+    "binding_window_unsupported", "exact-user-agent", "kinds", "cron-job", "cron-jobs",
 }
 _STORAGE = {"longhorn", "volume", "replica", "disk", "node_disk", "capacity", "backup", "pv", "pvc", "node"}
 _UNAVAILABLE = re.compile(
@@ -74,7 +76,7 @@ _UNAVAILABLE = re.compile(
 )
 _GLOBAL_ABSENCE = re.compile(
     r"\bno\s+(?:(?:approved|supported|installed|read[- ]only|longhorn|volume|replica|"
-    r"node|disk|backup|metadata)\s+)*(?:channels?|methods?|readers?|tools?|endpoints?)\b", re.I,
+    r"node|disk|backup|metadata|cron[- ]?jobs?|jobs?)\s+)*(?:channels?|methods?|readers?|tools?|endpoints?)\b", re.I,
 )
 
 
@@ -97,6 +99,7 @@ def _name(value: str) -> str | None:
     quoted = value.startswith("`")
     value = value.strip("`").rstrip(".").casefold()
     if (not value or value in _NOT_METHOD or value in _RESOURCE_RE
+            or value.removesuffix('s') in _RESOURCE_RE
             or (not quoted and not re.search(r"[-_/:.]", value))):
         return None
     return value

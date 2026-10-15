@@ -293,6 +293,84 @@ class ContraryScopeTests(unittest.TestCase):
             self.assertEqual(resource_scope_problem(question, answer, [source]), RESOURCE_SCOPE_REASON)
 
 
+class BatchResourceScopeTests(unittest.TestCase):
+    # Synthetic static text. These tests do not inspect an installed reader.
+    BASE_BATCH = BASE_SCOPE + ' `devbox-kube-read` has no CronJobs or Jobs metadata operation.'
+
+    def test_job_and_cronjob_questions_require_scope_checks(self):
+        for kind in ('Job', 'Jobs', 'CronJob', 'CronJobs', 'Cron-Job', 'Cron Job'):
+            with self.subTest(kind=kind):
+                self.assertTrue(resource_scope_required('Which supported metadata method reads ' + kind + ' metadata?'))
+
+    def test_base_scope_and_generic_metadata_do_not_establish_batch_scope(self):
+        generic = '`devbox-kube-read` is the supported read-only method for Kubernetes metadata.'
+        for kind in ('Jobs', 'CronJobs'):
+            question = 'Which supported read-only method reads ' + kind + ' metadata?'
+            answer = 'Use `devbox-kube-read` for ' + kind + ' metadata.'
+            for body in (generic, BOUNDARY, self.BASE_BATCH):
+                with self.subTest(kind=kind, body=body):
+                    self.assertEqual(resource_scope_problem(question, answer, [body]), RESOURCE_SCOPE_REASON)
+
+    def test_static_base_batch_negatives_remain_source_limited(self):
+        for kind in ('Jobs', 'CronJobs'):
+            question = 'Which supported read-only method reads ' + kind + ' metadata?'
+            answer = '`devbox-kube-read` has no ' + kind + ' metadata operation.'
+            self.assertIsNone(resource_scope_problem(question, answer, [self.BASE_BATCH]))
+            bounded = 'The cited text does not establish a supported ' + kind + ' method for `devbox-kube-read`.'
+            self.assertIsNone(resource_scope_problem(question, bounded, [self.BASE_BATCH]))
+
+    def test_job_and_cronjob_capabilities_do_not_transfer(self):
+        for source_kind, answer_kind in (('Job', 'CronJob'), ('CronJob', 'Job')):
+            question = 'Which supported read-only method reads ' + answer_kind + ' metadata?'
+            answer = 'Use `batch-reader` for ' + answer_kind + ' metadata.'
+            body = '`batch-reader` is the supported read-only method for ' + source_kind + ' metadata.'
+            self.assertEqual(resource_scope_problem(question, answer, [body]), RESOURCE_SCOPE_REASON)
+
+    def test_direct_synthetic_batch_scope_can_pass(self):
+        for kind in ('Job', 'CronJob', 'Cron-Job', 'Cron Job'):
+            question = 'Which supported read-only method reads ' + kind + ' metadata?'
+            answer = 'Use `batch-reader` for ' + kind + ' metadata.'
+            body = '`batch-reader` is the supported read-only method for ' + kind + ' metadata.'
+            self.assertIsNone(resource_scope_problem(question, answer, [body]))
+
+    def test_longhorn_rest_scope_does_not_supply_batch_scope(self):
+        for kind in ('Jobs', 'CronJobs'):
+            question = 'Which supported read-only method reads ' + kind + ' metadata?'
+            answer = 'Use `devbox-kube-read` for ' + kind + ' metadata.'
+            self.assertEqual(resource_scope_problem(question, answer, [self.BASE_BATCH, SUPPORT]), RESOURCE_SCOPE_REASON)
+            self.assertEqual(resource_scope_problem(question, answer.replace('devbox-kube-read', 'scope-reader'),
+                                                   [self.BASE_BATCH, SUPPORT]), RESOURCE_SCOPE_REASON)
+
+    def test_yaml_intent_does_not_establish_a_live_batch_method(self):
+        question = 'Which supported read-only method reads CronJob metadata?'
+        answer = 'Use the installed live `batch-reader` for CronJob metadata.'
+        body = ('`batch-reader` is the supported installed live read-only method for CronJob '
+                'metadata in a public YAML intent.')
+        self.assertEqual(resource_scope_problem(question, answer, [body]), RESOURCE_SCOPE_REASON)
+        intent = ('Public CronJob YAML intent does not establish rendered state, live adoption, '
+                  'or a failure phase.')
+        self.assertEqual(resource_scope_problem(question, answer, [intent]), RESOURCE_SCOPE_REASON)
+
+    def test_batch_mapping_values_not_keys_supply_scope(self):
+        question = 'Which supported read-only method reads CronJob metadata?'
+        answer = 'Use `batch-reader` for CronJob metadata.'
+        body = '`batch-reader` is the supported read-only method for CronJob metadata.'
+        self.assertIsNone(resource_scope_problem(question, answer, {'source': body}))
+        self.assertEqual(resource_scope_problem(question, answer, {body: 'Public YAML intent only.'}), RESOURCE_SCOPE_REASON)
+
+    def test_sixth_batch_denial_defeats_positive_support(self):
+        question = 'Which supported read-only method reads CronJob metadata?'
+        answer = 'Use `batch-reader` for CronJob metadata.'
+        body = '`batch-reader` is the supported read-only method for CronJob metadata.'
+        denied = '`batch-reader` has no CronJob metadata operation.'
+        self.assertEqual(resource_scope_problem(question, answer, [body] * 5 + [denied]), RESOURCE_SCOPE_REASON)
+
+    def test_yaml_location_is_not_a_method_question(self):
+        question = 'Where is the public CronJob YAML?'
+        self.assertFalse(resource_scope_required(question))
+        self.assertIsNone(resource_scope_problem(question, 'Unchanged location.', []))
+
+
 class NegativeScopeTests(unittest.TestCase):
     def test_actual_base_boundary_can_pass(self):
         self.assertIsNone(resource_scope_problem(QUESTION, BOUNDARY, [BASE_SCOPE]))

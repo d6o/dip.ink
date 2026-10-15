@@ -60,6 +60,38 @@ class ResourceScopeAnswerTests(unittest.IsolatedAsyncioTestCase):
         p = packet({SOURCE: BASE, '2026-10-13-120001-separate-channel': other})
         self.assertIsNone(validate(WRONG, p, list(p['source_validation_texts']))['answer'])
 
+    def test_jobs_and_cronjobs_do_not_follow_from_generic_metadata(self):
+        static = BASE + ' `devbox-kube-read` has no CronJobs or Jobs metadata operation.'
+        for kind in ('Jobs', 'CronJobs'):
+            question = 'Which supported read-only metadata method reads ' + kind + ' metadata?'
+            wrong = 'Use `devbox-kube-read` for ' + kind + ' metadata.'
+            result = validate(wrong, packet({SOURCE: static}), question=question)
+            self.assertIsNone(result['answer'])
+            self.assertTrue(result['escalate'])
+            bounded = 'The cited text does not establish a supported ' + kind + ' method for `devbox-kube-read`.'
+            result = validate(bounded, packet({SOURCE: static}), question=question)
+            self.assertIsNotNone(result['answer'])
+            self.assertEqual(result['confidence'], 'medium')
+            self.assertTrue(result['escalate'])
+
+    def test_direct_synthetic_cronjob_support_is_not_live_authorization(self):
+        question = 'Which supported read-only metadata method reads CronJob metadata?'
+        body = '`batch-reader` is the supported read-only method for CronJob metadata.'
+        answer = 'Use `batch-reader` for CronJob metadata.'
+        result = validate(answer, packet({SOURCE: body}), question=question)
+        self.assertIsNotNone(result['answer'])
+        self.assertEqual(result['confidence'], 'medium')
+        self.assertTrue(result['escalate'])
+        self.assertIsNone(validate(answer.replace('CronJob', 'Job'), packet({SOURCE: body}),
+                                   question=question.replace('CronJob', 'Job'))['answer'])
+
+    def test_yaml_intent_is_not_live_batch_scope_proof(self):
+        question = 'Which supported read-only metadata method reads CronJob metadata?'
+        body = ('`batch-reader` is the supported installed live read-only method for CronJob '
+                'metadata in a public YAML intent.')
+        answer = 'Use the installed live `batch-reader` for CronJob metadata.'
+        self.assertIsNone(validate(answer, packet({SOURCE: body}), question=question)['answer'])
+
     def test_actual_base_boundary_and_failed_logs_remain_source_limited(self):
         answer = ('`devbox-kube-read` supports only pod, deployment, and statefulset metadata. '
                   '`devbox-kube-read` pod logs fail with binding_window_unsupported.')
