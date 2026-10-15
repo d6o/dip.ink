@@ -40,6 +40,7 @@ from chat_fallback import OrderedModelFallback, is_recoverable_provider_error, p
 from answer_qualifiers import copy_state_supporting_sources, operational_supporting_sources, qualifier_problem, qualifier_requirements
 from credential_method_qualifiers import credential_method_problem, credential_services
 from temporal_negative_qualifiers import temporal_negative_problem, temporal_negative_required
+from resource_scope_qualifiers import resource_scope_problem, resource_scope_required
 from ingest import DEFAULT_GROUP_ID, build_graphiti
 from vector_search import install_read_search
 from graphiti_core.search.search_config_recipes import COMBINED_HYBRID_SEARCH_RRF
@@ -875,7 +876,7 @@ async def _assemble_packet(
     }
     if answer_evidence and credential_services(query):
         packet["credential_validation_texts"] = await _credential_validation_context(packet)
-    if answer_evidence and temporal_negative_required(query):
+    if answer_evidence and (temporal_negative_required(query) or resource_scope_required(query)):
         packet["source_validation_texts"] = (
             packet["credential_validation_texts"] if "credential_validation_texts" in packet
             else await _source_validation_context(packet)
@@ -1140,15 +1141,17 @@ def _validate_distilled_answer(
             "superseded_note": "Complete cited source text is unavailable for credential-method validation.",
         }, True, "qualifier_mismatch"
     validation_texts = _validation_cited_texts(packet, cited_sources)
-    if temporal_negative_required(question) and "source_validation_texts" in packet and any(
+    scoped_validation = temporal_negative_required(question) or resource_scope_required(question)
+    if scoped_validation and "source_validation_texts" in packet and any(
         not text.strip() for text in validation_texts.values()
     ):
         return {
             "answer": None, "confidence": "not_found", "sources": [], "escalate": True,
-            "superseded_note": "Complete cited source text is unavailable for temporal validation.",
+            "superseded_note": "Complete cited source text is unavailable for scoped validation.",
         }, True, "qualifier_mismatch"
     qualifier_error = (
         temporal_negative_problem(question, answer, validation_texts)
+        or resource_scope_problem(question, answer, validation_texts)
         or credential_method_problem(question, answer, credential_texts)
         or qualifier_problem(question, answer, cited_texts)
     )
@@ -1232,7 +1235,7 @@ def _validate_distilled_answer(
         _qualify_snapshot(result, observation_dates)
         action = "downgraded" if conf == "high" else action
 
-    if credential_services(question) or temporal_negative_required(question):
+    if credential_services(question) or scoped_validation:
         # A memory record does not verify external state or caller authority.
         result["escalate"] = True
         result["confidence"] = "medium" if result["confidence"] == "high" else result["confidence"]

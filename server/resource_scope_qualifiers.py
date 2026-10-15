@@ -22,7 +22,9 @@ _RESOURCE_PATTERNS = {
     "longhorn": r"\blonghorn\b",
     "volume": r"\bvolumes?\b",
     "replica": r"\breplicas?\b",
-    "disk": r"\b(?:node[- ]+)?disks?\b",
+    "node_disk": r"\bnode[- ]+disks?\b",
+    "disk": r"(?<!node )(?<!node-)\bdisks?\b",
+    "capacity": r"\bcapacity\b",
     "backup": r"\bbackups?\b",
     "pod": r"\bpods?\b",
     "deployment": r"\bdeployments?\b",
@@ -64,7 +66,16 @@ _NOT_METHOD = {
     "read-only", "read_only", "node-disk", "node-disks", "pod-list", "pod-logs",
     "binding_window_unsupported", "exact-user-agent", "kinds",
 }
-_STORAGE = {"longhorn", "volume", "replica", "disk", "backup", "pv", "pvc", "node"}
+_STORAGE = {"longhorn", "volume", "replica", "disk", "node_disk", "capacity", "backup", "pv", "pvc", "node"}
+_UNAVAILABLE = re.compile(
+    r"\b(?:is|remains)\s+(?:(?:currently|still)\s+)?(?:unavailable|unsupported|"
+    r"uninstalled|blocked|not\s+(?:supported|installed|available|approved))\b"
+    r"|binding_window_unsupported", re.I,
+)
+_GLOBAL_ABSENCE = re.compile(
+    r"\bno\s+(?:(?:approved|supported|installed|read[- ]only|longhorn|volume|replica|"
+    r"node|disk|backup|metadata)\s+)*(?:channels?|methods?|readers?|tools?|endpoints?)\b", re.I,
+)
 
 
 def _scope_text(text: str) -> str:
@@ -145,8 +156,9 @@ def resource_scope_required(question: str) -> bool:
 def _overlap(left: set[str], right: set[str]) -> bool:
     if left & right:
         return True
-    # An explicit Longhorn denial also limits its named storage resources.
-    return bool("longhorn" in left and right & _STORAGE)
+    # A broader denial also limits its named storage resources.
+    return bool(("longhorn" in left and right & _STORAGE)
+                or (left & {"disk", "node"} and "node_disk" in right))
 
 
 def _limit_excludes(allowed: set[str], claimed: set[str]) -> bool:
@@ -157,8 +169,12 @@ def _limit_excludes(allowed: set[str], claimed: set[str]) -> bool:
 
 
 def _contrary(clause: _Clause, method: str, resources: set[str]) -> bool:
+    if not clause.methods and _GLOBAL_ABSENCE.search(clause.text) and _overlap(clause.resources, resources):
+        return True
     if clause.methods != [method]:
         return False
+    if not clause.resources and _UNAVAILABLE.search(clause.text):
+        return True
     if _LIMIT.search(clause.text) and clause.resources and _limit_excludes(clause.resources, resources):
         return True
     return bool(_NEGATIVE.search(clause.text) and _overlap(clause.resources, resources))

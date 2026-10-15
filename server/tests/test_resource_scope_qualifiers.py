@@ -183,6 +183,15 @@ class ScopeSupportTests(unittest.TestCase):
         source = SUPPORT.replace("is the supported installed read-only method for", "supports read-only")
         self.assertIsNone(self.problem(POSITIVE, source))
 
+    def test_generic_disk_scope_does_not_establish_node_disk_capacity(self):
+        question = 'Which supported read-only method reads node disk capacity metadata?'
+        answer = 'Use `disk-reader` for node disk capacity metadata.'
+        for scope in ('disk', 'disk capacity', 'node disk'):
+            source = '`disk-reader` is the supported read-only method for ' + scope + ' metadata.'
+            self.reject(answer, source, question=question)
+        source = '`disk-reader` is the supported read-only method for node disk capacity metadata.'
+        self.assertIsNone(self.problem(answer, source, question=question))
+
     def test_empty_and_non_answer_fail_closed(self):
         self.reject("", SUPPORT)
         self.reject("See the source.", SUPPORT)
@@ -209,6 +218,18 @@ class ContraryScopeTests(unittest.TestCase):
         self.assertEqual(resource_scope_problem(QUESTION, POSITIVE, [SUPPORT, source]), RESOURCE_SCOPE_REASON)
         source = "Longhorn metadata is unsupported by scope-reader."
         self.assertEqual(resource_scope_problem(QUESTION, POSITIVE, [SUPPORT, source]), RESOURCE_SCOPE_REASON)
+
+    def test_explicit_same_method_unavailability_vetoes_a_positive_source(self):
+        for condition in ('unavailable', 'unsupported', 'not installed', 'not approved'):
+            with self.subTest(condition=condition):
+                contrary = '`scope-reader` is ' + condition + '.'
+                self.assertEqual(resource_scope_problem(QUESTION, POSITIVE, [SUPPORT, contrary]), RESOURCE_SCOPE_REASON)
+        self.assertIsNone(resource_scope_problem(QUESTION, POSITIVE, [SUPPORT, '`other-reader` is unavailable.']))
+
+    def test_explicit_global_resource_absence_vetoes_a_positive_source(self):
+        absent = 'No supported Longhorn metadata channel exists.'
+        self.assertEqual(resource_scope_problem(QUESTION, POSITIVE, [SUPPORT, absent]), RESOURCE_SCOPE_REASON)
+        self.assertEqual(resource_scope_problem(QUESTION, POSITIVE, [SUPPORT] * 5 + [absent]), RESOURCE_SCOPE_REASON)
 
     def test_unrelated_method_limit_does_not_remove_direct_support(self):
         self.assertIsNone(resource_scope_problem(QUESTION, POSITIVE, [SUPPORT, BASE_SCOPE]))
