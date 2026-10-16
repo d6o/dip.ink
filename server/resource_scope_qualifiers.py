@@ -256,7 +256,10 @@ def _source_clauses(text: str) -> list[_Clause]:
 
 # These complete question shapes assign data roles, not resource operations.
 # Unknown forms keep the original selector. This is not a general query parser.
-_QUESTION_ID = r"(?:`[^`\n]+`|[A-Za-z0-9_/.:-]+)"
+# Multiword identities remain data, but their roles keep the old selector.
+_QUESTION_ID = r"(?:`[^`\s]+`|[A-Za-z0-9_/.:-]+)"
+# An unquoted app needs a complete app token, not a path suffix.
+_QUESTION_APP = r"(?:`[^`\s]+`|[A-Za-z][A-Za-z0-9_.-]*)"
 _QUESTION_RELEASE_CONCEPT = (
     r"(?:(?:dev\s+app-only|app-only\s+dev|dev|app-only)\s+)?"
     r"release\s+(?:interface|scope)"
@@ -264,10 +267,11 @@ _QUESTION_RELEASE_CONCEPT = (
 _QUESTION_RELEASE_CONCEPT = (
     r"(?:`" + _QUESTION_RELEASE_CONCEPT + r"`|" + _QUESTION_RELEASE_CONCEPT + r")"
 )
+# The release validator does not bind "through" to a method.
 _QUESTION_RELEASE_HEAD = (
-    r"(?P<subject>" + _QUESTION_ID + r")\s+"
+    r"(?P<subject>" + _QUESTION_APP + r")\s+"
     r"(?P<concept>" + _QUESTION_RELEASE_CONCEPT + r")"
-    r"(?:\s+(?:using|via|through)\s+(?P<method>" + _QUESTION_ID + r"))?"
+    r"(?:\s+(?:using|via)\s+(?P<method>" + _QUESTION_ID + r"))?"
 )
 _QUESTION_RELEASE_REVISION = r"(?:\s+for\s+revision\s+(?P<revision>" + _QUESTION_ID + r"))?"
 _QUESTION_RELEASE_RECORD = re.compile(
@@ -291,6 +295,7 @@ def _question_operation_text(question: str) -> str:
     A method identifies the recorded release interface here. It does not ask
     for a metadata operation. A scope and a deployment event describe that
     release. Any extra operation or unknown clause retains the original text.
+    Multiword identities remain outside this bounded subset, even for real methods.
     This function cannot supply positive scope to an answer or source.
     """
     for pattern in (_QUESTION_RELEASE_RECORD, _QUESTION_RELEASE_CURRENT):

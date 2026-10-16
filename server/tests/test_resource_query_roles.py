@@ -35,6 +35,47 @@ def overlap_record(question):
     return COMPLETE.replace(REV, '`dev-interface-next`') if 'dev-interface-next' in question else COMPLETE
 
 
+def release_question(*, current, app='ComputeHours', concept='app-only dev release interface',
+                     method=METHOD, link='using', revision=None, event=None, scope=True):
+    """Build a synthetic question without a command or external request."""
+    text = ('What is the current ' if current else 'Which ') + app + ' ' + concept
+    if method is not None:
+        text += ' ' + link + ' ' + method
+    if current:
+        if event is not None:
+            text += ' after the ' + event
+        if scope:
+            text += ', and which scope does it cover'
+    else:
+        if scope:
+            text += ' and scope'
+        text += ' did the source record'
+    if revision is not None:
+        text += ' for revision ' + revision
+    return text + '?'
+
+
+def supported_role_questions():
+    """Cover every structural alternative in the bounded role grammar."""
+    for current in (False, True):
+        for qualifier in ('', 'dev ', 'app-only ', 'dev app-only ', 'app-only dev '):
+            for noun in ('interface', 'scope'):
+                for quoted in (False, True):
+                    concept = qualifier + 'release ' + noun
+                    if quoted:
+                        concept = '`' + concept + '`'
+                    for link in ('using', 'via'):
+                        yield release_question(current=current, concept=concept, link=link)
+        for method, link in ((None, 'using'), (METHOD, 'using'), (METHOD, 'via'),
+                             (METHOD[1:-1], 'using'), (METHOD[1:-1], 'via')):
+            for revision in (None, REV, REV[1:-1]):
+                for scope in (False, True):
+                    events = (None, 'October 16 deployment', 'October 16 deployment of ' + REV) if current else (None,)
+                    for event in events:
+                        yield release_question(current=current, method=method, link=link,
+                                               revision=revision, scope=scope, event=event)
+
+
 def compound_questions():
     tails = (
         'read PVC metadata', 'read Longhorn volume metadata', 'inspect node disk metadata',
@@ -59,7 +100,7 @@ class ResourceQueryRoleTests(unittest.TestCase):
                 self.assertIsNone(resource.resource_scope_problem(question, overlap_record(question), [overlap_record(question)]))
 
     def test_release_roles_do_not_depend_on_an_app_or_method_allowlist(self):
-        for app in ('OtherHours', '`Example App`', 'read', 'release-scope'):
+        for app in ('OtherHours', '`ExampleApp`', 'read', 'release-scope'):
             for name in NAMES:
                 for concept in ('release interface', '`release scope`', '`APP-ONLY DEV RELEASE INTERFACE`'):
                     question = 'Which ' + app + ' ' + concept + ' using `' + name + '` and scope did the source record?'
@@ -78,7 +119,10 @@ class ResourceQueryRoleTests(unittest.TestCase):
         for name in ('read PVC; delete backups', 'read-only metadata access', 'grant permission',
                      '/opt/read/delete/release-scope.py', "https://example.invalid/doesn't/read"):
             question = 'Which ComputeHours app-only dev release interface using `' + name + '` and scope did the source record?'
-            self.assertFalse(resource.resource_scope_required(question), question)
+            if ' ' in name:
+                self.assert_retained(question)
+            else:
+                self.assertFalse(resource.resource_scope_required(question), question)
             unrelated = 'What is the `' + name + '` version?'
             self.assertEqual(resource.resource_scope_required(unrelated), old_required(unrelated))
             self.assertFalse(resource.resource_scope_required(unrelated))
@@ -112,6 +156,60 @@ class ResourceQueryRoleTests(unittest.TestCase):
         for topic in ('metadata', 'network', 'credential', 'backup', 'unrecognized'):
             question = OVERLAPS[3].replace('release interface', topic + ' interface')
             self.assert_retained(question)
+
+    def test_supported_links_and_structural_roles_have_pure_selector_controls(self):
+        for question in supported_role_questions():
+            self.assertFalse(resource.resource_scope_required(question), question)
+        for current in (False, True):
+            for link in ('using', 'via'):
+                for method in (METHOD, '`other-method`'):
+                    question = release_question(current=current, method=method, link=link)
+                    self.assertTrue(old_required(question))
+                    self.assertFalse(resource.resource_scope_required(question))
+
+    def test_unsupported_through_link_keeps_the_original_selector(self):
+        for current in (False, True):
+            for method in (METHOD, '`other-method`'):
+                question = release_question(current=current, method=method, link='through')
+                self.assert_retained(question)
+                self.assertEqual(resource.resource_scope_problem(question, COMPLETE, [COMPLETE]), resource.RESOURCE_SCOPE_REASON)
+
+    def test_unsupported_unquoted_app_forms_cannot_lose_a_prefix(self):
+        for current in (False, True):
+            for app in ('123ComputeHours', 'Other/ComputeHours', 'Other:ComputeHours'):
+                question = release_question(current=current, app=app)
+                self.assert_retained(question)
+                self.assertEqual(resource.resource_scope_problem(question, COMPLETE, [COMPLETE]), resource.RESOURCE_SCOPE_REASON)
+                quoted = release_question(current=current, app='`' + app + '`')
+                self.assertFalse(resource.resource_scope_required(quoted))
+
+    def test_multiword_identity_roles_remain_conservative(self):
+        for current in (False, True):
+            for kwargs in ({'app': '`production readiness`'}, {'app': '`Example App`'},
+                           {'method': '`readiness durability`'}, {'method': '`read PVC; delete backups`'},
+                           {'revision': '`readiness durability`'}):
+                question = release_question(current=current, **kwargs)
+                self.assert_retained(question)
+                self.assertEqual(resource.resource_scope_problem(question, COMPLETE, [COMPLETE]), resource.RESOURCE_SCOPE_REASON)
+        question = release_question(current=True, event='October 16 deployment of `readiness durability`')
+        self.assert_retained(question)
+
+    def test_multiword_command_identity_cannot_supply_scope_or_mutation(self):
+        for name in ('read PVC; delete backups', '/opt/read PVC/delete backups.py'):
+            body = '`' + name + '` supports read-only pod metadata.'
+            question = 'Can `' + name + '` read pod metadata?'
+            answer = 'Use `' + name + '` for pod metadata.'
+            self.assert_retained(question)
+            self.assertEqual(resource._methods(body), [name])
+            self.assertEqual(resource._resources(body), {'pod'})
+            self.assertFalse(resource._mutation_claim(resource._scope_text(body)))
+            self.assertIsNone(resource.resource_scope_problem(question, answer, [body]))
+            pvc_question = 'Can `' + name + '` read PVC metadata?'
+            pvc_answer = 'Use `' + name + '` for PVC metadata.'
+            self.assertEqual(resource.resource_scope_problem(pvc_question, pvc_answer, [body]), resource.RESOURCE_SCOPE_REASON)
+            unrelated = 'What is the `' + name + '` version?'
+            self.assertFalse(old_required(unrelated))
+            self.assertFalse(resource.resource_scope_required(unrelated))
 
     def test_unknown_role_placements_remain_conservative(self):
         for question in (
