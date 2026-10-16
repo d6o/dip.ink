@@ -398,6 +398,26 @@ class NetworkVantageTests(unittest.TestCase):
             self.assertIsNone(self.problem(ORIGIN, [ORIGIN], question))
             self.assertFalse(network_vantage_required('What is the `' + concept + '` version?'))
 
+    def test_declared_delivery_context_binds_its_own_following_properties(self):
+        for contrary in ('It has status `not executed`.', 'This check has status `unknown`.',
+                         'The method has status: `not observed`.', 'It has status = unknown.',
+                         'This check status: not executed.', 'The method status = `not observed`.'):
+            self.reject(DELIVERY, [DELIVERY + '\n' + contrary])
+            self.reject(DELIVERY, [DELIVERY] * 5 + ['```text\n' + DELIVERY + '\n' + contrary + '\n```'])
+            self.assertIsNone(self.problem(DELIVERY, [DELIVERY, contrary]))
+        for reset in (DELIVERY.replace('safe-client', 'other-client'),
+                      DELIVERY.replace('21h.dev', 'other.dev'), ORIGIN):
+            self.assertIsNone(self.problem(DELIVERY, [DELIVERY + '\n' + reset + '\nIt has status `unknown`.']))
+
+    def test_negated_cutoffs_fail_closed_without_changing_identity_data(self):
+        for modifier in ('not', 'never', 'not necessarily'):
+            question = 'Did capd deliver a safe client for 21h.dev ' + modifier + ' after October 14, 2026?'
+            self.assertEqual(self.problem(DELIVERY, [DELIVERY], question), NETWORK_VANTAGE_REASON)
+        name = 'not after October 14, 2026'
+        historical = DELIVERY.replace('safe-client', name).replace('2026-10-16', '2026-10-13')
+        question = 'Did capd deliver `' + name + '` as a safe client for 21h.dev?'
+        self.assertIsNone(self.problem(historical, [historical], question))
+
     def test_iso_cutoff_and_scope_must_match(self):
         question = 'Did capd deliver a safe client after 2026-10-14?'
         self.assertIsNone(self.problem(DELIVERY_LACK, [BASE], question))

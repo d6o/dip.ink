@@ -694,6 +694,66 @@ class NetworkVantageAnswerTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(result['confidence'], 'medium')
                 self.assertTrue(result['escalate'])
 
+    async def test_declared_delivery_source_context_binds_only_its_own_properties(self):
+        for contrary in ('It has status `not executed`.', 'This check has status `unknown`.',
+                         'The method has status: `not observed`.', 'It has status = unknown.',
+                         'This check status: not executed.', 'The method status = `not observed`.'):
+            body = DELIVERY + '\n' + contrary
+            for question in (QUESTION, NONCURRENT):
+                self.assert_network_rejection(validate(DELIVERY, packet({SOURCE: body}), question=question))
+                result, _, event = await self.assemble({SOURCE: body}, DELIVERY, question)
+                self.assertEqual(event['grounding_action'], 'network_vantage_mismatch')
+                self.assertEqual(result['superseded_note'], NETWORK_VANTAGE_REASON)
+            for raw in ('summary: >\n  PRIVATE_DELIVERY_CONTEXT_SENTINEL\n  ' + DELIVERY + '\n  ' + contrary,
+                        '```text\nPRIVATE_DELIVERY_CONTEXT_SENTINEL\n' + DELIVERY + '\n' + contrary + '\n```'):
+                bodies = {SOURCE + '-' + str(i): DELIVERY for i in range(6)}
+                bodies[list(bodies)[-1]] = raw
+                result, sent, event = await self.assemble(bodies, DELIVERY)
+                self.assertEqual(event['grounding_action'], 'network_vantage_mismatch')
+                self.assertEqual(result['superseded_note'], NETWORK_VANTAGE_REASON)
+                self.assertNotIn('PRIVATE_DELIVERY_CONTEXT_SENTINEL', sent)
+            body = DELIVERY + '\n' + 'Background context. ' * 260 + '\n' + contrary
+            self.assertGreater(body.index(contrary), 4096)
+            for question in (QUESTION, NONCURRENT):
+                result, _, event = await self.assemble({SOURCE: body}, DELIVERY, question)
+                self.assertEqual(event['grounding_action'], 'network_vantage_mismatch')
+                self.assertEqual(result['superseded_note'], NETWORK_VANTAGE_REASON)
+            answer = DELIVERY + ' ' + 'Recorded background. ' * 110 + contrary
+            self.assertGreater(answer.index(contrary), 2000)
+            result, _, event = await self.assemble({SOURCE: DELIVERY}, answer)
+            self.assertEqual(event['grounding_action'], 'network_vantage_mismatch')
+        for reset in (DELIVERY.replace('safe-client', 'other-client'),
+                      DELIVERY.replace('21h.dev', 'other.dev'), ORIGIN):
+            body = DELIVERY + '\n' + reset + '\nIt has status `unknown`.'
+            result, _, event = await self.assemble({SOURCE: body}, DELIVERY)
+            self.assertEqual(event['grounding_action'], 'downgraded')
+            self.assertIsNotNone(result['answer'])
+            self.assertEqual(result['confidence'], 'medium')
+        result, _, event = await self.assemble({SOURCE: DELIVERY}, DELIVERY)
+        self.assertEqual(event['grounding_action'], 'downgraded')
+        self.assertIn('capd delivered `safe-client`', result['answer'])
+
+    async def test_nonaffirmative_cutoffs_do_not_become_affirmative_constraints(self):
+        for modifier in ('not', 'never', 'not necessarily'):
+            for prefix in ('Did capd deliver a safe client for 21h.dev ',
+                           'What is the current capd safe client delivery for 21h.dev '):
+                question = prefix + modifier + ' after October 14, 2026?'
+                self.assert_network_rejection(validate(DELIVERY, packet({SOURCE: DELIVERY}), question=question))
+                result, _, event = await self.assemble({SOURCE: DELIVERY}, DELIVERY, question)
+                self.assertEqual(event['grounding_action'], 'network_vantage_mismatch')
+                self.assertEqual(result['superseded_note'], NETWORK_VANTAGE_REASON)
+        for comparison in ('after', 'since'):
+            question = 'Did capd deliver a safe client for 21h.dev ' + comparison + ' October 14, 2026?'
+            result, _, event = await self.assemble({SOURCE: DELIVERY}, DELIVERY, question)
+            self.assertEqual(event['grounding_action'], 'downgraded')
+            self.assertEqual(result['answer'], DELIVERY)
+        name = 'not after October 14, 2026'
+        historical = DELIVERY.replace('safe-client', name).replace('2026-10-16', '2026-10-13')
+        question = 'Did capd deliver `' + name + '` as a safe client for 21h.dev?'
+        result, _, event = await self.assemble({SOURCE: historical}, historical, question)
+        self.assertEqual(event['grounding_action'], 'downgraded')
+        self.assertEqual(result['answer'], historical)
+
     async def test_unrelated_question_never_loads_private_source_context(self):
         g = SimpleNamespace(search_=mock.AsyncMock(return_value=SimpleNamespace(nodes=[], edges=[], episodes=[])))
         with mock.patch.object(graph, '_get_graph', new=mock.AsyncMock(return_value=g)), \

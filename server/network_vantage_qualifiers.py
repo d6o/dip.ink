@@ -443,6 +443,12 @@ def _contrary(values: list[str], match, kind: str) -> bool:
         previous_method = None
         previous_target = None
         for clause in _clauses(text):
+            # Every complete source form supplies only its own local context.
+            declared = next((found for grammar in (_ORIGIN, _DELIVERY, _OBSERVATION)
+                             if (found := grammar.fullmatch(clause))), None)
+            if declared:
+                previous_method = declared['method']
+                previous_target = declared['target'][1:-1]
             props = _properties(clause)
             fields = _raw_properties(clause)
             subject = re.search(
@@ -498,9 +504,12 @@ def network_vantage_problem(
     explicit_target, requested_target = _requested_target(question)
     if explicit_target and requested_target is None:
         return NETWORK_VANTAGE_REASON
-    cutoff_cues = re.findall(_CUTOFF_CUE, _cutoff_text(question), re.I)
-    if len(cutoff_cues) > 1 or (cutoff_cues and cutoff is None):
-        # Unsupported or multiple constraints cannot become a history query.
+    cutoff_text = _normalize_negation(_cutoff_text(question))
+    cutoff_cues = list(re.finditer(_CUTOFF_CUE, cutoff_text, re.I))
+    nonaffirmative = any(re.search(r'\b(?:not|no|never|without)(?:\s+\w+){0,2}\s*$',
+                                  cutoff_text[:cue.start()], re.I) for cue in cutoff_cues)
+    if len(cutoff_cues) > 1 or (cutoff_cues and (cutoff is None or nonaffirmative)):
+        # Unsupported, multiple, or negated constraints cannot become history.
         return NETWORK_VANTAGE_REASON
     checked = False
     for claim in _clauses(answer):
