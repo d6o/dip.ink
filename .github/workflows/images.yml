@@ -7,7 +7,7 @@ name: images
 # Main publishes a moving `main` development tag plus an immutable full-git-SHA
 # tag. A `v*` release tag publishes that exact tag, its normalized SemVer tag,
 # and the same immutable full-git-SHA tag. The workflow deliberately does not
-# publish `latest`; public manifests pin v0.1.50 (or an immutable SHA) and move
+# publish `latest`; public manifests pin v0.1.51 (or an immutable SHA) and move
 # only through an explicit release.
 #
 # Path filters are intentionally omitted so a pure-docs release commit can still
@@ -120,4 +120,5 @@ jobs:
             -e PYTHONPATH=/app:/app/tests \
             "$MEMORY_IMAGE" -m unittest \
             test_temporal_negative_qualifiers test_graph_temporal_negatives \
-            test_resource_scope_qualifiers test_graph_resource_scopes
+            test_resource_scope_qualifiers test_graph_resource_scopes \
+            test_network_vantage_qualifiers test_graph_network_vantage

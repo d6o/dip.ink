@@ -76,7 +76,18 @@ The three workflows (`curator` hourly, `synthesis` weekly, `reviewqueue` daily) 
 
 ### 2. Deploy the memory stack
 
-Public runtime images use **immutable tags**, not a moving `latest` tag. The current public release pin is v0.1.50.
+Public runtime images use **immutable tags**, not a moving `latest` tag. The current public release pin is v0.1.51.
+
+Release v0.1.51 adds bounded source checks for selected network-vantage and capd delivery questions.
+The checks keep caller origin separate from destination, DNS, client mode, route, Host/SNI, and the requested target.
+A dated source observation does not establish current availability or caller authorization.
+Selected answers require supported property, target, cutoff, and claim forms.
+The checks can abstain when these forms are unsupported.
+Complete indexed bodies stay private; every raw citation and the full draft receive checks before display limits.
+
+These bounded checks do not prove general entailment, parser completeness, freshness, or caller authorization.
+Published image fixtures use synthetic evidence with network access disabled.
+A published image does not establish private adoption or an authorized live rollout.
 
 Release v0.1.50 adds bounded source checks for selected cutoff-receipt and metadata-method questions.
 Private validation reads complete indexed bodies for every raw citation without expanding model or search packets.
@@ -299,7 +310,7 @@ dip.ink/
 │   ├── claude-code/        ← skill + PreCompact hook
 │   └── pi/                 ← memory extension (native tools), /recordnotes prompt,
 │                             compact/exit gate extension
-├── docker-compose.yml      ← the whole stack on one host (pinned v0.1.50 images)
+├── docker-compose.yml      ← the whole stack on one host (pinned v0.1.51 images)
 ├── .env.example
 ├── .github/workflows/      ← required CI + immutable image publication
 ├── ci/                     ← CI helpers (YAML/k8s/contracts, Neo4j integration runner, Pi typecheck)
@@ -327,7 +338,7 @@ dip.ink/
 
 ## Production (k8s)
 
-`deploy/k8s/` mirrors the compose stack for a cluster: Neo4j Deployment + PVC, the memory-server Deployment, the 15-min ingest CronJob, and the maintenance CronJobs. Images are published to GHCR by this repo's CI and **pinned to `v0.1.50`**.
+`deploy/k8s/` mirrors the compose stack for a cluster: Neo4j Deployment + PVC, the memory-server Deployment, the 15-min ingest CronJob, and the maintenance CronJobs. Images are published to GHCR by this repo's CI and **pinned to `v0.1.51`**.
 
 The Secret example lives **outside** the apply set so a directory apply cannot overwrite real credentials with placeholders:
 
@@ -364,9 +375,9 @@ Metric labels are bounded-cardinality only (`tool`, `outcome`, `confidence`, `gr
 
 - Required CI (`.github/workflows/ci.yml`) gates server unit tests, a real Neo4j 5.26.2 integration job, curator supervisor tests, template wikilint/index, workflow/YAML/kustomize smoke, Pi extension typecheck, and both Docker image builds.
 - Image publication (`.github/workflows/images.yml`) runs on `main` (moving `main` + immutable full-git-SHA tags) and on `v*` tags (semver + SHA). It does **not** publish `latest`.
-- Public manifests and template workflows pin `ghcr.io/d6o/dip.ink/{memory,pi-runner}:v0.1.50`.
+- Public manifests and template workflows pin `ghcr.io/d6o/dip.ink/{memory,pi-runner}:v0.1.51`.
 
-Release sequence for maintainers: push main → wait CI green → tag `v0.1.50` → wait image publication green → sync private instances / deploy.
+Release sequence for maintainers: push main → wait CI green → tag `v0.1.51` → wait image publication green → sync private instances / deploy.
 
 ## Operational notes (learned the hard way)
 
@@ -374,7 +385,7 @@ Release sequence for maintainers: push main → wait CI green → tag `v0.1.50` 
 - **Notes ingest oldest-first.** Bitemporal supersession only orders correctly if facts arrive in event order. The ingest sorts by the slug's timestamp prefix, and backfilled notes land at their *original* capture time.
 - **The graph is a projection.** You can wipe Neo4j and re-ingest the whole corpus from git at any time (better model, better prompts). Nothing in the graph is source-of-truth.
 - **Send alerts to a person.** A red job alone reaches nobody. Set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`, and `memory-alerts` and `memory-healthcheck` send firing alerts to Telegram. A state record in Neo4j stops repeats: a new alert set sends at once, an unchanged set sends a reminder every `NOTIFY_REPEAT_HOURS` (default 12), and a cleared set sends one "resolved" message. Each alert names an owner: `lead` (an agent can fix it) or `operator` (for example a credential or quota problem). Both jobs print one `ALERTS_JSON` line that an agent review can turn into tickets. Without Telegram, healthcheck failures file a note into the inbox. The jobs still run with no retries, so a red job also stays visible. Prefer pending-note lag over wall-clock inactivity: a quiet memory with zero pending notes is healthy.
-- **`graph_answer` never hallucinates by design** — the distiller answers only from the retrieval packet, provenance is deterministically grounded, and unsupported answers return `not_found` + `escalate`. The daily healthcheck probes this property with a nonsense question and fails loudly if it ever gets an answer.
+- **`graph_answer` uses deterministic provenance and bounded claim checks.** These checks can refuse unsupported answers. They do not guarantee correct entailment, freshness, or external state. The daily healthcheck uses one nonsense question to detect an unsupported-answer failure.
 - **No automatic secret scanning.** Agents never capture secrets; the private repo and gated network are the perimeter.
 
 ## License
