@@ -54,8 +54,26 @@ _MONTHS = {name.casefold(): index for index, name in enumerate(
 
 def network_vantage_required(question: str) -> bool:
     """Select origin questions and capd client-delivery questions only."""
-    # A literal name cannot supply the question intent.
-    text = re.sub(_LITERAL, '', question)
+    # A method name cannot supply intent. A service or concept can retain
+    # ordinary code formatting when the surrounding question supplies intent.
+    outside_literals = re.sub(_LITERAL, ' ', question)
+    concept_intent = re.search(
+        r'\b(?:obtain|supply|provides?|deliver\w*|approved|independent|external|outside|origins?)\b',
+        outside_literals, re.I,
+    )
+
+    def intent_literal(match):
+        value = match[0][1:-1].strip()
+        if value.casefold() == 'capd':
+            return value
+        if concept_intent and re.fullmatch(
+            r'(?:network|external|independent) vantages?|caller[- ]origins?|'
+            r'outside[- ](?:the[- ])?Devbox|safe client|network diagnostic(?: method)?', value, re.I,
+        ):
+            return value
+        return ' '
+
+    text = re.sub(_LITERAL, intent_literal, question)
     return bool(re.search(
         r"\b(?:(?:network|external|independent)\s+vantages?|caller[- ]origins?|independent\s+(?:remote|external)\s+origin)\b"
         r"|\boutside[- ](?:the[- ])?devbox\b", text, re.I,
@@ -71,10 +89,23 @@ def _day(value: str) -> date | None:
         return None
 
 
+def _cutoff_text(question: str) -> str:
+    def literal(match):
+        value = match[0][1:-1]
+        if (value.casefold() in {'after', 'since'} or re.fullmatch(_DATE + r'(?:T[^\s]+)?', value)
+                or re.fullmatch(r'[A-Za-z]+ \d{1,2},? 20\d{2}', value)):
+            return value
+        return ' '
+    return re.sub(r'\*', '', re.sub(_LITERAL, literal, question))
+
+
 def _cutoff(question: str) -> date | None:
-    text = re.sub(r'[`*]', '', question)
-    iso = re.search(r'\b(?:after|since)\s+(' + _DATE + r')(?![\w-])', text, re.I)
+    text = _cutoff_text(question)
+    iso = re.search(r'\b(?:after|since)\s+(' + _DATE + r')(?![\w:+-])', text, re.I)
     if iso:
+        # Day-only delivery statements cannot establish intra-day order.
+        if re.match(r'\s+(?:at\s+)?\d{1,2}:\d{2}', text[iso.end():], re.I):
+            return None
         return _day(iso[1])
     named = re.search(r'\b(?:after|since)\s+([A-Za-z]+)\s+(\d{1,2}),?\s+(20\d{2})\b', text, re.I)
     if named and named[1].casefold() in _MONTHS:
@@ -107,8 +138,12 @@ def _properties(text: str) -> str:
 
 
 def _mentions(text: str, literal: str) -> bool:
+    if literal in re.findall(_LITERAL, text):
+        return True
     value = literal[1:-1]
-    return bool(re.search(r'(?<![\w./:-])' + re.escape(value) + r'(?![\w/:-])', text))
+    outside_literals = re.sub(_LITERAL, ' ', text)
+    return bool(re.search(r'(?<![\w./:-])' + re.escape(value)
+                          + r'(?![\w/:-]|\.[A-Za-z0-9])', outside_literals))
 
 
 def _target_matches(question: str, target: str) -> bool:
@@ -137,17 +172,50 @@ def _delivery_candidate(clause: str, cutoff: date | None) -> bool:
     return not dates or not cutoff or any(when and when > cutoff for when in dates)
 
 
+def _literal_reference(literal: str) -> str:
+    return (r'(?:' + re.escape(literal) + r'|(?<![\w./:`-])'
+            + re.escape(literal[1:-1]) + r'(?![\w/:`-]|\.[A-Za-z0-9]))')
+
+
+def _local_origin_veto(clause: str, match) -> bool:
+    # Keep literal role values. A destination named Devbox is not an origin.
+    method = _literal_reference(match['method'])
+    target = _literal_reference(match['target'])
+    local = r'(?i:(?:the\s+)?(?:`Devbox`|Devbox))(?![\w/:-])'
+    relations = (
+        method + r'(?i:\s+(?:has\s+)?(?:caller\s+)?origin\s+(?:(?:is|was)\s+)?)'
+        + local + r'(?i:\s+for\s+)' + target,
+        method + r'(?i:\s+(?:executed|executes|ran|runs?)\s+for\s+)'
+        + target + r'(?i:\s+(?:on|from|at)\s+)' + local,
+        method + r'(?i:\s+(?:executed|executes|ran|runs?)\s+(?:on|from|at)\s+)'
+        + local + r'(?i:\s+for\s+)' + target,
+        method + r'(?i:\s+observed\s+HTTP\s+[1-5][0-9]{2}\s+for\s+)'
+        + target + r'(?i:\s+from\s+)' + local,
+        r'(?i:\b(?:all|every|both|only)\s+(?:observations?|checks?|requests?|executions?)\s+for\s+)'
+        + target + r'(?i:\s+(?:originate[sd]?|execute[sd]?|run|ran|are|were)\s+(?:on|from|at)\s+)'
+        + local,
+    )
+    return any(re.search(relation, clause) for relation in relations)
+
+
 def _contrary(values: list[str], match, kind: str) -> bool:
     for text in values:
         method_context = _mentions(text, match['method'])
         target_context = _mentions(text, match['target'])
+        previous_method = None
         for clause in _clauses(text):
             props = _properties(clause)
-            # A following limit can refer to an earlier method in this source.
-            # Source context can veto, but cannot supply positive fields.
-            relevant = method_context or (
-                target_context and re.search(r'\b(?:all|every|only|both)\b', props, re.I)
+            subject = re.search(
+                rf'^(?:(?:On|As of) {_DATE},\s*)?(?P<method>{_LITERAL})\s+', clause,
             )
+            if subject:
+                previous_method = subject['method']
+            # A named local check must not transfer its limits to another check.
+            inherited = previous_method == match['method'] or (previous_method is None and method_context)
+            universal = target_context and re.search(r'^\s*(?:all|every|only|both)\b', props, re.I)
+            relevant = inherited or universal
+            if kind == 'origin' and _local_origin_veto(clause, match):
+                return True
             if not relevant:
                 continue
             if _NEGATIVE.search(props):
@@ -173,6 +241,9 @@ def network_vantage_problem(
     raw = [clause for text in values for clause in _clauses(text)]
     bodies = [clause for text in values for clause in _clauses(_source_body_text(text))]
     cutoff = _cutoff(question)
+    if re.search(r'(?<![\w./:-])(?:after|since)(?![\w/:-])', _cutoff_text(question), re.I) and cutoff is None:
+        # An unsupported cutoff must not become an unrestricted history query.
+        return NETWORK_VANTAGE_REASON
     checked = False
     for claim in _clauses(answer):
         if re.fullmatch(r'(?:Recorded background|Background context|This is historical background)', claim):

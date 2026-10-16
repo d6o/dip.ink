@@ -290,13 +290,95 @@ class NetworkVantageAnswerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(event['grounding_action'], 'network_vantage_mismatch')
         self.assertIsNone(result['answer'])
 
+    async def test_review_affirmative_local_origin_roles_use_private_raw_vetoes(self):
+        contrary_clauses = (
+            'On 2026-10-15, `remote-check` has caller origin `Devbox` for `21h.dev`.',
+            'On 2026-10-15, `remote-check` executed for `21h.dev` on the Devbox.',
+            'All observations for `21h.dev` originate from the Devbox.',
+        )
+        for contrary in contrary_clauses:
+            p = packet({SOURCE: ORIGIN, SOURCE + '-local': contrary})
+            self.assert_network_rejection(validate(ORIGIN, p, list(p['source_validation_texts'])))
+            body = ORIGIN + '\n' + contrary
+            result, _, event = await self.assemble({SOURCE: body}, ORIGIN)
+            self.assertEqual(event['grounding_action'], 'network_vantage_mismatch')
+            self.assertEqual(result['superseded_note'], NETWORK_VANTAGE_REASON)
+        for unrelated in (contrary_clauses[0].replace('remote-check', 'local-check'),
+                          contrary_clauses[1].replace('remote-check', 'local-check'),
+                          '`local-check` has caller origin `Devbox` for `21h.dev` and uses the same Devbox.'):
+            result, _, event = await self.assemble({SOURCE: ORIGIN + '\n' + unrelated}, ORIGIN)
+            self.assertEqual(event['grounding_action'], 'downgraded')
+            self.assertIsNotNone(result['answer'])
+            self.assertEqual(result['confidence'], 'medium')
+
+    async def test_review_local_origin_vetoes_survive_sixth_citations_and_long_bodies(self):
+        contrary = 'On 2026-10-15, `remote-check` has caller origin `Devbox` for `21h.dev`.'
+        sentinel = 'PRIVATE_ROLE_VALUE_SENTINEL'
+        bodies = {SOURCE + '-' + str(i): ORIGIN for i in range(6)}
+        for raw in ('summary: >\n\n  ' + sentinel + '\n  ' + contrary,
+                    '```text\n' + sentinel + '\n' + contrary + '\n```'):
+            bodies[list(bodies)[-1]] = raw
+            result, sent, event = await self.assemble(bodies, ORIGIN)
+            self.assertEqual(event['grounding_action'], 'network_vantage_mismatch')
+            self.assertEqual(result['superseded_note'], NETWORK_VANTAGE_REASON)
+            self.assertNotIn(sentinel, sent)
+        body = ORIGIN + '\n' + 'Background context. ' * 260 + '\n' + sentinel + '\n' + contrary
+        self.assertGreater(body.index(contrary), 4096)
+        result, sent, event = await self.assemble({SOURCE: body}, ORIGIN)
+        self.assertEqual(event['grounding_action'], 'network_vantage_mismatch')
+        self.assertEqual(result['superseded_note'], NETWORK_VANTAGE_REASON)
+        self.assertNotIn(sentinel, sent)
+        answer = ORIGIN + ' ' + 'Recorded background. ' * 110 + contrary
+        self.assertGreater(answer.index(contrary), 2000)
+        result, _, event = await self.assemble({SOURCE: ORIGIN}, answer)
+        self.assertEqual(event['grounding_action'], 'network_vantage_mismatch')
+        self.assertIsNone(result['answer'])
+
+    async def test_review_requested_timestamp_cutoffs_fail_closed_in_private_assembly(self):
+        old = DELIVERY.replace('2026-10-16', '2026-10-13')
+        for cutoff in ('2026-10-14', '2026-10-14T00:00:00Z',
+                       '2026-10-14T18:30:00+02:00', 'an unknown date'):
+            question = 'Did capd deliver a safe client for 21h.dev after ' + cutoff + '?'
+            self.assert_network_rejection(validate(old, packet({SOURCE: old}), question=question))
+            result, _, event = await self.assemble({SOURCE: old}, old, question)
+            self.assertEqual(event['grounding_action'], 'network_vantage_mismatch')
+            self.assertEqual(result['superseded_note'], NETWORK_VANTAGE_REASON)
+        history = 'Did capd deliver a safe client for 21h.dev?'
+        result, _, event = await self.assemble({SOURCE: old}, old, history)
+        self.assertEqual(event['grounding_action'], 'downgraded')
+        self.assertEqual(result['answer'], old)
+        same_day = DELIVERY.replace('2026-10-16', '2026-10-14')
+        question = 'Did capd deliver a safe client for 21h.dev after 2026-10-14T00:00:00Z?'
+        result, _, event = await self.assemble({SOURCE: same_day}, same_day, question)
+        self.assertEqual(event['grounding_action'], 'network_vantage_mismatch')
+        self.assertIsNone(result['answer'])
+        answer = ORIGIN + ' ' + 'Recorded background. ' * 110 + old
+        result, _, event = await self.assemble({SOURCE: ORIGIN + ' ' + old}, answer, question)
+        self.assertEqual(event['grounding_action'], 'network_vantage_mismatch')
+        self.assertIsNone(result['answer'])
+
+    async def test_review_formatted_service_and_concept_collect_private_bodies(self):
+        for question in ('Did `capd` deliver a safe client after October 14, 2026?',
+                         'Can --resolve supply an independent `network vantage`?',
+                         'Can `--resolve` supply an independent `network vantage`?'):
+            self.assert_network_rejection(validate('This is approved.', question=question))
+            result, _, event = await self.assemble({SOURCE: BASE}, 'This is approved.', question)
+            self.assertEqual(event['grounding_action'], 'network_vantage_mismatch')
+            self.assertEqual(result['superseded_note'], NETWORK_VANTAGE_REASON)
+            result, _, event = await self.assemble({SOURCE: BASE}, 'This is approved.', question,
+                                                  validation={SOURCE: ''})
+            self.assertEqual(event['grounding_action'], 'network_vantage_mismatch')
+            self.assertEqual(result['superseded_note'], NETWORK_VANTAGE_BODY_REASON)
+
     async def test_unrelated_question_never_loads_private_source_context(self):
         g = SimpleNamespace(search_=mock.AsyncMock(return_value=SimpleNamespace(nodes=[], edges=[], episodes=[])))
         with mock.patch.object(graph, '_get_graph', new=mock.AsyncMock(return_value=g)), \
              mock.patch.object(graph, '_resolve_episode_slugs', new=mock.AsyncMock(return_value={})), \
              mock.patch.object(graph, '_wiki_semantic_hits', new=mock.AsyncMock(return_value=[])), \
              mock.patch.object(graph, '_source_validation_context', new=mock.AsyncMock()) as full:
-            for question in ('What is the current Devbox version?', 'What is the capd version?', 'How does DNS work?'):
+            for question in ('What is the current Devbox version?', 'What is the capd version?', 'How does DNS work?',
+                             'Where is `network vantage`?', 'What is the `capd` version?',
+                             'What is the `outside-Devbox` version?'):
                 p = await graph._assemble_packet(question, 3, answer_evidence=True)
                 self.assertNotIn('source_validation_texts', p)
         full.assert_not_awaited()

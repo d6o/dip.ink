@@ -165,6 +165,61 @@ class NetworkVantageTests(unittest.TestCase):
             self.assertFalse(network_vantage_required(question))
             self.assertIsNone(self.problem('Unchanged answer.', [], question))
 
+    def test_affirmative_local_origin_roles_veto_only_the_matching_method_or_universal(self):
+        local = (
+            'On 2026-10-15, `remote-check` has caller origin `Devbox` for `21h.dev`.',
+            'On 2026-10-15, `remote-check` executed for `21h.dev` on the Devbox.',
+            'All observations for `21h.dev` originate from the Devbox.',
+        )
+        for contrary in local:
+            self.reject(ORIGIN, [ORIGIN, contrary])
+            self.reject(ORIGIN, [ORIGIN + '\n' + contrary])
+        for unrelated in (local[0].replace('remote-check', 'local-check'),
+                          local[1].replace('remote-check', 'local-check'),
+                          '`local-check` has caller origin `Devbox` for `21h.dev` and uses the same Devbox.'):
+            self.assertIsNone(self.problem(ORIGIN, [ORIGIN, unrelated]))
+            self.assertIsNone(self.problem(ORIGIN, [ORIGIN + '\n' + unrelated]))
+        # A destination value is not an execution-origin role.
+        destination = '`remote-check` has destination `Devbox` for `21h.dev`.'
+        self.assertIsNone(self.problem(ORIGIN, [ORIGIN, destination]))
+        for name in ('Remote-check', 'remote-check.', 'remote-check*'):
+            self.assertIsNone(self.problem(ORIGIN, [ORIGIN, local[0].replace('remote-check', name)]))
+        for target in ('other.dev', '21h.dev.'):
+            self.assertIsNone(self.problem(ORIGIN, [ORIGIN, local[0].replace('21h.dev', target)]))
+
+    def test_local_origin_roles_remain_raw_vetoes_after_private_limits(self):
+        contrary = 'On 2026-10-15, `remote-check` has caller origin `Devbox` for `21h.dev`.'
+        for raw in ('summary: >\n\n  ' + contrary, '```text\n' + contrary + '\n```'):
+            self.reject(ORIGIN, [ORIGIN] * 5 + [raw])
+        body = ORIGIN + '\n' + 'Background context. ' * 250 + '\n' + contrary
+        self.assertGreater(body.index(contrary), 4096)
+        self.reject(ORIGIN, [body])
+        self.reject(ORIGIN + ' ' + 'Recorded background. ' * 110 + contrary, [ORIGIN])
+
+    def test_unparsed_requested_cutoff_does_not_become_a_history_question(self):
+        old = DELIVERY.replace('2026-10-16', '2026-10-13')
+        for cutoff in ('2026-10-14T00:00:00Z', '2026-10-14T18:30:00+02:00',
+                       '2026-10-14 18:30:00', 'an unknown date', 'October 32, 2026'):
+            question = 'Did capd deliver a safe client for 21h.dev after ' + cutoff + '?'
+            self.assertEqual(self.problem(old, [old], question), NETWORK_VANTAGE_REASON)
+            self.assertEqual(self.problem(DELIVERY, [DELIVERY], question), NETWORK_VANTAGE_REASON)
+        history = 'Did capd deliver a safe client for 21h.dev?'
+        self.assertIsNone(self.problem(old, [old], history))
+        self.assertIsNone(self.problem(old, [old], history + ' The method is `/opt/after-client`.'))
+        same_day = DELIVERY.replace('2026-10-16', '2026-10-14')
+        question = 'Did capd deliver a safe client for 21h.dev after 2026-10-14T00:00:00Z?'
+        self.assertEqual(self.problem(same_day, [same_day], question), NETWORK_VANTAGE_REASON)
+
+    def test_formatted_service_and_concept_do_not_disable_selection(self):
+        for question in ('Did `capd` deliver a safe client after October 14, 2026?',
+                         'Can --resolve supply an independent `network vantage`?',
+                         'Can `--resolve` supply an independent `network vantage`?'):
+            self.assertTrue(network_vantage_required(question))
+            self.assertEqual(self.problem('This is approved.', [BASE], question), NETWORK_VANTAGE_REASON)
+        for question in ('Where is `network vantage`?', 'What is the `capd` version?',
+                         'Where is `capd-deliver-client`?', 'What is the `outside-Devbox` version?'):
+            self.assertFalse(network_vantage_required(question))
+
     def test_iso_cutoff_and_scope_must_match(self):
         question = 'Did capd deliver a safe client after 2026-10-14?'
         self.assertIsNone(self.problem(DELIVERY_LACK, [BASE], question))
