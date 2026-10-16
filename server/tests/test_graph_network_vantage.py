@@ -337,7 +337,7 @@ class NetworkVantageAnswerTests(unittest.IsolatedAsyncioTestCase):
     async def test_review_requested_timestamp_cutoffs_fail_closed_in_private_assembly(self):
         old = DELIVERY.replace('2026-10-16', '2026-10-13')
         for cutoff in ('2026-10-14', '2026-10-14T00:00:00Z',
-                       '2026-10-14T18:30:00+02:00', 'an unknown date'):
+                       '2026-10-14T18:30:00+02:00', 'an unknown date', '14 October 2026', 'October 14th, 2026'):
             question = 'Did capd deliver a safe client for 21h.dev after ' + cutoff + '?'
             self.assert_network_rejection(validate(old, packet({SOURCE: old}), question=question))
             result, _, event = await self.assemble({SOURCE: old}, old, question)
@@ -356,6 +356,38 @@ class NetworkVantageAnswerTests(unittest.IsolatedAsyncioTestCase):
         result, _, event = await self.assemble({SOURCE: ORIGIN + ' ' + old}, answer, question)
         self.assertEqual(event['grounding_action'], 'network_vantage_mismatch')
         self.assertIsNone(result['answer'])
+
+    async def test_review_quoted_status_and_inside_origin_use_raw_private_vetoes(self):
+        for contrary in ('`remote-check` is `not approved`.',
+                         '`remote-check` has status `not approved`.',
+                         '`remote-check` has caller origin `not independent` for `21h.dev`.',
+                         '`remote-check` executes inside the Devbox.'):
+            p = packet({SOURCE: ORIGIN + '\n' + contrary})
+            self.assert_network_rejection(validate(ORIGIN, p))
+            result, _, event = await self.assemble({SOURCE: ORIGIN + '\n' + contrary}, ORIGIN)
+            self.assertEqual(event['grounding_action'], 'network_vantage_mismatch')
+            self.assertEqual(result['superseded_note'], NETWORK_VANTAGE_REASON)
+            bodies = {SOURCE + '-' + str(i): ORIGIN for i in range(6)}
+            bodies[list(bodies)[-1]] = '```text\nPRIVATE_PROPERTY_SENTINEL\n' + contrary + '\n```'
+            result, sent, event = await self.assemble(bodies, ORIGIN)
+            self.assertEqual(event['grounding_action'], 'network_vantage_mismatch')
+            self.assertEqual(result['superseded_note'], NETWORK_VANTAGE_REASON)
+            self.assertNotIn('PRIVATE_PROPERTY_SENTINEL', sent)
+            body = ORIGIN + '\n' + 'Background context. ' * 250 + '\n' + contrary
+            self.assertGreater(body.index(contrary), 4096)
+            result, _, event = await self.assemble({SOURCE: body}, ORIGIN)
+            self.assertEqual(event['grounding_action'], 'network_vantage_mismatch')
+        for unrelated in ('`other-check` executes inside the Devbox.',
+                          '`other-check` is `not approved`.',
+                          'summary: `other-check` is `not approved`.'):
+            result, _, event = await self.assemble({SOURCE: ORIGIN + '\n' + unrelated}, ORIGIN)
+            self.assertEqual(event['grounding_action'], 'downgraded')
+            self.assertIsNotNone(result['answer'])
+        exact = ORIGIN.replace('remote-check', 'not approved').replace('curl --resolve edge-x', 'not independent')
+        result, _, event = await self.assemble({SOURCE: exact}, exact)
+        self.assertEqual(event['grounding_action'], 'downgraded')
+        self.assertIn('`not approved`', result['answer'])
+        self.assertIn('`not independent`', result['answer'])
 
     async def test_review_formatted_service_and_concept_collect_private_bodies(self):
         for question in ('Did `capd` deliver a safe client after October 14, 2026?',

@@ -196,10 +196,25 @@ class NetworkVantageTests(unittest.TestCase):
         self.reject(ORIGIN, [body])
         self.reject(ORIGIN + ' ' + 'Recorded background. ' * 110 + contrary, [ORIGIN])
 
+    def test_quoted_property_values_and_inside_execution_remain_vetoes(self):
+        for contrary in ('`remote-check` is `not approved`.',
+                         '`remote-check` has status `not approved`.',
+                         '`remote-check` has caller origin `not independent` for `21h.dev`.',
+                         '`remote-check` executes inside the Devbox.'):
+            self.reject(ORIGIN, [ORIGIN + '\n' + contrary])
+            self.reject(ORIGIN, [ORIGIN] * 5 + ['summary: >\n  ' + contrary])
+        # A method or route identity must not become a status value.
+        exact = ORIGIN.replace('remote-check', 'not approved').replace('curl --resolve edge-x', 'not independent')
+        self.assertIsNone(self.problem(exact, [exact]))
+        self.assertIsNone(self.problem(ORIGIN, [ORIGIN, '`other-check` executes inside the Devbox.']))
+        self.assertIsNone(self.problem(ORIGIN, [ORIGIN + '\n`other-check` is `not approved`.']))
+        quoted_approval = ORIGIN.replace('is an approved network check', 'is an `approved` network check')
+        self.reject(ORIGIN, [quoted_approval])
+
     def test_unparsed_requested_cutoff_does_not_become_a_history_question(self):
         old = DELIVERY.replace('2026-10-16', '2026-10-13')
         for cutoff in ('2026-10-14T00:00:00Z', '2026-10-14T18:30:00+02:00',
-                       '2026-10-14 18:30:00', 'an unknown date', 'October 32, 2026'):
+                       '2026-10-14 18:30:00', 'an unknown date', 'October 32, 2026', '14 October 2026', 'October 14th, 2026'):
             question = 'Did capd deliver a safe client for 21h.dev after ' + cutoff + '?'
             self.assertEqual(self.problem(old, [old], question), NETWORK_VANTAGE_REASON)
             self.assertEqual(self.problem(DELIVERY, [DELIVERY], question), NETWORK_VANTAGE_REASON)

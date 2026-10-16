@@ -47,6 +47,17 @@ _NEGATIVE = re.compile(
     r"\b(?:no|not|never|cannot|blocked|unsupported|unavailable|draft|planned|proposed|source[- ]only)\b"
     r"|\bsame\s+devbox\b|\bcaller[- ]local\b", re.I,
 )
+_PROPERTY_SLOT = re.compile(
+    rf'(?:{_LITERAL}|(?i:it|this check|the method))'
+    r'(?i:\s+(?:(?:is|was|remains)|has\s+(?:caller\s+origin|origin|status)|'
+    r'(?:caller\s+origin|origin|status)\s*(?:is|was|:|=)))\s+'
+    rf'(?P<value>{_LITERAL})'
+)
+_PROPERTY_VALUE = re.compile(
+    r'(?:not\s+(?:approved|independent|safe|supported|available|outside (?:the )?Devbox)|'
+    r'(?:same )?Devbox|caller-local|unknown|blocked|unsupported|unavailable|draft|planned|proposed|source-only)',
+    re.I,
+)
 _MONTHS = {name.casefold(): index for index, name in enumerate(
     ('January', 'February', 'March', 'April', 'May', 'June', 'July', 'August',
      'September', 'October', 'November', 'December'), 1)}
@@ -133,8 +144,13 @@ def _clauses(text: str) -> list[str]:
 
 
 def _properties(text: str) -> str:
-    # Property negation must not change a literal identity or route.
-    return _normalize_negation(re.sub(_LITERAL, ' ', text))
+    # Only bounded status roles expose literal property values for vetoes.
+    # Method and route identities remain opaque. This cannot supply support.
+    properties = {match.span('value') for match in _PROPERTY_SLOT.finditer(text)
+                  if _PROPERTY_VALUE.fullmatch(match['value'][1:-1])}
+    return _normalize_negation(re.sub(
+        _LITERAL, lambda match: match[0][1:-1] if match.span() in properties else ' ', text,
+    ))
 
 
 def _mentions(text: str, literal: str) -> bool:
@@ -186,9 +202,11 @@ def _local_origin_veto(clause: str, match) -> bool:
         method + r'(?i:\s+(?:has\s+)?(?:caller\s+)?origin\s+(?:(?:is|was)\s+)?)'
         + local + r'(?i:\s+for\s+)' + target,
         method + r'(?i:\s+(?:executed|executes|ran|runs?)\s+for\s+)'
-        + target + r'(?i:\s+(?:on|from|at)\s+)' + local,
-        method + r'(?i:\s+(?:executed|executes|ran|runs?)\s+(?:on|from|at)\s+)'
+        + target + r'(?i:\s+(?:inside|on|from|at)\s+)' + local,
+        method + r'(?i:\s+(?:executed|executes|ran|runs?)\s+(?:inside|on|from|at)\s+)'
         + local + r'(?i:\s+for\s+)' + target,
+        method + r'(?i:\s+(?:executed|executes|ran|runs?)\s+(?:inside|on|from|at)\s+)'
+        + local + r'(?i:(?!\s+for\b))',
         method + r'(?i:\s+observed\s+HTTP\s+[1-5][0-9]{2}\s+for\s+)'
         + target + r'(?i:\s+from\s+)' + local,
         r'(?i:\b(?:all|every|both|only)\s+(?:observations?|checks?|requests?|executions?)\s+for\s+)'
@@ -206,7 +224,8 @@ def _contrary(values: list[str], match, kind: str) -> bool:
         for clause in _clauses(text):
             props = _properties(clause)
             subject = re.search(
-                rf'^(?:(?:On|As of) {_DATE},\s*)?(?P<method>{_LITERAL})\s+', clause,
+                rf'^(?:[\w-]+:\s*|[-+*]\s+)?(?:(?:On|As of) {_DATE},\s*)?'
+                rf'(?P<method>{_LITERAL})\s+', clause,
             )
             if subject:
                 previous_method = subject['method']
@@ -218,7 +237,8 @@ def _contrary(values: list[str], match, kind: str) -> bool:
                 return True
             if not relevant:
                 continue
-            if _NEGATIVE.search(props):
+            if (_NEGATIVE.search(props)
+                    or re.search(r'\b(?:status\s+(?:is\s+)?|(?:is|was|remains)\s+)unknown\b', props, re.I)):
                 return True
             if kind == 'origin' and re.search(r'\borigin\s+(?:is\s+)?unknown\b', props, re.I):
                 return True
