@@ -517,6 +517,109 @@ class NetworkVantageAnswerTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(event['grounding_action'], 'downgraded')
             self.assertEqual(result['answer'], historical)
 
+    async def test_residual_property_limits_use_role_aware_unknown_refusal(self):
+        for contrary in ('`remote-check` was `not executed` for `21h.dev`.',
+                         '`remote-check` has status `not observed` for `21h.dev`.',
+                         '`remote-check` has status `unrecognized-status` for `21h.dev`.',
+                         '`remote-check` has status `not approved for 21h.dev`.'):
+            for question in (QUESTION, NONCURRENT):
+                body = ORIGIN + '\n' + contrary
+                self.assert_network_rejection(validate(ORIGIN, packet({SOURCE: body}), question=question))
+                result, _, event = await self.assemble({SOURCE: body}, ORIGIN, question)
+                self.assertEqual(event['grounding_action'], 'network_vantage_mismatch')
+                self.assertEqual(result['superseded_note'], NETWORK_VANTAGE_REASON)
+            for raw in ('summary: >\n  PRIVATE_STATUS_SENTINEL\n  ' + contrary,
+                        '```text\nPRIVATE_STATUS_SENTINEL\n' + contrary + '\n```'):
+                bodies = {SOURCE + '-' + str(i): ORIGIN for i in range(6)}
+                bodies[list(bodies)[-1]] = raw
+                result, sent, event = await self.assemble(bodies, ORIGIN)
+                self.assertEqual(event['grounding_action'], 'network_vantage_mismatch')
+                self.assertNotIn('PRIVATE_STATUS_SENTINEL', sent)
+            body = ORIGIN + '\n' + 'Background context. ' * 250 + '\n' + contrary
+            self.assertGreater(body.index(contrary), 4096)
+            result, _, event = await self.assemble({SOURCE: body}, ORIGIN)
+            self.assertEqual(event['grounding_action'], 'network_vantage_mismatch')
+            answer = ORIGIN + ' ' + 'Recorded background. ' * 110 + contrary
+            self.assertGreater(answer.index(contrary), 2000)
+            result, _, event = await self.assemble({SOURCE: ORIGIN}, answer)
+            self.assertEqual(event['grounding_action'], 'network_vantage_mismatch')
+        for limit in ('`other-check` was `not executed` for `21h.dev`.',
+                      '`remote-check` was `not executed` for `other.dev`.',
+                      '`remote-check` route is `not executed`.'):
+            result, _, event = await self.assemble({SOURCE: ORIGIN + '\n' + limit}, ORIGIN)
+            self.assertEqual(event['grounding_action'], 'downgraded')
+            self.assertIsNotNone(result['answer'])
+
+    async def test_residual_multiple_cutoff_constraints_fail_closed_in_both_modes(self):
+        delivered = DELIVERY.replace('2026-10-16', '2026-10-15')
+        for tail in ('after October 14, 2026 and after October 17, 2026',
+                     'after October 14, 2026 and since an unknown date',
+                     '`after October 14, 2026 and after October 17, 2026`'):
+            for prefix in ('Did capd deliver a safe client for 21h.dev ',
+                           'What is the current network vantage outside the Devbox for 21h.dev and did capd deliver a safe client '):
+                question = prefix + tail + '?'
+                self.assert_network_rejection(validate(delivered, packet({SOURCE: delivered}), question=question))
+                result, _, event = await self.assemble({SOURCE: delivered}, delivered, question)
+                self.assertEqual(event['grounding_action'], 'network_vantage_mismatch')
+                self.assertEqual(result['superseded_note'], NETWORK_VANTAGE_REASON)
+        question = 'Did capd deliver a safe client for 21h.dev after October 14, 2026?'
+        result, _, event = await self.assemble({SOURCE: delivered}, delivered, question)
+        self.assertEqual(event['grounding_action'], 'downgraded')
+        self.assertEqual(result['answer'], delivered)
+
+    async def test_residual_unbound_quoted_network_values_cannot_remove_a_target(self):
+        other = ORIGIN.replace('21h.dev', 'other.dev')
+        for target in ('fixture.xyz', 'https://fixture.xyz/a?x=1', '192.0.2.21', '[2001:db8::21]'):
+            for qualifier in ('approved', 'current approved'):
+                question = 'Which ' + qualifier + ' network vantage outside the Devbox can reach `' + target + '`?'
+                self.assert_network_rejection(validate(other, packet({SOURCE: other}), question=question))
+                result, _, event = await self.assemble({SOURCE: other}, other, question)
+                self.assertEqual(event['grounding_action'], 'network_vantage_mismatch')
+                self.assertEqual(result['superseded_note'], NETWORK_VANTAGE_REASON)
+        statement = ORIGIN.replace('remote-check', 'method.fixture.xyz')
+        for question in ('Which approved network vantage outside the Devbox uses `method.fixture.xyz` for 21h.dev?',
+                         'Can `method.fixture.xyz` supply an independent network vantage for 21h.dev?'):
+            result, _, event = await self.assemble({SOURCE: statement}, statement, question)
+            self.assertEqual(event['grounding_action'], 'downgraded')
+            self.assertIsNotNone(result['answer'])
+
+    async def test_residual_following_origin_declarations_keep_only_the_same_scope(self):
+        for contrary in ('The caller origin is `Devbox`.', 'The origin is `Devbox`.'):
+            for question in (QUESTION, NONCURRENT):
+                result, _, event = await self.assemble({SOURCE: ORIGIN + '\n' + contrary}, ORIGIN, question)
+                self.assertEqual(event['grounding_action'], 'network_vantage_mismatch')
+                self.assertEqual(result['superseded_note'], NETWORK_VANTAGE_REASON)
+            bodies = {SOURCE + '-' + str(i): ORIGIN for i in range(6)}
+            bodies[list(bodies)[-1]] = 'summary: >\n  ' + ORIGIN + '\n  ' + contrary
+            result, _, event = await self.assemble(bodies, ORIGIN)
+            self.assertEqual(event['grounding_action'], 'network_vantage_mismatch')
+            body = ORIGIN + '\n' + 'Background context. ' * 260 + '\nPRIVATE_ANAPHORA_SENTINEL\n' + contrary
+            self.assertGreater(body.index(contrary), 4096)
+            result, sent, event = await self.assemble({SOURCE: body}, ORIGIN)
+            self.assertEqual(event['grounding_action'], 'network_vantage_mismatch')
+            self.assertEqual(result['superseded_note'], NETWORK_VANTAGE_REASON)
+            self.assertNotIn('PRIVATE_ANAPHORA_SENTINEL', sent)
+            for other in ('`other-check` executed for `other.dev` on the Devbox. ' + contrary,
+                          contrary.rstrip('.') + ' for `other.dev`.'):
+                result, _, event = await self.assemble({SOURCE: ORIGIN + '\n' + other}, ORIGIN)
+                self.assertEqual(event['grounding_action'], 'downgraded')
+                self.assertIsNotNone(result['answer'])
+
+    async def test_residual_quoted_concept_use_questions_always_collect_private_text(self):
+        for question in ('Which `network vantage` can I use for 21h.dev?',
+                         'Which current `network vantage` can I use for 21h.dev?',
+                         'What is the current `network vantage` I can use for 21h.dev?'):
+            self.assert_network_rejection(validate('This is approved.', question=question))
+            result, _, event = await self.assemble({SOURCE: BASE}, 'This is approved.', question)
+            self.assertEqual(event['grounding_action'], 'network_vantage_mismatch')
+            self.assertEqual(result['superseded_note'], NETWORK_VANTAGE_REASON)
+            result, _, event = await self.assemble({SOURCE: BASE}, 'This is approved.', question, validation={SOURCE: ''})
+            self.assertEqual(event['grounding_action'], 'network_vantage_mismatch')
+            self.assertEqual(result['superseded_note'], NETWORK_VANTAGE_BODY_REASON)
+            result, _, event = await self.assemble({SOURCE: ORIGIN}, ORIGIN, question)
+            self.assertEqual(event['grounding_action'], 'downgraded')
+            self.assertIsNotNone(result['answer'])
+
     async def test_unrelated_question_never_loads_private_source_context(self):
         g = SimpleNamespace(search_=mock.AsyncMock(return_value=SimpleNamespace(nodes=[], edges=[], episodes=[])))
         with mock.patch.object(graph, '_get_graph', new=mock.AsyncMock(return_value=g)), \

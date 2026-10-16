@@ -30,7 +30,10 @@ _TARGET_ROLE = re.compile(
 _OTHER_ROLE = re.compile(
     rf'\b(?:Host/SNI|DNS|control|proxy|destination)(?:\s+(?:is|:|=))?\s+(?:for\s+)?'
     rf'(?:{_LITERAL}|[^\s,;]+)|\bmethod\s*(?:is|:|=)\s*(?:{_LITERAL}|[^\s,;]+)'
-    rf'|\b(?:via|using)\s+{_LITERAL}|\bfor this check only\b', re.I,
+    rf'|\b(?:via|using|uses?|deliver(?:ed)?|named|called)\s+{_LITERAL}'
+    rf'|\b(?:(?:independent\s+(?:remote|external)|caller)\s+)?origin(?:\s+(?:is|:|=))?\s+{_LITERAL}'
+    rf'|\bobserved execution at\s+{_LITERAL}|\bstatus(?:\s+(?:is|:|=))?\s+{_LITERAL}'
+    rf'|\bmethod\s+{_LITERAL}|\bfor this check only\b', re.I,
 )
 _DOMAIN_VALUE = re.compile(r'[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)+\.?')
 _ORIGIN = re.compile(
@@ -59,15 +62,11 @@ _NEGATIVE = re.compile(
 )
 _PROPERTY_SLOT = re.compile(
     rf'(?:{_LITERAL}|(?i:it|this check|the method))'
-    r'(?i:\s+(?:(?:is|was|remains)|has\s+(?:caller\s+origin|origin|status)|'
-    r'(?:caller\s+origin|origin|status)\s*(?:is|was|:|=)))\s+'
+    r'(?P<role>(?i:\s+(?:(?:is|was|remains)|has\s+(?:caller\s+origin|origin|status)|'
+    r'(?:caller\s+origin|origin|status)\s*(?:is|was|:|=))))\s+'
     rf'(?P<value>{_LITERAL})'
 )
-_PROPERTY_VALUE = re.compile(
-    r'(?:not\s+(?:approved|independent|safe|supported|available|outside (?:the )?Devbox)|'
-    r'(?:same )?Devbox|caller-local|unknown|blocked|unsupported|unavailable|draft|planned|proposed|source-only)',
-    re.I,
-)
+_ALLOWED_PROPERTY_VALUE = re.compile(r'(?:approved|executed|observed|supported|available|safe)', re.I)
 _MONTHS = {name.casefold(): index for index, name in enumerate(
     ('January', 'February', 'March', 'April', 'May', 'June', 'July', 'August',
      'September', 'October', 'November', 'December'), 1)}
@@ -78,10 +77,20 @@ def network_vantage_required(question: str) -> bool:
     # A method name cannot supply intent. A service or concept can retain
     # ordinary code formatting when the surrounding question supplies intent.
     outside_literals = re.sub(_LITERAL, ' ', question)
-    concept_intent = re.search(
+    metadata_prefix = re.search(
+        r'^\s*(?:what|which)\s+(?:(?:is|are)\s+)?(?:the\s+)?(?:current\s+)?'
+        r'(?:version|location|meaning|definition|path|filename)\b', outside_literals, re.I,
+    )
+    metadata_tail = re.search(r'\b(?:version|location|meaning|definition|path|filename|mean)\s*\??\s*$',
+                              outside_literals, re.I)
+    operative_question = re.match(r'\s*(?:what|which|how|where|can|could|does|did|is|are)\b', outside_literals, re.I)
+    operative_request = operative_question and (
+        re.search(r'\b(?:can|could|should|may|will)\b', outside_literals, re.I) or _requested_target(question)[0]
+    )
+    concept_intent = not metadata_prefix and (operative_request or (not metadata_tail and re.search(
         r'\b(?:obtain|supply|provides?|deliver\w*|approved|independent|external|outside|origins?)\b',
         outside_literals, re.I,
-    )
+    )))
 
     def intent_literal(match):
         value = match[0][1:-1].strip()
@@ -114,7 +123,7 @@ def _cutoff_text(question: str) -> str:
     def literal(match):
         value = match[0][1:-1]
         # An explicit method or route argument is data, not a cutoff cue.
-        if re.search(r'\b(?:deliver(?:ed)?|using|via|named|called)\s+(?:the\s+)?$',
+        if re.search(r'\b(?:deliver(?:ed)?|using|via|named|called|for|checks?|targets?|Host/SNI|DNS|proxy|destination)\s+(?:the\s+)?$',
                      question[:match.start()], re.I):
             return ' '
         if (value.casefold() in {'after', 'since'} or re.match(r'^(?:after|since)\s+', value, re.I)
@@ -161,8 +170,14 @@ def _clauses(text: str) -> list[str]:
 def _properties(text: str) -> str:
     # Only bounded status roles expose literal property values for vetoes.
     # Method and route identities remain opaque. This cannot supply support.
-    properties = {match.span('value') for match in _PROPERTY_SLOT.finditer(text)
-                  if _PROPERTY_VALUE.fullmatch(match['value'][1:-1])}
+    properties = set()
+    for match in _PROPERTY_SLOT.finditer(text):
+        value = match['value'][1:-1]
+        origin = 'origin' in match['role'].casefold()
+        # An origin identity stays opaque unless it is an explicit qualifier.
+        if (not origin or re.match(r'^(?:not|no|never|cannot)\s+', _normalize_negation(value), re.I)
+                or re.fullmatch(r'(?:same )?Devbox|caller-local|unknown', value, re.I)):
+            properties.add(match.span('value'))
     return _normalize_negation(re.sub(
         _LITERAL, lambda match: match[0][1:-1] if match.span() in properties else ' ', text,
     ))
@@ -177,6 +192,21 @@ def _mentions(text: str, literal: str) -> bool:
                           + r'(?![\w/:-]|\.[A-Za-z0-9])', outside_literals))
 
 
+def _network_identity(value: str) -> bool:
+    return bool(re.fullmatch(r'(?i:https?://)[^/\s]+(?:/[^\s]*)?', value)
+                or _DOMAIN_VALUE.fullmatch(value)
+                or re.fullmatch(r'\[[A-Fa-f0-9:]+\]|[A-Fa-f0-9]*:[A-Fa-f0-9:]+', value))
+
+
+def _identity_subject(text: str, start: int, end: int) -> bool:
+    before, after = text[:start], text[end:]
+    source = re.search(r'^(?:[\w-]+:\s*|[-+*]\s+)?(?:(?:On|As of) ' + _DATE + r',\s*)?$', before)
+    if source and re.match(r'\s+(?:is|was|remains|has|origin|status|executed|executes|ran|runs?|observed)\b', after, re.I):
+        return True
+    return bool(re.search(r'\b(?:can|could|does|did|will)\s+$', before, re.I)
+                and re.match(r'\s+(?:supply|provide|obtain|check|use|execute)\b', after, re.I))
+
+
 def _target_atom(text: str, offset: int) -> tuple[str | None, int]:
     token = _TARGET_TOKEN.match(text, offset)
     if not token:
@@ -184,9 +214,7 @@ def _target_atom(text: str, offset: int) -> tuple[str | None, int]:
     value = token[0]
     if value.startswith('`') and value.endswith('`'):
         return value[1:-1], token.end()
-    if (re.fullmatch(r'(?i:https?://)[^/\s]+(?:/[^\s]*)?', value)
-            or _DOMAIN_VALUE.fullmatch(value)
-            or re.fullmatch(r'\[[A-Fa-f0-9:]+\]|[A-Fa-f0-9]*:[A-Fa-f0-9:]+', value)):
+    if _network_identity(value):
         return value, token.end()
     return None, token.end()
 
@@ -203,8 +231,10 @@ def _requested_target(text: str) -> tuple[bool, str | None]:
         return any(start <= offset < end for start, end in literals)
 
     masked = list(text)
+    other_roles = []
     for role in _OTHER_ROLE.finditer(text):
         if not inside_literal(role.start()):
+            other_roles.append(role.span())
             masked[role.start():role.end()] = ' ' * (role.end() - role.start())
     readable = ''.join(masked)
     targets = []
@@ -220,6 +250,12 @@ def _requested_target(text: str) -> tuple[bool, str | None]:
         # A coordinated target list is outside this single-target grammar.
         connector = re.match(r'\s*(?:,\s*)?(?:and|or)\s+', readable[end:], re.I)
         if connector and _target_atom(readable, end + connector.end())[0] is not None:
+            return True, None
+    # A quoted DNS name, URL, or IP also needs a declared role.
+    for start, end in literals:
+        covered = any(left <= start < right for left, right in consumed + other_roles)
+        if (not covered and _network_identity(text[start + 1:end - 1])
+                and not _identity_subject(text, start, end)):
             return True, None
     # An unbound domain or URL is ambiguous, not an absent requested target.
     remaining = list(readable)
@@ -301,6 +337,8 @@ def _local_origin_veto(clause: str, match, bound_target: bool) -> bool:
         + local + r'(?i:(?!\s+for\b))',
         method + r'(?i:\s+(?:executed|executes|ran|runs?)\s+(?:inside|on|from|at)\s+)'
         + local + r'(?i:(?!\s+for\b))',
+        r'(?i:\b(?:the\s+)?(?:caller\s+)?origin\s+(?:is|was)\s+)'
+        + local + r'(?:(?i:\s+for\s+)' + target + r')?(?i:(?!\s+for\b))',
     )
     return any(re.search(relation, clause) for relation in short)
 
@@ -327,14 +365,19 @@ def _contrary(values: list[str], match, kind: str) -> bool:
             # A named local check must not transfer its limits to another check.
             inherited = previous_method == match['method'] or (previous_method is None and method_context)
             universal = target_context and re.search(r'^\s*(?:all|every|only|both)\b', props, re.I)
-            relevant = inherited or universal
+            relevant = (inherited and previous_target in (None, match['target'][1:-1])) or universal
             if kind == 'origin' and _local_origin_veto(
                 clause, match, previous_method == match['method'] and previous_target == match['target'][1:-1],
             ):
                 return True
             if not relevant:
                 continue
-            if (_NEGATIVE.search(props)
+            property_unknown = any(
+                'origin' not in slot['role'].casefold()
+                and not _ALLOWED_PROPERTY_VALUE.fullmatch(slot['value'][1:-1])
+                for slot in _PROPERTY_SLOT.finditer(clause)
+            )
+            if (property_unknown or _NEGATIVE.search(props)
                     or re.search(r'\b(?:status\s+(?:is\s+)?|(?:is|was|remains)\s+)unknown\b', props, re.I)):
                 return True
             if kind == 'origin' and re.search(r'\borigin\s+(?:is\s+)?unknown\b', props, re.I):
@@ -361,8 +404,9 @@ def network_vantage_problem(
     explicit_target, requested_target = _requested_target(question)
     if explicit_target and requested_target is None:
         return NETWORK_VANTAGE_REASON
-    if re.search(r'(?<![\w./:-])(?:after|since)(?![\w/:-])', _cutoff_text(question), re.I) and cutoff is None:
-        # An unsupported cutoff must not become an unrestricted history query.
+    cutoff_cues = re.findall(r'(?<![\w./:-])(?:after|since)(?![\w/:-])', _cutoff_text(question), re.I)
+    if len(cutoff_cues) > 1 or (cutoff_cues and cutoff is None):
+        # Unsupported or multiple constraints cannot become a history query.
         return NETWORK_VANTAGE_REASON
     checked = False
     for claim in _clauses(answer):

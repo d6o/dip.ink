@@ -310,6 +310,60 @@ class NetworkVantageTests(unittest.TestCase):
             question = 'Did capd deliver `' + method + '` as a safe client for 21h.dev?'
             self.assertIsNone(self.problem(historical, [historical], question))
 
+    def test_unknown_or_negative_property_values_cannot_hide_raw_limits(self):
+        for contrary in ('`remote-check` was `not executed` for `21h.dev`.',
+                         '`remote-check` has status `not observed` for `21h.dev`.',
+                         '`remote-check` has status `unrecognized-status` for `21h.dev`.',
+                         '`remote-check` has status `not approved for 21h.dev`.'):
+            self.reject(ORIGIN, [ORIGIN + '\n' + contrary])
+        for statement in ('`other-check` was `not executed` for `21h.dev`.',
+                          '`remote-check` was `not executed` for `other.dev`.',
+                          '`remote-check` route is `not executed`.'):
+            self.assertIsNone(self.problem(ORIGIN, [ORIGIN + '\n' + statement]))
+        exact = ORIGIN.replace('remote-check', 'not executed').replace('curl --resolve edge-x', 'not observed')
+        self.assertIsNone(self.problem(exact, [exact]))
+
+    def test_multiple_cutoff_constraints_do_not_reduce_to_the_first(self):
+        delivered = DELIVERY.replace('2026-10-16', '2026-10-15')
+        for tail in ('after October 14, 2026 and after October 17, 2026',
+                     'after October 14, 2026 and since an unknown date',
+                     '`after October 14, 2026 and after October 17, 2026`'):
+            question = 'Did capd deliver a safe client for 21h.dev ' + tail + '?'
+            self.assertEqual(self.problem(delivered, [delivered], question), NETWORK_VANTAGE_REASON)
+        question = 'Did capd deliver a safe client for 21h.dev after October 14, 2026?'
+        self.assertIsNone(self.problem(delivered, [delivered], question))
+
+    def test_unbound_quoted_network_identities_are_ambiguous_not_absent(self):
+        other = ORIGIN.replace('21h.dev', 'other.dev')
+        for target in ('fixture.xyz', 'https://fixture.xyz/a?x=1', '192.0.2.21', '[2001:db8::21]'):
+            for phrase in ('can reach', 'can inspect the site', 'would select'):
+                question = 'Which approved network vantage outside the Devbox ' + phrase + ' `' + target + '`?'
+                self.assertEqual(self.problem(other, [other], question), NETWORK_VANTAGE_REASON)
+        statement = ORIGIN.replace('remote-check', 'method.fixture.xyz')
+        for question in ('Which approved network vantage outside the Devbox uses `method.fixture.xyz` for 21h.dev?',
+                         'Can `method.fixture.xyz` supply an independent network vantage for 21h.dev?'):
+            self.assertIsNone(self.problem(statement, [statement], question))
+
+    def test_following_local_origin_declarations_use_only_bound_source_scope(self):
+        for contrary in ('The caller origin is `Devbox`.', 'The origin is `Devbox`.'):
+            self.reject(ORIGIN, [ORIGIN + '\n' + contrary])
+            self.assertIsNone(self.problem(ORIGIN, [ORIGIN, contrary]))
+            other = '`other-check` executes for `other.dev` on the Devbox. '
+            self.assertIsNone(self.problem(ORIGIN, [ORIGIN + '\n' + other + contrary]))
+            self.assertIsNone(self.problem(ORIGIN, [ORIGIN + '\n' + contrary.rstrip('.') + ' for `other.dev`.']))
+
+    def test_quoted_concept_use_questions_select_without_a_verb_whitelist(self):
+        for question in ('Which `network vantage` can I use for 21h.dev?',
+                         'Which current `network vantage` can I use for 21h.dev?',
+                         'What is the current `network vantage` I can use for 21h.dev?',
+                         'Which `network vantage` can I use for version?',
+                         'Which `network vantage` should I choose for an unknown target?'):
+            self.assertTrue(network_vantage_required(question))
+            self.assertEqual(self.problem('This is approved.', [BASE], question), NETWORK_VANTAGE_REASON)
+        for question in ('Where is `network vantage`?', 'What is the `network vantage` version?',
+                         'What does `network vantage` mean?'):
+            self.assertFalse(network_vantage_required(question))
+
     def test_iso_cutoff_and_scope_must_match(self):
         question = 'Did capd deliver a safe client after 2026-10-14?'
         self.assertIsNone(self.problem(DELIVERY_LACK, [BASE], question))
