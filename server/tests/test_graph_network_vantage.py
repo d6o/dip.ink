@@ -1,0 +1,306 @@
+"""Synthetic graph assembly and validator checks. No live request occurs."""
+import json
+import os
+import unittest
+from contextlib import nullcontext
+from types import SimpleNamespace
+from unittest import mock
+
+os.environ.setdefault('NEO4J_PASSWORD', 'test-password')
+os.environ.setdefault('OPENAI_API_KEY', 'test-only')
+os.environ.setdefault('WIKI_MCP_BACKGROUND_REINDEX', '0')
+import graph
+import wiki
+from network_vantage_qualifiers import NETWORK_VANTAGE_BODY_REASON, NETWORK_VANTAGE_REASON
+from test_network_vantage_qualifiers import (
+    BASE, DELIVERY, DELIVERY_LACK, OBSERVATION, ORIGIN, ORIGIN_LACK, QUESTION, WRONG,
+)
+
+SOURCE = '2026-10-16-120000-network-record'
+NONCURRENT = ('Which approved network vantage is outside the Devbox for 21h.dev, '
+              'and did capd deliver a safe client after October 14, 2026?')
+
+
+def packet(bodies=None):
+    bodies = {SOURCE: BASE} if bodies is None else bodies
+    return {'facts': [], 'entities': [], 'source_excerpt': None,
+            'semantic_notes': [{'name': name, 'content': text} for name, text in bodies.items()],
+            'source_validation_texts': dict(bodies)}
+
+
+def validate(answer, p=None, sources=None, question=QUESTION):
+    return graph._validate_distilled_answer(
+        {'answer': answer, 'confidence': 'high', 'sources': sources or [SOURCE], 'escalate': False},
+        packet() if p is None else p, question,
+    )
+
+
+class NetworkVantageAnswerTests(unittest.IsolatedAsyncioTestCase):
+    def assert_network_rejection(self, result, reason=NETWORK_VANTAGE_REASON):
+        value, grounded, action = result
+        self.assertEqual(action, 'network_vantage_mismatch')
+        self.assertTrue(grounded)
+        self.assertIsNone(value['answer'])
+        self.assertEqual(value['confidence'], 'not_found')
+        self.assertEqual(value['sources'], [])
+        self.assertTrue(value['escalate'])
+        self.assertEqual(value['superseded_note'], reason)
+
+    def test_exact_question_and_wrong_compound_answer_use_new_guard(self):
+        self.assert_network_rejection(validate(WRONG))
+        self.assert_network_rejection(validate(WRONG, question=NONCURRENT))
+
+    def test_destination_dns_and_direct_options_do_not_establish_origin(self):
+        for route in ('curl --resolve edge-x', 'curl --connect-to edge-x', 'curl --doh-url dns-x',
+                      'curl --noproxy *', 'curl --proxy remote-intent'):
+            text = 'Use `' + route + '` with original Host/SNI as an outside-Devbox vantage.'
+            p = packet({SOURCE: BASE + ' The Devbox network request used `' + route + '`.'})
+            self.assert_network_rejection(validate(text, p))
+
+    def test_scoped_negative_is_not_global_absence_or_native_authority(self):
+        safe = ORIGIN_LACK + ' ' + DELIVERY_LACK
+        result, grounded, action = validate(safe)
+        self.assertEqual(result['answer'], safe)
+        self.assertEqual(result['confidence'], 'medium')
+        self.assertTrue(result['escalate'])
+        self.assertTrue(grounded)
+        self.assertEqual(action, 'downgraded')
+        for tail in (' No method exists elsewhere.', ' Use it.', ' Native delivery is available.'):
+            self.assert_network_rejection(validate(safe + tail))
+
+    def test_explicit_independent_origin_control_keeps_route_and_date(self):
+        result, _, action = validate(ORIGIN, packet({SOURCE: ORIGIN}))
+        self.assertEqual(result['answer'], ORIGIN)
+        self.assertEqual(result['confidence'], 'medium')
+        self.assertTrue(result['escalate'])
+        self.assertEqual(action, 'downgraded')
+        self.assert_network_rejection(validate(ORIGIN.replace(', for this check only', ''), packet({SOURCE: ORIGIN})))
+        self.assert_network_rejection(validate(ORIGIN.replace('`remote-host`', '`edge-x`'), packet({SOURCE: ORIGIN})))
+
+    def test_observation_mode_does_not_transfer_from_another_check(self):
+        doh = OBSERVATION.replace('`local-check`', '`doh-check`').replace('`ambient`', '`DoH`').replace('mode unknown', 'mode direct')
+        p = packet({SOURCE: OBSERVATION + ' ' + doh})
+        self.assertEqual(validate(OBSERVATION, p)[0]['answer'], OBSERVATION)
+        self.assert_network_rejection(validate(OBSERVATION.replace('mode unknown', 'mode direct'), p))
+        self.assert_network_rejection(validate('The original curl request used a proxy.', p))
+
+    def test_delivery_needs_its_own_body_not_titles_or_network_sources(self):
+        self.assert_network_rejection(validate(DELIVERY))
+        p = packet({SOURCE: BASE})
+        p['semantic_notes'][0]['description'] = DELIVERY
+        self.assert_network_rejection(validate(DELIVERY, p))
+        p['source_validation_texts'][SOURCE] = '# ' + DELIVERY + '\n\n' + BASE
+        self.assert_network_rejection(validate(DELIVERY, p))
+        p = packet({SOURCE: 'capd#9 remains blocked in an old source-only draft.'})
+        self.assert_network_rejection(validate('capd did not deliver a safe client after 2026-10-14.', p))
+        self.assertEqual(validate(DELIVERY_LACK, p)[0]['answer'], DELIVERY_LACK)
+
+    def test_compound_parts_and_capability_adjectives_need_matching_sources(self):
+        p = packet({SOURCE: ORIGIN, SOURCE + '-other': DELIVERY.replace('an approved safe native', 'a safe')})
+        self.assert_network_rejection(validate(ORIGIN + ' ' + DELIVERY, p, list(p['source_validation_texts'])))
+        p = packet({SOURCE: ORIGIN, SOURCE + '-delivery': DELIVERY})
+        self.assert_network_rejection(validate(ORIGIN.replace('`remote-check`', '`safe-client`'),
+                                               p, list(p['source_validation_texts'])))
+        p = packet({SOURCE: ORIGIN, SOURCE + '-delivery': DELIVERY})
+        result = validate(ORIGIN + ' ' + DELIVERY, p, list(p['source_validation_texts']))[0]
+        self.assertEqual(result['answer'], ORIGIN + ' ' + DELIVERY)
+        self.assertEqual(result['confidence'], 'medium')
+        self.assertTrue(result['escalate'])
+
+    def test_every_raw_citation_before_five_source_display_cap(self):
+        bodies = {SOURCE + '-' + str(i): ORIGIN for i in range(7)}
+        p = packet(bodies)
+        result = validate(ORIGIN, p, list(bodies))[0]
+        self.assertEqual(len(result['sources']), 5)
+        self.assertEqual(result['confidence'], 'medium')
+        for index in (5, 6):
+            p = packet(bodies)
+            p['source_validation_texts'][list(bodies)[index]] += '\n`remote-check` is not approved for remote execution.'
+            self.assert_network_rejection(validate(ORIGIN, p, list(bodies)))
+        self.assert_network_rejection(validate(ORIGIN, packet(bodies), list(bodies) + ['unknown-source']),
+                                      NETWORK_VANTAGE_BODY_REASON)
+
+    def test_sixth_raw_metadata_and_code_scalar_keep_the_veto(self):
+        bodies = {SOURCE + '-' + str(i): ORIGIN for i in range(6)}
+        contrary = '`remote-check` is not approved for an independent remote origin.'
+        for raw in ('summary: >\n\n  ' + contrary, '```text\n' + contrary + '\n```',
+                    '<pre>\n' + contrary + '\n</pre>', '# ' + contrary):
+            p = packet(bodies)
+            p['source_validation_texts'][list(bodies)[-1]] = raw
+            self.assert_network_rejection(validate(ORIGIN, p, list(bodies)))
+        bodies = {SOURCE + '-' + str(i): BASE for i in range(6)}
+        for raw in ('summary: >\n\n  ' + DELIVERY, '```text\n' + DELIVERY + '\n```'):
+            p = packet(bodies)
+            p['source_validation_texts'][list(bodies)[-1]] = raw
+            self.assert_network_rejection(validate(DELIVERY_LACK, p, list(bodies)))
+
+    def test_missing_private_bodies_fail_closed_on_every_citation(self):
+        p = packet({SOURCE: ORIGIN})
+        del p['source_validation_texts']
+        self.assert_network_rejection(validate(ORIGIN, p), NETWORK_VANTAGE_BODY_REASON)
+        bodies = {SOURCE + '-' + str(i): ORIGIN for i in range(6)}
+        for missing in ('', ' ', None):
+            p = packet(bodies)
+            if missing is None:
+                del p['source_validation_texts'][list(bodies)[-1]]
+            else:
+                p['source_validation_texts'][list(bodies)[-1]] = missing
+            self.assert_network_rejection(validate(ORIGIN, p, list(bodies)), NETWORK_VANTAGE_BODY_REASON)
+
+    def test_full_draft_and_full_private_source_have_no_display_caps(self):
+        long_answer = ORIGIN + ' ' + 'Recorded background. ' * 110 + WRONG
+        self.assertGreater(long_answer.index(WRONG), 2000)
+        self.assert_network_rejection(validate(long_answer, packet({SOURCE: ORIGIN})))
+        contrary = '`remote-check` is not approved for remote execution.'
+        body = ORIGIN + '\n\n' + 'Background context. ' * 250 + '\n' + contrary
+        self.assertGreater(body.index(contrary), 4096)
+        p = packet({SOURCE: ORIGIN})
+        p['source_validation_texts'][SOURCE] = body
+        self.assert_network_rejection(validate(ORIGIN, p))
+
+    def test_mapping_keys_never_supply_support_or_veto(self):
+        p = packet({SOURCE: ORIGIN})
+        p['source_validation_texts'] = {ORIGIN: BASE}
+        self.assert_network_rejection(validate(ORIGIN, p), NETWORK_VANTAGE_BODY_REASON)
+        self.assertEqual(validate(ORIGIN, packet({SOURCE: ORIGIN}))[0]['answer'], ORIGIN)
+
+    async def assemble(self, bodies, answer, question=QUESTION, sources=None, validation=None):
+        g = SimpleNamespace(search_=mock.AsyncMock(return_value=SimpleNamespace(nodes=[], edges=[], episodes=[])))
+        hits = [{'name': name, 'score': .7 - index * .005} for index, name in enumerate(bodies)]
+        validation_context = (mock.patch.object(graph, '_source_validation_context',
+                                               new=mock.AsyncMock(return_value=validation))
+                              if validation is not None else nullcontext())
+        with validation_context, mock.patch.object(graph, '_get_graph', new=mock.AsyncMock(return_value=g)), \
+             mock.patch.object(graph, '_resolve_episode_slugs', new=mock.AsyncMock(return_value={})), \
+             mock.patch.object(graph, 'FUSION', True), \
+             mock.patch.object(wiki.idx, 'search', return_value=hits), \
+             mock.patch.object(wiki.idx, 'get', side_effect=lambda name: {'body': bodies.get(name, '')}), \
+             mock.patch.object(graph, '_distill', new=mock.AsyncMock(return_value={
+                 'answer': answer, 'confidence': 'high', 'sources': sources or list(bodies), 'escalate': False,
+             })) as distill, mock.patch.object(graph, '_record_query') as record:
+            result = await graph._graph_answer_impl(question)
+            assembled = await graph._assemble_packet(question, 8, current_state=graph._current_state_question(question), answer_evidence=True)
+            search = await graph._assemble_packet(question, 3)
+        self.assertIn('source_validation_texts', assembled)
+        self.assertEqual(assembled['source_validation_texts'], bodies if validation is None else validation)
+        self.assertNotIn('source_validation_texts', search)
+        self.assertNotIn('PRIVATE_', json.dumps(search))
+        self.assertNotIn('source_validation_texts', distill.call_args.args[1])
+        return result, distill.call_args.args[1], record.call_args.args[0]
+
+    async def test_real_mock_assembly_exact_question_reaches_new_guard(self):
+        result, sent, event = await self.assemble({SOURCE: BASE}, WRONG)
+        self.assertEqual(event['grounding_action'], 'network_vantage_mismatch')
+        self.assertEqual(event['temporal_mode'], 'current')
+        self.assertIsNone(result['answer'])
+        self.assertEqual(result['superseded_note'], NETWORK_VANTAGE_REASON)
+        self.assertNotIn('source_validation_texts', sent)
+
+    async def test_real_mock_client_options_and_ambient_mode_keep_the_new_route(self):
+        for route in ('curl --resolve edge-x', 'curl --connect-to edge-x', 'curl --doh-url dns-x',
+                      'curl --noproxy *'):
+            answer = 'Use `' + route + '` as an outside-Devbox network vantage.'
+            result, _, event = await self.assemble({SOURCE: BASE}, answer)
+            self.assertEqual(event['grounding_action'], 'network_vantage_mismatch')
+            self.assertEqual(result['superseded_note'], NETWORK_VANTAGE_REASON)
+        doh = OBSERVATION.replace('`local-check`', '`doh-check`').replace('`ambient`', '`DoH`').replace('mode unknown', 'mode direct')
+        body = OBSERVATION + ' ' + doh
+        wrong = OBSERVATION.replace('mode unknown', 'mode direct')
+        result, _, event = await self.assemble({SOURCE: body}, wrong)
+        self.assertEqual(event['grounding_action'], 'network_vantage_mismatch')
+        self.assertIsNone(result['answer'])
+        result, _, _ = await self.assemble({SOURCE: body}, OBSERVATION)
+        self.assertIn('proxy mode unknown', result['answer'])
+        self.assertEqual(result['confidence'], 'medium')
+
+    async def test_real_mock_compound_parts_cannot_share_capability_or_origin(self):
+        basic = DELIVERY.replace('an approved safe native', 'a safe')
+        for answer in (ORIGIN + ' ' + DELIVERY, ORIGIN.replace('`remote-check`', '`safe-client`')):
+            result, _, event = await self.assemble({SOURCE: ORIGIN + ' ' + basic}, answer)
+            self.assertEqual(event['grounding_action'], 'network_vantage_mismatch')
+            self.assertIsNone(result['answer'])
+        result, _, event = await self.assemble({SOURCE: ORIGIN + ' ' + DELIVERY}, ORIGIN + ' ' + DELIVERY)
+        self.assertEqual(event['grounding_action'], 'downgraded')
+        self.assertEqual(result['confidence'], 'medium')
+        self.assertTrue(result['escalate'])
+
+    async def test_real_mock_late_draft_tail_is_checked_before_display(self):
+        answer = ORIGIN + ' ' + 'Recorded background. ' * 110 + WRONG
+        self.assertGreater(answer.index(WRONG), 2000)
+        result, _, event = await self.assemble({SOURCE: ORIGIN}, answer)
+        self.assertEqual(event['grounding_action'], 'network_vantage_mismatch')
+        self.assertIsNone(result['answer'])
+
+    async def test_real_mock_missing_and_mapping_key_only_bodies_fail_closed(self):
+        for private in ({SOURCE: ''}, {SOURCE: ' '}, {}, {ORIGIN: BASE}):
+            result, _, event = await self.assemble({SOURCE: ORIGIN}, ORIGIN, validation=private)
+            self.assertEqual(event['grounding_action'], 'network_vantage_mismatch')
+            self.assertEqual(result['superseded_note'], NETWORK_VANTAGE_BODY_REASON)
+            self.assertIsNone(result['answer'])
+
+    async def test_real_mock_assembly_independent_origin_is_qualified(self):
+        result, _, event = await self.assemble({SOURCE: ORIGIN}, ORIGIN)
+        self.assertEqual(event['grounding_action'], 'downgraded')
+        self.assertEqual(result['confidence'], 'medium')
+        self.assertTrue(result['escalate'])
+        self.assertIn('for this check only', result['answer'])
+        self.assertIn('Live state is not verified', result['answer'])
+        self.assertIn('`curl --resolve edge-x`', result['answer'])
+
+    async def test_private_sentinels_and_late_limits_do_not_enter_model_or_search_packets(self):
+        sentinel = 'PRIVATE_NETWORK_BODY_SENTINEL'
+        contrary = '`remote-check` is not approved for an independent remote origin.'
+        body = '## Durable claims\n' + ORIGIN + '\n\n## Context\n' + 'Background context. ' * 260 + '\n' + sentinel + '\n' + contrary
+        self.assertGreater(body.index(contrary), 4096)
+        for question in (QUESTION, NONCURRENT):
+            result, sent, event = await self.assemble({SOURCE: body}, ORIGIN, question)
+            self.assertEqual(event['grounding_action'], 'network_vantage_mismatch')
+            self.assertIsNone(result['answer'])
+            self.assertNotIn(sentinel, sent)
+            self.assertNotIn(sentinel, json.dumps(result))
+            self.assertNotIn(contrary, sent)
+
+    async def test_real_mock_sixth_raw_citation_vetoes_without_private_text_leak(self):
+        sentinel = 'PRIVATE_SIXTH_NETWORK_SENTINEL'
+        bodies = {SOURCE + '-' + str(i): ORIGIN for i in range(6)}
+        contrary = '`remote-check` is not approved for remote execution.'
+        for raw in ('summary: >\n\n  ' + sentinel + '\n  ' + contrary,
+                    '```text\n' + sentinel + '\n' + contrary + '\n```'):
+            bodies[list(bodies)[-1]] = raw
+            result, sent, event = await self.assemble(bodies, ORIGIN)
+            self.assertEqual(event['grounding_action'], 'network_vantage_mismatch')
+            self.assertIsNone(result['answer'])
+            self.assertNotIn(sentinel, sent)
+            self.assertNotIn(sentinel, json.dumps(result))
+
+    async def test_real_mock_following_source_limits_keep_the_veto(self):
+        body = ORIGIN + '\nBoth comparisons use the same Devbox, not independent external vantages.'
+        result, _, event = await self.assemble({SOURCE: body}, ORIGIN)
+        self.assertEqual(event['grounding_action'], 'network_vantage_mismatch')
+        self.assertEqual(result['superseded_note'], NETWORK_VANTAGE_REASON)
+        self.assertIsNone(result['answer'])
+
+    async def test_real_mock_safe_negative_and_wrong_delivery_source(self):
+        safe = ORIGIN_LACK + ' ' + DELIVERY_LACK
+        result, _, event = await self.assemble({SOURCE: BASE}, safe)
+        self.assertEqual(event['grounding_action'], 'downgraded')
+        self.assertEqual(result['confidence'], 'medium')
+        self.assertTrue(result['escalate'])
+        result, _, event = await self.assemble({SOURCE: BASE}, DELIVERY)
+        self.assertEqual(event['grounding_action'], 'network_vantage_mismatch')
+        self.assertIsNone(result['answer'])
+
+    async def test_unrelated_question_never_loads_private_source_context(self):
+        g = SimpleNamespace(search_=mock.AsyncMock(return_value=SimpleNamespace(nodes=[], edges=[], episodes=[])))
+        with mock.patch.object(graph, '_get_graph', new=mock.AsyncMock(return_value=g)), \
+             mock.patch.object(graph, '_resolve_episode_slugs', new=mock.AsyncMock(return_value={})), \
+             mock.patch.object(graph, '_wiki_semantic_hits', new=mock.AsyncMock(return_value=[])), \
+             mock.patch.object(graph, '_source_validation_context', new=mock.AsyncMock()) as full:
+            for question in ('What is the current Devbox version?', 'What is the capd version?', 'How does DNS work?'):
+                p = await graph._assemble_packet(question, 3, answer_evidence=True)
+                self.assertNotIn('source_validation_texts', p)
+        full.assert_not_awaited()
+
+
+if __name__ == '__main__':
+    unittest.main()

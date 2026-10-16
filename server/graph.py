@@ -41,6 +41,7 @@ from answer_qualifiers import copy_state_supporting_sources, operational_support
 from credential_method_qualifiers import credential_method_problem, credential_services
 from temporal_negative_qualifiers import temporal_negative_problem, temporal_negative_required
 from resource_scope_qualifiers import resource_scope_problem, resource_scope_required
+from network_vantage_qualifiers import network_vantage_problem, network_vantage_required
 from ingest import DEFAULT_GROUP_ID, build_graphiti
 from vector_search import install_read_search
 from graphiti_core.search.search_config_recipes import COMBINED_HYBRID_SEARCH_RRF
@@ -82,6 +83,7 @@ GROUNDING_COUNTS = {
     "project_mismatch": 0,
     "subject_mismatch": 0,
     "qualifier_mismatch": 0,
+    "network_vantage_mismatch": 0,
     "error": 0,
 }
 
@@ -876,7 +878,8 @@ async def _assemble_packet(
     }
     if answer_evidence and credential_services(query):
         packet["credential_validation_texts"] = await _credential_validation_context(packet)
-    if answer_evidence and (temporal_negative_required(query) or resource_scope_required(query)):
+    if answer_evidence and (temporal_negative_required(query) or resource_scope_required(query)
+                            or network_vantage_required(query)):
         packet["source_validation_texts"] = (
             packet["credential_validation_texts"] if "credential_validation_texts" in packet
             else await _source_validation_context(packet)
@@ -1141,6 +1144,15 @@ def _validate_distilled_answer(
             "superseded_note": "Complete cited source text is unavailable for credential-method validation.",
         }, True, "qualifier_mismatch"
     validation_texts = _validation_cited_texts(packet, cited_sources)
+    network_validation = network_vantage_required(question)
+    network_error = network_vantage_problem(
+        question, answer, validation_texts if "source_validation_texts" in packet else {},
+    )
+    if network_error:
+        return {
+            "answer": None, "confidence": "not_found", "sources": [], "escalate": True,
+            "superseded_note": network_error,
+        }, True, "network_vantage_mismatch"
     scoped_validation = temporal_negative_required(question) or resource_scope_required(question)
     if scoped_validation and "source_validation_texts" in packet and any(
         not text.strip() for text in validation_texts.values()
@@ -1235,7 +1247,7 @@ def _validate_distilled_answer(
         _qualify_snapshot(result, observation_dates)
         action = "downgraded" if conf == "high" else action
 
-    if credential_services(question) or scoped_validation:
+    if credential_services(question) or scoped_validation or network_validation:
         # A memory record does not verify external state or caller authority.
         result["escalate"] = True
         result["confidence"] = "medium" if result["confidence"] == "high" else result["confidence"]
