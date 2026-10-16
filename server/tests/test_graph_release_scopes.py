@@ -317,11 +317,8 @@ class GraphReleaseScopeTests(unittest.IsolatedAsyncioTestCase):
                 self.assertNotIn('source_validation_texts', sent)
                 if answer == COMPLETE:
                     self.assertIsNone(release_problem(COMPLETE, question=question))
-                    if question == overlap:
-                        self.assert_resource_overlap(value, event)
-                    else:
-                        self.assert_qualified(value)
-                        self.assertEqual(event['grounding_action'], 'downgraded')
+                    self.assert_qualified(value)
+                    self.assertEqual(event['grounding_action'], 'downgraded')
                 else:
                     self.assertIsNone(value['answer'])
                     self.assertEqual(value['superseded_note'], RELEASE_SCOPE_REASON)
@@ -384,12 +381,14 @@ class GraphReleaseScopeTests(unittest.IsolatedAsyncioTestCase):
             right = question.replace('interface', 'interface using ' + METHOD)
             self.assertIsNone(release_problem(COMPLETE, question=right))
             value, _, event = await self.assemble({NEW: COMPLETE}, COMPLETE, question=right)
-            self.assert_resource_overlap(value, event)
+            self.assert_qualified(value)
+            self.assertEqual(event['grounding_action'], 'downgraded')
             branch = COMPLETE.replace(REV, '`dev-interface-next`')
             right = question.rstrip('?') + ' for revision `dev-interface-next`?'
             self.assertIsNone(release_problem(branch, {NEW: branch}, question=right))
             value, _, event = await self.assemble({NEW: branch}, branch, question=right)
-            self.assert_resource_overlap(value, event)
+            self.assert_qualified(value)
+            self.assertEqual(event['grounding_action'], 'downgraded')
             right = question.rstrip('?') + ' for revision dev-interface-next?'
             value, _, _ = await self.assemble({NEW: branch}, branch, question=right)
             self.assert_qualified(value)

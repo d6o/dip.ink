@@ -254,16 +254,68 @@ def _source_clauses(text: str) -> list[_Clause]:
     return result
 
 
+# These complete question shapes assign data roles, not resource operations.
+# Unknown forms keep the original selector. This is not a general query parser.
+_QUESTION_ID = r"(?:`[^`\n]+`|[A-Za-z0-9_/.:-]+)"
+_QUESTION_RELEASE_CONCEPT = (
+    r"(?:(?:dev\s+app-only|app-only\s+dev|dev|app-only)\s+)?"
+    r"release\s+(?:interface|scope)"
+)
+_QUESTION_RELEASE_CONCEPT = (
+    r"(?:`" + _QUESTION_RELEASE_CONCEPT + r"`|" + _QUESTION_RELEASE_CONCEPT + r")"
+)
+_QUESTION_RELEASE_HEAD = (
+    r"(?P<subject>" + _QUESTION_ID + r")\s+"
+    r"(?P<concept>" + _QUESTION_RELEASE_CONCEPT + r")"
+    r"(?:\s+(?:using|via|through)\s+(?P<method>" + _QUESTION_ID + r"))?"
+)
+_QUESTION_RELEASE_REVISION = r"(?:\s+for\s+revision\s+(?P<revision>" + _QUESTION_ID + r"))?"
+_QUESTION_RELEASE_RECORD = re.compile(
+    r"\s*Which\s+" + _QUESTION_RELEASE_HEAD
+    + r"(?:\s+and\s+(?P<scope>scope))?\s+did\s+the\s+source\s+record"
+    + _QUESTION_RELEASE_REVISION + r"[?.]?\s*", re.I,
+)
+_QUESTION_RELEASE_CURRENT = re.compile(
+    r"\s*What\s+is\s+the\s+current\s+" + _QUESTION_RELEASE_HEAD
+    + r"(?:\s+after\s+the\s+(?P<event>"
+    r"(?:January|February|March|April|May|June|July|August|September|October|November|December)"
+    r"\s+\d{1,2}\s+deployment(?:\s+of\s+" + _QUESTION_ID + r")?))?"
+    r"(?:,\s+and\s+which\s+(?P<scope>scope)\s+does\s+it\s+cover)?"
+    + _QUESTION_RELEASE_REVISION + r"[?.]?\s*", re.I,
+)
+
+
+def _question_operation_text(question: str) -> str:
+    """Remove only bound data roles in a complete release-record question.
+
+    A method identifies the recorded release interface here. It does not ask
+    for a metadata operation. A scope and a deployment event describe that
+    release. Any extra operation or unknown clause retains the original text.
+    This function cannot supply positive scope to an answer or source.
+    """
+    for pattern in (_QUESTION_RELEASE_RECORD, _QUESTION_RELEASE_CURRENT):
+        match = pattern.fullmatch(question)
+        if match:
+            chars = list(question)
+            for role, value in match.groupdict().items():
+                if value is not None:
+                    start, end = match.span(role)
+                    chars[start:end] = ' ' * (end - start)
+            return ''.join(chars)
+    return question
+
+
 def resource_scope_required(question: str) -> bool:
-    """Select named read/scope questions without using words inside a name."""
-    methods = list(dict.fromkeys(_methods(question) + _quoted_names(question)))
-    scope = _scope_text(question)
+    """Select resource operations, not bound release-record data roles."""
+    operation_text = _question_operation_text(question)
+    methods = list(dict.fromkeys(_methods(operation_text) + _quoted_names(operation_text)))
+    scope = _scope_text(operation_text)
     for method in methods:
         scope = scope.replace('`' + method + '`', ' ')
     named_read = methods and (_NAMED_READ.search(scope) or _GENERIC_SCOPE.search(scope))
     described_scope = (
         (_READ.search(scope) or _GENERIC_SCOPE.search(scope))
-        and _resources(question) and _INTENT.search(scope)
+        and _resources(operation_text) and _INTENT.search(scope)
     )
     return bool(named_read or described_scope)
 
