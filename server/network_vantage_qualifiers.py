@@ -9,6 +9,7 @@ network diagnostic, a general entailment parser, or an authorization check.
 import re
 from collections.abc import Mapping, Sequence
 from datetime import date
+from dataclasses import dataclass
 
 from temporal_negative_qualifiers import _normalize_negation, _source_body_text
 
@@ -61,12 +62,54 @@ _NEGATIVE = re.compile(
     r"|\bsame\s+devbox\b|\bcaller[- ]local\b", re.I,
 )
 _PROPERTY_SLOT = re.compile(
-    rf'(?:{_LITERAL}|(?i:it|this check|the method))'
-    r'(?P<role>(?i:\s+(?:(?:is|was|remains)|has\s+(?:caller\s+origin|origin|status)|'
-    r'(?:caller\s+origin|origin|status)\s*(?:is|was|:|=))))\s+'
-    rf'(?P<value>{_LITERAL})'
+    rf'(?P<subject>{_LITERAL}|(?i:the caller origin|the origin|it|this check|the method))'
+    r'(?P<role>(?i:\s+(?:has\s+)?(?:caller\s+origin|origin|status)))?'
+    r'\s*(?P<separator>(?i:is|was|remains))?\s*(?P<punctuation>[:=])?\s*'
+    rf'(?P<value>{_LITERAL}|[^\n;]+?(?=[.!?](?:\s|$)|$|\n))'
 )
 _ALLOWED_PROPERTY_VALUE = re.compile(r'(?:approved|executed|observed|supported|available|safe)', re.I)
+_CONCEPT_HEAD_TEXT = (
+    r'(?:(?:current|approved|independent)[- ]+){0,3}'
+    r'(?:(?:network|external|independent)[- ]+vantages?|caller[- ]origins?|'
+    r'independent[- ]+(?:remote|external)[- ]+origins?)'
+)
+_CONCEPT_HEAD = re.compile(r'^' + _CONCEPT_HEAD_TEXT + r'(?=$|\s|-(?:outside|from)\b)', re.I)
+_CONCEPT_LITERAL = re.compile(
+    _CONCEPT_HEAD_TEXT + r'(?:[- ]+(?:from[- ]+)?outside[- ]+(?:the[- ]+)?Devbox)?', re.I,
+)
+_CUTOFF_CUE = r'(?<![\w./:-])(?:after|since|before|until|later\s+than|earlier\s+than|prior\s+to|between)(?![\w/:-])'
+
+
+
+@dataclass(frozen=True)
+class _RawProperty:
+    subject: str
+    role: str
+    value: str
+    value_span: tuple[int, int]
+    quoted: bool
+
+
+def _raw_properties(text: str) -> list[_RawProperty]:
+    # Complete declared observations are not ambiguous property fields.
+    declared = [match.span() for grammar in (_ORIGIN, _DELIVERY, _OBSERVATION)
+                for match in grammar.finditer(text)]
+    fields = []
+    for match in _PROPERTY_SLOT.finditer(text):
+        if any(start <= match.start() < end for start, end in declared):
+            continue
+        subject = match['subject']
+        intrinsic_origin = subject.casefold() in {'the origin', 'the caller origin'}
+        if not (match['role'] or intrinsic_origin or match['separator'] or match['punctuation']):
+            continue
+        role = 'origin' if intrinsic_origin or 'origin' in (match['role'] or '').casefold() else 'status'
+        value = match['value'].strip()
+        quoted = value.startswith('`') and value.endswith('`')
+        value = value[1:-1] if quoted else re.sub(r'\s+for\s+' + _LITERAL + r'$', '', value)
+        fields.append(_RawProperty(subject, role, value, match.span('value'), quoted))
+    return fields
+
+
 _MONTHS = {name.casefold(): index for index, name in enumerate(
     ('January', 'February', 'March', 'April', 'May', 'June', 'July', 'August',
      'September', 'October', 'November', 'December'), 1)}
@@ -85,7 +128,7 @@ def network_vantage_required(question: str) -> bool:
                               outside_literals, re.I)
     operative_question = re.match(r'\s*(?:what|which|how|where|can|could|does|did|is|are)\b', outside_literals, re.I)
     operative_request = operative_question and (
-        re.search(r'\b(?:can|could|should|may|will)\b', outside_literals, re.I) or _requested_target(question)[0]
+        re.search(r'\b(?:can|could|should|may|will)\b', outside_literals, re.I) or _requested_target(outside_literals)[0]
     )
     concept_intent = not metadata_prefix and (operative_request or (not metadata_tail and re.search(
         r'\b(?:obtain|supply|provides?|deliver\w*|approved|independent|external|outside|origins?)\b',
@@ -96,16 +139,20 @@ def network_vantage_required(question: str) -> bool:
         value = match[0][1:-1].strip()
         if value.casefold() == 'capd':
             return value
-        if concept_intent and re.fullmatch(
-            r'(?:network|external|independent) vantages?|caller[- ]origins?|'
-            r'independent (?:remote|external) origins?|outside[- ](?:the[- ])?Devbox|safe client|network diagnostic(?: method)?', value, re.I,
+        identity = _identity_subject(question, match.start(), match.end()) or any(
+            role.start() <= match.start() < role.end() for role in _OTHER_ROLE.finditer(question)
+        )
+        if concept_intent and not identity and (
+            _CONCEPT_HEAD.match(value) or re.fullmatch(
+                r'outside[- ](?:the[- ])?Devbox|safe client|network diagnostic(?: method)?', value, re.I,
+            )
         ):
-            return value
+            return value.replace('-', ' ')
         return ' '
 
     text = re.sub(_LITERAL, intent_literal, question)
     return bool(re.search(
-        r"\b(?:(?:network|external|independent)\s+vantages?|caller[- ]origins?|independent\s+(?:remote|external)\s+origins?)\b"
+        r"(?<![\w./:-])(?:(?:network|external|independent)[- ]+vantages?|caller[- ]origins?|independent[- ]+(?:remote|external)[- ]+origins?)(?![\w/:-])"
         r"|\boutside[- ](?:the[- ])?devbox\b", text, re.I,
     ) or (re.search(r'\bcapd\b', text, re.I)
           and re.search(r'\b(?:deliver\w*|provided?)\b', text, re.I)
@@ -126,7 +173,8 @@ def _cutoff_text(question: str) -> str:
         if re.search(r'\b(?:deliver(?:ed)?|using|via|named|called|for|checks?|targets?|Host/SNI|DNS|proxy|destination)\s+(?:the\s+)?$',
                      question[:match.start()], re.I):
             return ' '
-        if (value.casefold() in {'after', 'since'} or re.match(r'^(?:after|since)\s+', value, re.I)
+        if (value.casefold() in {'after', 'since', 'before', 'until', 'later', 'than', 'earlier', 'prior', 'to', 'between'}
+                or re.match(r'^(?:after|since|before|until|later\s+than|earlier\s+than|prior\s+to|between)(?:\s+|$)', value, re.I)
                 or re.fullmatch(_DATE + r'(?:T[^\s]+)?', value)
                 or re.fullmatch(r'[A-Za-z]+ \d{1,2},? 20\d{2}', value)):
             return value
@@ -168,19 +216,8 @@ def _clauses(text: str) -> list[str]:
 
 
 def _properties(text: str) -> str:
-    # Only bounded status roles expose literal property values for vetoes.
-    # Method and route identities remain opaque. This cannot supply support.
-    properties = set()
-    for match in _PROPERTY_SLOT.finditer(text):
-        value = match['value'][1:-1]
-        origin = 'origin' in match['role'].casefold()
-        # An origin identity stays opaque unless it is an explicit qualifier.
-        if (not origin or re.match(r'^(?:not|no|never|cannot)\s+', _normalize_negation(value), re.I)
-                or re.fullmatch(r'(?:same )?Devbox|caller-local|unknown', value, re.I)):
-            properties.add(match.span('value'))
-    return _normalize_negation(re.sub(
-        _LITERAL, lambda match: match[0][1:-1] if match.span() in properties else ' ', text,
-    ))
+    # The role parser checks quoted fields separately. Identity text stays opaque.
+    return _normalize_negation(re.sub(_LITERAL, ' ', text))
 
 
 def _mentions(text: str, literal: str) -> bool:
@@ -219,6 +256,39 @@ def _target_atom(text: str, offset: int) -> tuple[str | None, int]:
     return None, token.end()
 
 
+def _temporal_literal(text: str, start: int, end: int, value: str) -> bool:
+    before = text[:start].rstrip()
+    cue_prefix = re.search(_CUTOFF_CUE + r'\s*$', before, re.I)
+    date_value = (re.fullmatch(_DATE + r'(?:T[^\s]+)?', value)
+                  or re.fullmatch(r'[A-Za-z]+ \d{1,2},? 20\d{2}', value))
+    if date_value:
+        return bool(cue_prefix)
+    if not re.match(r'^(?:after|since|before|until|later\s+than|earlier\s+than|prior\s+to|between)(?:\s+|$)', value, re.I):
+        return False
+    # A temporal qualifier follows a completed target or receipt noun role.
+    if re.search(r'\b(?:client|method|delivery|diagnostic|receipts?|records?|evidence)\s*$', before, re.I):
+        return True
+    for role in _TARGET_ROLE.finditer(before):
+        target, target_end = _target_atom(before, role.end())
+        if target is not None and not before[target_end:].strip():
+            return True
+    return not before and bool(re.match(r'\s*,', text[end:]))
+
+
+def _concept_role(text: str, start: int, value: str) -> bool:
+    before = text[:start]
+    if _CONCEPT_LITERAL.fullmatch(value):
+        return bool(re.fullmatch(
+            r'\s*(?:what|which|is|are|can)\s+(?:(?:is|are)\s+)?'
+            r'(?:(?:a|an|the|current|approved|independent)\s+)*', before, re.I,
+        ))
+    if re.fullmatch(r'safe client|network diagnostic(?: method)?', value, re.I):
+        return bool(re.search(r'\bdeliver(?:ed)?\s+(?:a|an|the)\s*$', before, re.I))
+    if re.fullmatch(r'outside[- ](?:the[- ])?Devbox', value, re.I):
+        return bool(re.search(r'\b(?:is|are)\s*$', before, re.I))
+    return False
+
+
 def _requested_target(text: str) -> tuple[bool, str | None]:
     """Read one primary target role, not a union of domain-shaped words.
 
@@ -231,7 +301,7 @@ def _requested_target(text: str) -> tuple[bool, str | None]:
         return any(start <= offset < end for start, end in literals)
 
     masked = list(text)
-    other_roles = []
+    other_roles = [field.value_span for field in _raw_properties(text) if field.quoted]
     for role in _OTHER_ROLE.finditer(text):
         if not inside_literal(role.start()):
             other_roles.append(role.span())
@@ -254,8 +324,15 @@ def _requested_target(text: str) -> tuple[bool, str | None]:
     # A quoted DNS name, URL, or IP also needs a declared role.
     for start, end in literals:
         covered = any(left <= start < right for left, right in consumed + other_roles)
-        if (not covered and _network_identity(text[start + 1:end - 1])
-                and not _identity_subject(text, start, end)):
+        value = text[start + 1:end - 1]
+        temporal = _temporal_literal(text, start, end, value)
+        concept = _concept_role(text, start, value)
+        service = value.casefold() == 'capd' and re.match(
+            r'\s+(?:deliver\w*|provide\w*|safe\s+client|client|network\s+diagnostic)\b', text[end:], re.I,
+        )
+        declared = covered or temporal or concept or service or _identity_subject(text, start, end)
+        if not declared:
+            # Unsupported quoted targets must not become an absent target.
             return True, None
     # An unbound domain or URL is ambiguous, not an absent requested target.
     remaining = list(readable)
@@ -315,8 +392,6 @@ def _local_origin_veto(clause: str, match, bound_target: bool) -> bool:
     target = _literal_reference(match['target'])
     local = r'(?i:(?:the\s+)?(?:`Devbox`|Devbox))(?![\w/:-])'
     relations = (
-        method + r'(?i:\s+(?:has\s+)?(?:caller\s+)?origin\s+(?:(?:is|was)\s+)?)'
-        + local + r'(?i:\s+for\s+)' + target,
         method + r'(?i:\s+(?:executed|executes|ran|runs?)\s+for\s+)'
         + target + r'(?i:\s+(?:inside|on|from|at)\s+)' + local,
         method + r'(?i:\s+(?:executed|executes|ran|runs?)\s+(?:inside|on|from|at)\s+)'
@@ -333,14 +408,32 @@ def _local_origin_veto(clause: str, match, bound_target: bool) -> bool:
         return False
     # A short role clause inherits only this method's target in this source.
     short = (
-        method + r'(?i:\s+(?:has\s+)?(?:caller\s+)?origin\s+(?:(?:is|was)\s+)?)'
-        + local + r'(?i:(?!\s+for\b))',
         method + r'(?i:\s+(?:executed|executes|ran|runs?)\s+(?:inside|on|from|at)\s+)'
         + local + r'(?i:(?!\s+for\b))',
-        r'(?i:\b(?:the\s+)?(?:caller\s+)?origin\s+(?:is|was)\s+)'
-        + local + r'(?:(?i:\s+for\s+)' + target + r')?(?i:(?!\s+for\b))',
     )
     return any(re.search(relation, clause) for relation in short)
+
+
+def _property_veto(field: _RawProperty, match, kind: str, method: str | None, target: str | None) -> bool:
+    named = field.subject.startswith('`')
+    if named and field.subject != match['method']:
+        return False
+    if target not in (None, match['target'][1:-1]):
+        return False
+    bound = method == match['method'] and target == match['target'][1:-1]
+    if not named and not bound:
+        return False
+    value = _normalize_negation(field.value)
+    if field.role == 'origin':
+        if kind != 'origin' or not bound:
+            return False
+        if re.fullmatch(r'(?:the |same )?Devbox|caller-local|unknown', value, re.I):
+            return True
+        # Other literal origin identities stay opaque, not positive evidence.
+        return bool(re.match(r'^(?:no|not|never|cannot)\s+', value, re.I))
+    if field.value == match['method'][1:-1]:
+        return False
+    return not _ALLOWED_PROPERTY_VALUE.fullmatch(value)
 
 
 def _contrary(values: list[str], match, kind: str) -> bool:
@@ -351,16 +444,20 @@ def _contrary(values: list[str], match, kind: str) -> bool:
         previous_target = None
         for clause in _clauses(text):
             props = _properties(clause)
+            fields = _raw_properties(clause)
             subject = re.search(
                 rf'^(?:[\w-]+:\s*|[-+*]\s+)?(?:(?:On|As of) {_DATE},\s*)?'
                 rf'(?P<method>{_LITERAL})\s+', clause,
             )
-            if subject:
-                if previous_method != subject['method']:
+            named_subject = subject['method'] if subject else next(
+                (field.subject for field in fields if field.subject.startswith('`')), None,
+            )
+            if named_subject:
+                if previous_method != named_subject:
                     previous_target = None
-                previous_method = subject['method']
+                previous_method = named_subject
             explicit, clause_target = _requested_target(clause)
-            if explicit:
+            if explicit and clause_target is not None:
                 previous_target = clause_target
             # A named local check must not transfer its limits to another check.
             inherited = previous_method == match['method'] or (previous_method is None and method_context)
@@ -372,11 +469,8 @@ def _contrary(values: list[str], match, kind: str) -> bool:
                 return True
             if not relevant:
                 continue
-            property_unknown = any(
-                'origin' not in slot['role'].casefold()
-                and not _ALLOWED_PROPERTY_VALUE.fullmatch(slot['value'][1:-1])
-                for slot in _PROPERTY_SLOT.finditer(clause)
-            )
+            property_unknown = any(_property_veto(field, match, kind, previous_method, previous_target)
+                                   for field in fields)
             if (property_unknown or _NEGATIVE.search(props)
                     or re.search(r'\b(?:status\s+(?:is\s+)?|(?:is|was|remains)\s+)unknown\b', props, re.I)):
                 return True
@@ -404,7 +498,7 @@ def network_vantage_problem(
     explicit_target, requested_target = _requested_target(question)
     if explicit_target and requested_target is None:
         return NETWORK_VANTAGE_REASON
-    cutoff_cues = re.findall(r'(?<![\w./:-])(?:after|since)(?![\w/:-])', _cutoff_text(question), re.I)
+    cutoff_cues = re.findall(_CUTOFF_CUE, _cutoff_text(question), re.I)
     if len(cutoff_cues) > 1 or (cutoff_cues and cutoff is None):
         # Unsupported or multiple constraints cannot become a history query.
         return NETWORK_VANTAGE_REASON

@@ -364,6 +364,40 @@ class NetworkVantageTests(unittest.TestCase):
                          'What does `network vantage` mean?'):
             self.assertFalse(network_vantage_required(question))
 
+    def test_property_subject_role_separator_matrix_preserves_all_limits(self):
+        for subject, role, value in (('`remote-check`', 'has status', 'not approved'),
+                                     ('It', 'has status', 'not observed'),
+                                     ('This check', 'status', 'unknown'),
+                                     ('The method', 'status', 'not executed'),
+                                     ('The origin', '', 'unknown'),
+                                     ('The caller origin', '', 'not independent')):
+            for separator in (' ', ' is ', ': ', ' = ', ' is: '):
+                contrary = subject + (' ' + role if role else '') + separator + '`' + value + '`.'
+                self.reject(ORIGIN, [ORIGIN + '\n' + contrary])
+        self.reject(ORIGIN, [ORIGIN + '\nThe origin: unknown.'])
+        self.reject(ORIGIN, [ORIGIN + '\n`remote-check` has status: not approved for `21h.dev`.'])
+        for text in ('`other-check` has status: `not approved` for `21h.dev`.',
+                     '`remote-check` has status = `not approved` for `other.dev`.',
+                     '`other-check` executed for `other.dev` on the Devbox. The origin = `unknown`.',
+                     'The origin is `remote-host`.', 'The method is `remote-check`.'):
+            self.assertIsNone(self.problem(ORIGIN, [ORIGIN + '\n' + text]))
+
+    def test_unsupported_unbound_literal_targets_and_mixed_cutoffs_fail_closed(self):
+        other = ORIGIN.replace('21h.dev', 'other.dev')
+        for target in ('fixture', 'fixture.xyz!', 'fixture.xyz*', 'fixture.xyz/path', 'to', 'later',
+                       'capd', 'network vantage', 'after October 14, 2026'):
+            question = 'Which approved network vantage outside the Devbox can reach `' + target + '`?'
+            self.assertEqual(self.problem(other, [other], question), NETWORK_VANTAGE_REASON)
+        question = 'Did capd deliver a safe client for 21h.dev after October 14, 2026 and later than October 20, 2026?'
+        self.assertEqual(self.problem(DELIVERY, [DELIVERY], question), NETWORK_VANTAGE_REASON)
+        for concept in ('network vantage outside the Devbox', 'network-vantage',
+                        'network-vantage-outside-the-Devbox', 'current approved network vantage outside the Devbox'):
+            question = 'What is the current `' + concept + '` I can use for 21h.dev?'
+            self.assertTrue(network_vantage_required(question))
+            self.assertEqual(self.problem(WRONG, [BASE], question), NETWORK_VANTAGE_REASON)
+            self.assertIsNone(self.problem(ORIGIN, [ORIGIN], question))
+            self.assertFalse(network_vantage_required('What is the `' + concept + '` version?'))
+
     def test_iso_cutoff_and_scope_must_match(self):
         question = 'Did capd deliver a safe client after 2026-10-14?'
         self.assertIsNone(self.problem(DELIVERY_LACK, [BASE], question))
