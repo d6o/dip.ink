@@ -35,6 +35,21 @@ WRONG = (
     'ComputeHours deployed ' + REV + ' via ' + METHOD + ' for the disposable manual-test preview '
     'scope. Live state is not verified.'
 )
+PROPERTY_SEPARATORS = (' ', ' is ', ' was ', ' remains ', ': ', ':', ' = ', '=', ' IS: ', ' IS = ')
+PROPERTY_CASES = tuple(
+    METHOD + ' ' + role + separator + value + '.'
+    for role in ('release status', 'Release SCOPE', 'RELEASE_PHASE', 'has release-status')
+    for separator in PROPERTY_SEPARATORS
+    for value in ('not completed', '`NOT COMPLETED`', 'preview.v2', '`preview.v2`')
+)
+PROPERTY_GOOD_CASES = tuple(
+    METHOD + ' ' + role + separator + value + '.'
+    for role, value in (
+        ('release status', 'completed app-only dev'), ('RELEASE PHASE', '`COMPLETED APP-ONLY DEV`'),
+        ('has release_scope', '`ONLY FIXED-APP METADATA, CODE CONFIGMAPS, AND A CONDITIONAL DEPLOYMENT PATCH`'),
+    )
+    for separator in PROPERTY_SEPARATORS
+)
 
 
 def problem(answer, bodies=None, *, retrieved=None, dates=None, question=QUESTION, current=True):
@@ -53,6 +68,18 @@ class ReleaseScopeQualifierTests(unittest.TestCase):
         for question in ('What version does ComputeHours use?', 'What does release mean?',
                          'Where is `release/scope/deploy-dev.py`?',
                          'What is the weather?', 'What is the network origin for edge.example?'):
+            self.assertFalse(release_scope_required(question))
+
+    def test_combined_concept_literals_keep_the_selector_without_method_intent(self):
+        for phrase in ('release scope', 'current release scope', 'dev app-only release interface',
+                       'app-only dev release scope'):
+            question = 'Which ComputeHours `' + phrase + '` did the source record?'
+            self.assertTrue(release_scope_required(question))
+            self.assertIsNone(problem(COMPLETE, question=question))
+            self.assertEqual(problem(WRONG, question=question), RELEASE_SCOPE_REASON)
+        for question in ('What is the filename of `release scope`?', 'What does `release scope` mean?',
+                         'Which tool is named `release scope`?', 'What is `release-scope.py`?',
+                         'Where is `release/scope/deploy-dev.py`?', 'What is the name of `release scope`?'):
             self.assertFalse(release_scope_required(question))
 
     def test_wrong_preview_transfer_uses_new_reason(self):
@@ -77,6 +104,43 @@ class ReleaseScopeQualifierTests(unittest.TestCase):
         self.assertIsNone(problem(COMPLETE, question=question))
         self.assertEqual(problem(COMPLETE.replace(REV, PREVIOUS),
                                  {NEW: COMPLETE.replace(REV, PREVIOUS)}, question=question), RELEASE_SCOPE_REASON)
+
+    def test_requested_app_method_and_revision_roles_do_not_use_any_mention(self):
+        wrong_queries = (
+            'Which ComputeHours app-only dev release interface uses ' + OLD_METHOD + ' and what scope does it cover?',
+            QUESTION.replace('deployment,', 'deployment of `dev-interface-next`,'),
+            'What is the current OtherHours release interface, not ComputeHours?',
+            'Which `COMPUTEHOURS` release scope did the source record?',
+            'Which ComputeHours release interface uses ' + METHOD.upper() + '?',
+            QUESTION.replace('deployment,', 'deployment of [unknown],'),
+            QUESTION.replace('deployment,', 'deployment of an unknown revision,'),
+            'Which ComputeHours and OtherHours release interface did the source record?',
+        )
+        both = COMPLETE + '\n' + COMPLETE.replace('ComputeHours', 'OtherHours')
+        for question in wrong_queries:
+            self.assertEqual(problem(COMPLETE, {NEW: both}, question=question), RELEASE_SCOPE_REASON)
+        right_method = 'Which ComputeHours release interface uses ' + METHOD + ' and what scope does it cover?'
+        self.assertIsNone(problem(COMPLETE, question=right_method))
+        next_release = COMPLETE.replace(REV, '`dev-interface-next`')
+        next_query = QUESTION.replace('deployment,', 'deployment of `dev-interface-next`,')
+        self.assertIsNone(problem(next_release, {NEW: next_release}, question=next_query))
+        self.assertEqual(problem(next_release.replace('dev-interface-next', 'dev-interface-next-extra'),
+                                 {NEW: next_release.replace('dev-interface-next', 'dev-interface-next-extra')},
+                                 question=next_query), RELEASE_SCOPE_REASON)
+        other = COMPLETE.replace('ComputeHours', 'OtherHours')
+        self.assertIsNone(problem(other, {NEW: both}, question=wrong_queries[2]))
+        self.assertIsNone(problem(COMPLETE, question=QUESTION.replace('deployment,', 'deployment of a71c9e23,')))
+        self.assertEqual(problem(COMPLETE, question=QUESTION.replace('deployment,', 'deployment of a71,')), RELEASE_SCOPE_REASON)
+
+    def test_historical_comparisons_keep_explicit_separate_identity_scopes(self):
+        for question, other in (
+            ('Compare ComputeHours and OtherHours release scopes.', COMPLETE.replace('ComputeHours', 'OtherHours')),
+            ('Compare ComputeHours release scopes for revisions ' + PREVIOUS + ' and ' + REV + '?', COMPLETE.replace(REV, PREVIOUS)),
+            ('Compare ComputeHours release interfaces using ' + METHOD + ' and ' + OLD_METHOD + '?', COMPLETE.replace(METHOD, OLD_METHOD)),
+        ):
+            answer = 'Historical record: ' + COMPLETE + ' Historical record: ' + other
+            self.assertIsNone(problem(answer, {NEW: COMPLETE, OLD: other}, question=question, current=False))
+            self.assertEqual(problem(COMPLETE, {NEW: COMPLETE, OLD: other}, question=question), RELEASE_SCOPE_REASON)
 
     def test_source_date_is_not_a_completion_receipt(self):
         for text in (PREVIEW, 'ComputeHours has a later source date.', 'ComputeHours release is planned.'):
@@ -158,6 +222,88 @@ class ReleaseScopeQualifierTests(unittest.TestCase):
                         '```text\n' + contrary + '\n```', '<pre>\n' + contrary + '\n</pre>'):
                 with self.subTest(raw=raw):
                     self.assertEqual(problem(COMPLETE, {NEW: COMPLETE + '\n' + raw}), RELEASE_SCOPE_REASON)
+
+    def test_named_role_separator_and_value_policy_does_not_need_global_identity(self):
+        for contrary in PROPERTY_CASES:
+            with self.subTest(contrary=contrary):
+                self.assertEqual(problem(COMPLETE, {NEW: COMPLETE, OLD: contrary}), RELEASE_SCOPE_REASON)
+        for safe in PROPERTY_GOOD_CASES:
+            with self.subTest(safe=safe):
+                self.assertIsNone(problem(COMPLETE, {NEW: COMPLETE, OLD: safe}))
+
+    def test_named_role_policy_keeps_literal_method_app_and_revision_identity(self):
+        for contrary in PROPERTY_CASES[::8]:
+            for source in (contrary.replace(METHOD, OLD_METHOD), contrary.replace(METHOD, METHOD.upper()),
+                           contrary.rstrip('.') + ' for `OtherHours` revision ' + REV + '.',
+                           contrary.rstrip('.') + ' for ' + APP + ' revision ' + PREVIOUS + '.',
+                           contrary.rstrip('.') + ' for ' + APP.upper() + ' revision ' + REV + '.'):
+                self.assertIsNone(problem(COMPLETE, {NEW: COMPLETE, OLD: source}))
+
+    def test_named_role_policy_survives_sixth_metadata_code_scalar_and_late_text(self):
+        for contrary in PROPERTY_CASES[::10]:
+            bodies = {str(index): COMPLETE for index in range(6)}
+            dates = {name: DATES[NEW] for name in bodies}
+            for wrapper in ('# {}', 'summary: >\n\n  {}', 'description: |\n\n  {}', '```text\n{}\n```'):
+                bodies['5'] = wrapper.format(contrary)
+                self.assertEqual(problem(COMPLETE, bodies, dates=dates), RELEASE_SCOPE_REASON)
+            late = COMPLETE + '\n' + 'Recorded context. ' * 300 + '\n' + contrary
+            self.assertGreater(late.index(contrary), 4096)
+            self.assertEqual(problem(COMPLETE, {NEW: late}), RELEASE_SCOPE_REASON)
+
+    def test_ordered_local_properties_do_not_union_apps_or_borrow_draft_identity(self):
+        other = COMPLETE.replace('ComputeHours', 'OtherHours')
+        for value in ('`unknown`', 'unknown', '`NOT COMPLETED`'):
+            limit = 'The release status = ' + value + '.'
+            self.assertEqual(problem(COMPLETE, {NEW: other + '\n' + COMPLETE + '\n' + limit}), RELEASE_SCOPE_REASON)
+            self.assertIsNone(problem(COMPLETE, {NEW: COMPLETE + '\n' + other + '\n' + limit}))
+        self.assertIsNone(problem(COMPLETE, {NEW: other + '\n' + COMPLETE}))
+        self.assertIsNone(problem(COMPLETE, {NEW: 'The release status is `unknown`.', OLD: COMPLETE}))
+        for reset in ('App: `OtherHours`', 'Revision = ' + PREVIOUS, 'Method: ' + OLD_METHOD):
+            text = COMPLETE + '\n' + reset + '\nThe release status is `unknown`.'
+            self.assertIsNone(problem(COMPLETE, {NEW: text}))
+        named = METHOD + ' release status = `completed app-only dev` for `OtherHours` revision ' + REV + '.'
+        self.assertIsNone(problem(COMPLETE, {NEW: COMPLETE + '\n' + named + '\nThe release status is `unknown`.'}))
+
+    def test_explicit_other_app_role_resets_keep_named_and_generic_properties_separate(self):
+        for reset in ('App: `OtherHours`', '# OtherHours release record',
+                      COMPLETE.replace('ComputeHours', 'OtherHours')):
+            text = COMPLETE + '\n' + reset + '\n' + METHOD + ' release status = `unknown`.'
+            self.assertIsNone(problem(COMPLETE, {NEW: text}))
+        for raw in ('# ComputeHours release record\n', ''):
+            raw += METHOD + ' release scope: `preview-only`.'
+            dates = {**DATES, OLD: '2026-10-17T13:42:00Z'}
+            self.assertEqual(problem(COMPLETE, {NEW: COMPLETE}, retrieved={OLD: raw}, dates=dates), RELEASE_SCOPE_REASON)
+            self.assertEqual(problem(COMPLETE, {NEW: COMPLETE}, retrieved={OLD: raw}, dates=dates,
+                                     current=False), RELEASE_SCOPE_REASON)
+
+    def test_raw_canonical_soft_wrap_uses_the_same_complete_record_grammar(self):
+        preview = PREVIEW.replace(REV, REV + ' via ' + METHOD)
+        for raw in (preview, preview.replace(', limited', ',\nlimited'),
+                    preview.replace(' via ', '\nvia ')):
+            for wrapper in ('```text\n{}\n```', 'summary: >\n\n  {}', '# {}'):
+                contrary = wrapper.format(raw)
+                self.assertEqual(problem(COMPLETE, {NEW: COMPLETE, OLD: contrary}), RELEASE_SCOPE_REASON)
+                late = COMPLETE + '\n' + 'Recorded context. ' * 300 + '\n' + contrary
+                self.assertGreater(late.index(contrary), 4096)
+                self.assertEqual(problem(COMPLETE, {NEW: late}, current=False), RELEASE_SCOPE_REASON)
+                bodies = {str(index): COMPLETE for index in range(6)}
+                bodies['5'] = contrary
+                self.assertEqual(problem(COMPLETE, bodies, dates={name: DATES[NEW] for name in bodies}),
+                                 RELEASE_SCOPE_REASON)
+        historical = 'Historical record: ' + preview
+        self.assertIsNone(problem(COMPLETE, {NEW: COMPLETE, OLD: historical}))
+
+    def test_ordered_local_limit_retains_late_and_sixth_raw_vetoes(self):
+        other = COMPLETE.replace('ComputeHours', 'OtherHours')
+        for wrapper in ('{}', '# {}', 'summary: >\n\n  {}', '```text\n{}\n```'):
+            limit = wrapper.format('The release status = `unknown`.')
+            body = other + '\n' + COMPLETE + '\n' + 'Recorded context. ' * 300 + '\n' + limit
+            self.assertGreater(body.index(limit), 4096)
+            self.assertEqual(problem(COMPLETE, {NEW: body}), RELEASE_SCOPE_REASON)
+            bodies = {str(index): COMPLETE for index in range(6)}
+            bodies['5'] = body
+            self.assertEqual(problem(COMPLETE, bodies, dates={name: DATES[NEW] for name in bodies}),
+                             RELEASE_SCOPE_REASON)
 
     def test_newer_retrieved_raw_limit_can_veto_but_cannot_support(self):
         raw = 'summary: >\n\n  ' + APP + '\n  ' + METHOD + ' release status is `unknown`.'

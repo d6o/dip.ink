@@ -1115,10 +1115,9 @@ def _validate_distilled_answer(
             str(hit.get("name") or "") for hit in packet.get("temporal_candidates") or []
         }
         source_dates = {source: _source_time(source) for source in retrieved_names if _source_time(source)}
-        if _current_state_question(question) and source_dates:
-            newest = max(source_dates.values())
-            retrieved_names = {source for source, when in source_dates.items()
-                               if (newest - when).total_seconds() <= CURRENT_WINDOW_SECONDS}
+        # Keep all retrieved bodies available for subject-specific vetoes.
+        # An unrelated source date must not hide a relevant later receipt.
+        # The public temporal packet still controls positive eligibility.
         release_error = release_scope_problem(
             question, answer,
             {source: str(full.get(source) or "") for source in cited_sources},

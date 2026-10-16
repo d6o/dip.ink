@@ -12,9 +12,10 @@ os.environ.setdefault('WIKI_MCP_BACKGROUND_REINDEX', '0')
 import graph
 import wiki
 from release_scope_qualifiers import RELEASE_SCOPE_BODY_REASON, RELEASE_SCOPE_REASON, RELEASE_SCOPE_SUFFIX
+from resource_scope_qualifiers import RESOURCE_SCOPE_REASON
 from test_release_scope_qualifiers import (
-    APP, BASELINE, COMPLETE, EXACT_QUESTION, METHOD, NEW, NONCURRENT, OLD, PREVIEW,
-    PREVIOUS, QUESTION, REV, WRONG,
+    APP, BASELINE, COMPLETE, EXACT_QUESTION, METHOD, NEW, NONCURRENT, OLD, OLD_METHOD, PREVIEW,
+    PREVIOUS, PROPERTY_CASES, PROPERTY_GOOD_CASES, QUESTION, REV, WRONG, problem as release_problem,
 )
 
 
@@ -161,6 +162,46 @@ class GraphReleaseScopeTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(answer.index('The caller'), 2000)
         self.assert_release_rejection(validate(answer))
 
+    def test_named_role_policy_checks_every_separator_without_global_identity(self):
+        for current, question in ((True, QUESTION), (False, NONCURRENT)):
+            for contrary in PROPERTY_CASES:
+                self.assert_release_rejection(validate(COMPLETE, packet({NEW: COMPLETE, OLD: contrary}, current=current),
+                                                       [NEW, OLD], question))
+            for safe in PROPERTY_GOOD_CASES:
+                value, _, _ = validate(COMPLETE, packet({NEW: COMPLETE + '\n' + safe}, current=current), question=question)
+                self.assert_qualified(value)
+
+    def test_ordered_local_context_and_explicit_identity_roles_use_new_route(self):
+        other = COMPLETE.replace('ComputeHours', 'OtherHours')
+        for current, question in ((True, QUESTION), (False, NONCURRENT)):
+            self.assert_release_rejection(validate(COMPLETE, packet({NEW: other + '\n' + COMPLETE
+                                                                   + '\nThe release status = `unknown`.'}, current=current),
+                                                   question=question))
+            for safe in (other + '\n' + COMPLETE, COMPLETE + '\n' + other + '\nThe release status = `unknown`.',
+                         COMPLETE + '\nApp: `OtherHours`\n' + METHOD + ' release scope: `preview-only`.'):
+                value, _, _ = validate(COMPLETE, packet({NEW: safe}, current=current), question=question)
+                self.assert_qualified(value)
+            for requested in (question.replace('interface', 'interface using ' + OLD_METHOD),
+                              question.rstrip('?') + ' for revision `dev-interface-next`?',
+                              question.replace('ComputeHours', 'OtherHours').rstrip('?') + ', not ComputeHours?'):
+                self.assert_release_rejection(validate(COMPLETE, packet({NEW: COMPLETE + '\n' + other}, current=current),
+                                                       question=requested))
+
+    def assert_resource_overlap(self, value, event):
+        self.assertIsNone(value['answer'])
+        self.assertEqual(value['confidence'], 'not_found')
+        self.assertTrue(value['escalate'])
+        self.assertEqual(value['sources'], [])
+        self.assertEqual(value['superseded_note'], RESOURCE_SCOPE_REASON)
+        self.assertEqual(event['grounding_action'], 'qualifier_mismatch')
+
+    async def assert_assembly_rejection(self, bodies, answer=COMPLETE, **kwargs):
+        value, sent, event = await self.assemble(bodies, answer, **kwargs)
+        self.assertIsNone(value['answer'])
+        self.assertEqual(value['superseded_note'], RELEASE_SCOPE_REASON)
+        self.assertEqual(event['grounding_action'], 'release_scope_mismatch')
+        return value, sent, event
+
     async def assemble(self, bodies, answer, *, question=QUESTION, sources=None, private=None, facts=None):
         edges = [SimpleNamespace(fact=fact, episodes=[name], valid_at='', invalid_at=None)
                  for name, fact in (facts or {}).items()]
@@ -181,6 +222,7 @@ class GraphReleaseScopeTests(unittest.IsolatedAsyncioTestCase):
             search = await graph._assemble_packet(question, 3)
         self.assertIn('source_validation_texts', assembled)
         self.assertNotIn('source_validation_texts', search)
+        self.assertNotIn('PRIVATE_', json.dumps(search))
         self.assertNotIn('release_scope_retrieved_sources', search)
         self.assertNotIn('release_scope_retrieved_sources', distill.call_args.args[1])
         self.assertNotIn('source_validation_texts', distill.call_args.args[1])
@@ -263,6 +305,141 @@ class GraphReleaseScopeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(event['grounding_action'], 'release_scope_mismatch')
         self.assertNotIn('PRIVATE_SIXTH_RELEASE', json.dumps(sent))
 
+    async def test_actual_mock_formatted_concepts_collect_full_bodies_and_keep_safe_controls(self):
+        overlap = QUESTION.replace('dev app-only release interface', '`dev app-only release interface`')
+        for question in ('Which ComputeHours `release scope` did the source record?',
+                         'What is the current ComputeHours `release scope`?', overlap):
+            for answer in (COMPLETE, WRONG):
+                collector = mock.AsyncMock(wraps=graph._source_validation_context)
+                with mock.patch.object(graph, '_source_validation_context', new=collector):
+                    value, sent, event = await self.assemble({NEW: COMPLETE}, answer, question=question)
+                self.assertEqual(collector.await_count, 2)
+                self.assertNotIn('source_validation_texts', sent)
+                if answer == COMPLETE:
+                    self.assertIsNone(release_problem(COMPLETE, question=question))
+                    if question == overlap:
+                        self.assert_resource_overlap(value, event)
+                    else:
+                        self.assert_qualified(value)
+                        self.assertEqual(event['grounding_action'], 'downgraded')
+                else:
+                    self.assertIsNone(value['answer'])
+                    self.assertEqual(value['superseded_note'], RELEASE_SCOPE_REASON)
+                    self.assertEqual(event['grounding_action'], 'release_scope_mismatch')
+
+    async def test_actual_mock_named_role_plain_copular_colon_equal_case_and_values(self):
+        for question in (QUESTION, NONCURRENT):
+            for contrary in PROPERTY_CASES[::9]:
+                await self.assert_assembly_rejection({NEW: COMPLETE, OLD: contrary}, question=question, sources=[NEW, OLD])
+            for safe in PROPERTY_GOOD_CASES[::4]:
+                value, _, event = await self.assemble({NEW: COMPLETE + '\n' + safe}, COMPLETE, question=question)
+                self.assert_qualified(value)
+                self.assertEqual(event['grounding_action'], 'downgraded')
+            for contrary in (OLD_METHOD + ' release status = `unknown`.',
+                             METHOD + ' release status: `unknown` for `OtherHours` revision ' + REV + '.',
+                             METHOD + ' release scope = `preview-only` for ' + APP + ' revision ' + PREVIOUS + '.'):
+                value, _, _ = await self.assemble({NEW: COMPLETE + '\n' + contrary}, COMPLETE, question=question)
+                self.assert_qualified(value)
+
+    async def test_actual_mock_named_role_sixth_raw_wrappers_and_late_private_text(self):
+        bodies = {NEW + '-' + str(index): COMPLETE for index in range(6)}
+        for question in (QUESTION, NONCURRENT):
+            for contrary in PROPERTY_CASES[::19]:
+                for wrapper in ('# {}', 'summary: >\n\n  {}', 'description: |\n\n  {}', '```text\n{}\n```'):
+                    private = dict(bodies)
+                    private[list(bodies)[-1]] = wrapper.format(contrary)
+                    await self.assert_assembly_rejection(bodies, question=question, private=private)
+            contrary = METHOD + ' RELEASE STATUS = `NOT COMPLETED`.'
+            text = COMPLETE + '\n' + 'Recorded context. ' * 300 + '\nPRIVATE_ROLE_LIMIT\n' + contrary
+            self.assertGreater(text.index(contrary), 4096)
+            value, sent, event = await self.assert_assembly_rejection({NEW: text}, question=question)
+            self.assertNotIn('PRIVATE_ROLE_LIMIT', json.dumps((value, sent, event)))
+
+    async def test_actual_mock_ordered_local_context_and_explicit_resets(self):
+        other = COMPLETE.replace('ComputeHours', 'OtherHours')
+        for question in (QUESTION, NONCURRENT):
+            bad = other + '\n' + COMPLETE + '\nThe release status is `unknown`.'
+            await self.assert_assembly_rejection({NEW: bad}, question=question)
+            for safe in (other + '\n' + COMPLETE, COMPLETE + '\n' + other + '\nThe release status is `unknown`.',
+                         COMPLETE + '\nMethod: ' + OLD_METHOD + '\nThe release status is `unknown`.',
+                         COMPLETE + '\nApp: `OtherHours`\nThe release scope = `preview-only`.'):
+                value, _, event = await self.assemble({NEW: safe}, COMPLETE, question=question)
+                self.assert_qualified(value)
+                self.assertEqual(event['grounding_action'], 'downgraded')
+            for wrapper in ('{}', '# {}', 'summary: >\n\n  {}', '```text\n{}\n```'):
+                raw = other + '\n' + COMPLETE + '\n' + 'Recorded context. ' * 300 + '\n' + wrapper.format('The release status = `unknown`.')
+                bodies = {NEW + '-' + str(index): COMPLETE for index in range(6)}
+                private = dict(bodies)
+                private[list(bodies)[-1]] = raw
+                await self.assert_assembly_rejection(bodies, question=question, private=private)
+
+    async def test_actual_mock_explicit_query_roles_and_right_identity_controls(self):
+        other = COMPLETE.replace('ComputeHours', 'OtherHours')
+        bodies = {NEW: COMPLETE + '\n' + other}
+        for question in (QUESTION, NONCURRENT):
+            for requested in (question.replace('interface', 'interface using ' + OLD_METHOD),
+                              question.rstrip('?') + ' for revision `dev-interface-next`?',
+                              question.replace('ComputeHours', 'OtherHours').rstrip('?') + ', not ComputeHours?'):
+                await self.assert_assembly_rejection(bodies, question=requested)
+            right = question.replace('interface', 'interface using ' + METHOD)
+            self.assertIsNone(release_problem(COMPLETE, question=right))
+            value, _, event = await self.assemble({NEW: COMPLETE}, COMPLETE, question=right)
+            self.assert_resource_overlap(value, event)
+            branch = COMPLETE.replace(REV, '`dev-interface-next`')
+            right = question.rstrip('?') + ' for revision `dev-interface-next`?'
+            self.assertIsNone(release_problem(branch, {NEW: branch}, question=right))
+            value, _, event = await self.assemble({NEW: branch}, branch, question=right)
+            self.assert_resource_overlap(value, event)
+            right = question.rstrip('?') + ' for revision dev-interface-next?'
+            value, _, _ = await self.assemble({NEW: branch}, branch, question=right)
+            self.assert_qualified(value)
+        right = 'What is the current OtherHours release interface, not ComputeHours?'
+        value, _, _ = await self.assemble(bodies, other, question=right)
+        self.assert_qualified(value)
+        historical = 'Historical record: ' + COMPLETE + ' Historical record: ' + COMPLETE.replace(REV, PREVIOUS)
+        query = 'Compare ComputeHours release scopes for revisions ' + REV + ' and ' + PREVIOUS + '?'
+        value, _, _ = await self.assemble({NEW: COMPLETE, OLD: COMPLETE.replace(REV, PREVIOUS)}, historical, question=query)
+        self.assert_qualified(value)
+
+    async def test_actual_mock_uncited_raw_method_limits_do_not_need_global_app_revision(self):
+        raw_name = '2026-10-16-140000-raw-release-limit'
+        for question in (QUESTION, NONCURRENT):
+            for raw in (METHOD + ' release status: `proposal`.',
+                        '# ComputeHours release record\n' + METHOD + ' release scope=preview-only.'):
+                await self.assert_assembly_rejection({NEW: COMPLETE, raw_name: raw}, sources=[NEW], question=question)
+            safe = '# OtherHours release record\n' + METHOD + ' release scope=preview-only.'
+            value, _, _ = await self.assemble({NEW: COMPLETE, raw_name: safe}, COMPLETE, question=question, sources=[NEW])
+            self.assert_qualified(value)
+
+    async def test_actual_mock_unrelated_private_dates_cannot_hide_relevant_completed_body(self):
+        unrelated = '2026-10-19-120000-other-release-record'
+        sentinel = '\n' + 'Recorded context. ' * 300 + '\nPRIVATE_LATER_RELEASE_BODY'
+        for other in ('OtherHours source metadata.', COMPLETE.replace('ComputeHours', 'OtherHours')):
+            original = {OLD: PREVIEW, NEW: COMPLETE + sentinel, unrelated: other}
+            for bodies in (original, dict(reversed(list(original.items())))):
+                value, sent, event = await self.assert_assembly_rejection(bodies, PREVIEW, sources=[OLD])
+                self.assertNotIn('PRIVATE_LATER_RELEASE_BODY', json.dumps((value, sent, event)))
+                value, sent, event = await self.assemble(bodies, COMPLETE, sources=[NEW])
+                self.assert_qualified(value)
+                self.assertEqual(event['grounding_action'], 'downgraded')
+                self.assertNotIn('PRIVATE_LATER_RELEASE_BODY', json.dumps((value, sent, event)))
+
+    async def test_actual_mock_raw_canonical_soft_wraps_keep_veto_without_positive_support(self):
+        preview = PREVIEW.replace(REV, REV + ' via ' + METHOD)
+        for question in (QUESTION, NONCURRENT):
+            for wrapper in ('```text\n{}\n```', 'summary: >\n\n  {}', '# {}'):
+                raw = wrapper.format(preview.replace(', limited', ',\nlimited'))
+                await self.assert_assembly_rejection({NEW: COMPLETE, OLD: raw}, sources=[NEW, OLD], question=question)
+                late = COMPLETE + '\n' + 'Recorded context. ' * 300 + '\n' + raw
+                self.assertGreater(late.index(raw), 4096)
+                await self.assert_assembly_rejection({NEW: late}, question=question)
+                bodies = {NEW + '-' + str(index): COMPLETE for index in range(6)}
+                private = dict(bodies)
+                private[list(bodies)[-1]] = raw
+                await self.assert_assembly_rejection(bodies, question=question, private=private)
+                await self.assert_assembly_rejection({NEW: wrapper.format(COMPLETE.replace(', limited', ',\nlimited'))},
+                                                     question=question)
+
     async def test_actual_mock_full_draft_tail_precedes_display(self):
         answer = COMPLETE + ' ' + ('Historical record: ' + COMPLETE + ' ') * 6 + ' Use the driver now.'
         self.assertGreater(answer.index('Use the driver'), 2000)
@@ -276,10 +453,14 @@ class GraphReleaseScopeTests(unittest.IsolatedAsyncioTestCase):
              mock.patch.object(graph, '_resolve_episode_slugs', new=mock.AsyncMock(return_value={})), \
              mock.patch.object(graph, '_wiki_semantic_hits', new=mock.AsyncMock(return_value=[])), \
              mock.patch.object(graph, '_source_validation_context', new=mock.AsyncMock()) as collect:
-            value = await graph._assemble_packet('What is the weather?', 3, answer_evidence=True)
+            values = [await graph._assemble_packet(question, 3, answer_evidence=True) for question in (
+                'What is the weather?', 'Where is `release/scope/deploy-dev.py`?',
+                'What is the filename of `release scope`?', 'Which tool is named `release scope`?',
+            )]
             search = await graph._assemble_packet(QUESTION, 3)
         collect.assert_not_awaited()
-        self.assertNotIn('source_validation_texts', value)
+        for value in values:
+            self.assertNotIn('source_validation_texts', value)
         self.assertNotIn('source_validation_texts', search)
 
 
