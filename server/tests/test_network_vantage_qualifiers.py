@@ -202,7 +202,7 @@ class NetworkVantageTests(unittest.TestCase):
                          '`remote-check` has caller origin `not independent` for `21h.dev`.',
                          '`remote-check` executes inside the Devbox.'):
             self.reject(ORIGIN, [ORIGIN + '\n' + contrary])
-            self.reject(ORIGIN, [ORIGIN] * 5 + ['summary: >\n  ' + contrary])
+            self.reject(ORIGIN, [ORIGIN] * 5 + ['summary: >\n  ' + ORIGIN + '\n  ' + contrary])
         # A method or route identity must not become a status value.
         exact = ORIGIN.replace('remote-check', 'not approved').replace('curl --resolve edge-x', 'not independent')
         self.assertIsNone(self.problem(exact, [exact]))
@@ -234,6 +234,81 @@ class NetworkVantageTests(unittest.TestCase):
         for question in ('Where is `network vantage`?', 'What is the `capd` version?',
                          'Where is `capd-deliver-client`?', 'What is the `outside-Devbox` version?'):
             self.assertFalse(network_vantage_required(question))
+
+    def test_requested_target_role_does_not_transfer_from_host_or_unknown_tld(self):
+        other = ORIGIN.replace('21h.dev', 'other.dev')
+        for question in ('Which approved network vantage outside the Devbox checks fixture.dev?',
+                         'Which approved network vantage outside the Devbox checks fixture.dev with Host/SNI other.dev?',
+                         'Which approved network vantage outside the Devbox checks fixture.xyz?',
+                         'Which approved network vantage outside the Devbox checks an unknown target with Host/SNI other.dev?'):
+            self.assertEqual(self.problem(other, [other], question), NETWORK_VANTAGE_REASON)
+        for role in ('Host/SNI', 'DNS', 'control', 'proxy', 'destination', 'method is'):
+            question = 'Which approved network vantage outside the Devbox checks fixture.xyz with ' + role + ' other.dev?'
+            self.assertEqual(self.problem(other, [other], question), NETWORK_VANTAGE_REASON)
+        matched = other.replace('for `other.dev`', 'for `fixture.xyz`')
+        question = 'Which approved network vantage outside the Devbox checks fixture.xyz with Host/SNI other.dev?'
+        self.assertIsNone(self.problem(matched, [matched], question))
+        self.assertEqual(self.problem(other, [other], question + ' Or checks other.dev?'), NETWORK_VANTAGE_REASON)
+        question = 'Which approved network vantage outside the Devbox checks fixture.xyz and other.dev?'
+        self.assertEqual(self.problem(other, [other], question), NETWORK_VANTAGE_REASON)
+
+    def test_primary_targets_keep_exact_urls_literals_case_and_ip_roles(self):
+        for target in ('Fixture.XYZ', 'https://Fixture.xyz/a?x=One.', '192.0.2.21', '[2001:db8::21]', 'fixture'):
+            statement = ORIGIN.replace('for `21h.dev`', 'for `' + target + '`')
+            question = 'Which approved network vantage outside the Devbox checks `' + target + '` with Host/SNI 21h.dev?'
+            self.assertIsNone(self.problem(statement, [statement], question))
+            self.assertEqual(self.problem(statement, [statement], question.replace('`' + target + '`', '`' + target + '.`')),
+                             NETWORK_VANTAGE_REASON)
+        statement = ORIGIN.replace('for `21h.dev`', 'for `fixture.xyz`')
+        for question in ('What is the current approved network vantage outside the Devbox for fixture.xyz with DNS other.dev?',
+                         'Which approved network vantage outside the Devbox checks fixture.xyz via `method.other.dev`?',
+                         'Which approved network vantage outside the Devbox with proxy other.dev checks fixture.xyz?'):
+            self.assertIsNone(self.problem(statement, [statement], question))
+        self.reject(statement.replace('fixture.xyz', 'Fixture.xyz'), [statement])
+        origin_ip = statement.replace('`remote-host`', '`192.0.2.90`').replace('curl --resolve edge-x', 'remote-proxy-check --resolve edge-x')
+        question = 'Which approved network vantage outside the Devbox checks fixture.xyz?'
+        self.assertIsNone(self.problem(origin_ip, [origin_ip], question))
+
+    def test_target_binding_applies_to_delivery_observation_and_scoped_negatives(self):
+        question = 'Which network vantage outside the Devbox checks fixture.xyz with Host/SNI other.dev after October 14, 2026?'
+        for statement in (DELIVERY, OBSERVATION, ORIGIN_LACK):
+            other = statement.replace('21h.dev', 'other.dev')
+            self.assertEqual(self.problem(other, [other], question), NETWORK_VANTAGE_REASON)
+        wrong_body = BASE.replace('for 21h.dev', 'for other.dev') + ' Host/SNI fixture.xyz.'
+        self.assertEqual(self.problem(DELIVERY_LACK, [wrong_body], question), NETWORK_VANTAGE_REASON)
+        self.assertEqual(self.problem(ORIGIN_LACK.replace('21h.dev', 'fixture.xyz'), [wrong_body], question), NETWORK_VANTAGE_REASON)
+        matching_body = BASE.replace('21h.dev', 'fixture.xyz')
+        self.assertIsNone(self.problem(DELIVERY_LACK, [matching_body], question))
+        self.assertIsNone(self.problem(ORIGIN_LACK.replace('21h.dev', 'fixture.xyz'), [matching_body], question))
+
+    def test_short_local_origin_roles_inherit_only_the_same_source_method_target(self):
+        for contrary in ('`remote-check` has caller origin `Devbox`.', '`remote-check` origin is `Devbox`.'):
+            self.reject(ORIGIN, [ORIGIN + '\n' + contrary])
+            self.reject(ORIGIN, [ORIGIN] * 5 + ['summary: >\n  ' + ORIGIN + '\n  ' + contrary])
+            self.assertIsNone(self.problem(ORIGIN, [ORIGIN, contrary]))
+            other = contrary.replace('remote-check', 'other-check')
+            self.assertIsNone(self.problem(ORIGIN, [ORIGIN + '\n' + other]))
+            explicit_other = contrary.rstrip('.') + ' for `other.dev`.'
+            self.assertIsNone(self.problem(ORIGIN, [ORIGIN + '\n' + explicit_other]))
+            reset = '`other-check` executed for `other.dev` on the Devbox. '
+            self.assertIsNone(self.problem(ORIGIN, [ORIGIN + '\n' + reset + contrary]))
+
+    def test_whole_cutoff_and_origin_concept_formatting_do_not_remove_intent(self):
+        old = DELIVERY.replace('2026-10-16', '2026-10-13')
+        for cutoff in ('`after October 14, 2026`', '`after 2026-10-14T00:00:00Z`',
+                       '`since an unknown date`'):
+            question = 'Did capd deliver a safe client for 21h.dev ' + cutoff + '?'
+            self.assertTrue(network_vantage_required(question))
+            self.assertEqual(self.problem(old, [old], question), NETWORK_VANTAGE_REASON)
+        question = 'Which `independent remote origin` is approved for 21h.dev?'
+        self.assertTrue(network_vantage_required(question))
+        self.assertIsNone(self.problem(ORIGIN, [ORIGIN], question))
+        self.assertEqual(self.problem(WRONG, [BASE], question), NETWORK_VANTAGE_REASON)
+        self.assertFalse(network_vantage_required('Where is `independent remote origin`?'))
+        for method in ('after October 14, 2026', 'after', 'curl --data "after October 14, 2026"'):
+            historical = old.replace('safe-client', method)
+            question = 'Did capd deliver `' + method + '` as a safe client for 21h.dev?'
+            self.assertIsNone(self.problem(historical, [historical], question))
 
     def test_iso_cutoff_and_scope_must_match(self):
         question = 'Did capd deliver a safe client after 2026-10-14?'

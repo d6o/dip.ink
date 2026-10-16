@@ -91,7 +91,7 @@ class NetworkVantageAnswerTests(unittest.IsolatedAsyncioTestCase):
         self.assert_network_rejection(validate(DELIVERY, p))
         p['source_validation_texts'][SOURCE] = '# ' + DELIVERY + '\n\n' + BASE
         self.assert_network_rejection(validate(DELIVERY, p))
-        p = packet({SOURCE: 'capd#9 remains blocked in an old source-only draft.'})
+        p = packet({SOURCE: 'capd#9 remains blocked in an old source-only draft for 21h.dev.'})
         self.assert_network_rejection(validate('capd did not deliver a safe client after 2026-10-14.', p))
         self.assertEqual(validate(DELIVERY_LACK, p)[0]['answer'], DELIVERY_LACK)
 
@@ -368,7 +368,7 @@ class NetworkVantageAnswerTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(event['grounding_action'], 'network_vantage_mismatch')
             self.assertEqual(result['superseded_note'], NETWORK_VANTAGE_REASON)
             bodies = {SOURCE + '-' + str(i): ORIGIN for i in range(6)}
-            bodies[list(bodies)[-1]] = '```text\nPRIVATE_PROPERTY_SENTINEL\n' + contrary + '\n```'
+            bodies[list(bodies)[-1]] = '```text\nPRIVATE_PROPERTY_SENTINEL\n' + ORIGIN + '\n' + contrary + '\n```'
             result, sent, event = await self.assemble(bodies, ORIGIN)
             self.assertEqual(event['grounding_action'], 'network_vantage_mismatch')
             self.assertEqual(result['superseded_note'], NETWORK_VANTAGE_REASON)
@@ -402,6 +402,121 @@ class NetworkVantageAnswerTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(event['grounding_action'], 'network_vantage_mismatch')
             self.assertEqual(result['superseded_note'], NETWORK_VANTAGE_BODY_REASON)
 
+    async def test_review_primary_target_for_and_checks_roles_cannot_transfer(self):
+        other = ORIGIN.replace('21h.dev', 'other.dev')
+        for question in ('Which approved network vantage outside the Devbox checks fixture.dev with Host/SNI other.dev?',
+                         'Which approved network vantage outside the Devbox checks fixture.xyz?',
+                         'What is the current approved network vantage outside the Devbox for fixture.dev with Host/SNI other.dev?',
+                         'What is the current approved network vantage outside the Devbox for fixture.xyz with Host/SNI other.dev?',
+                         'Which approved network vantage outside the Devbox checks an unknown target with DNS other.dev?'):
+            self.assert_network_rejection(validate(other, packet({SOURCE: other}), question=question))
+            result, _, event = await self.assemble({SOURCE: other}, other, question)
+            self.assertEqual(event['grounding_action'], 'network_vantage_mismatch')
+            self.assertEqual(result['superseded_note'], NETWORK_VANTAGE_REASON)
+        for role in ('Host/SNI', 'DNS', 'control', 'proxy', 'destination', 'method is'):
+            question = 'What is the current approved network vantage outside the Devbox for fixture.xyz with ' + role + ' other.dev?'
+            matched = other.replace('for `other.dev`', 'for `fixture.xyz`')
+            result, _, event = await self.assemble({SOURCE: matched}, matched, question)
+            self.assertEqual(event['grounding_action'], 'downgraded')
+            self.assertIn('for `fixture.xyz`', result['answer'])
+            self.assertEqual(result['confidence'], 'medium')
+            self.assertTrue(result['escalate'])
+        for target in ('https://Fixture.xyz/a?x=One.', 'Fixture.XYZ', '192.0.2.21', '[2001:db8::21]'):
+            matched = ORIGIN.replace('for `21h.dev`', 'for `' + target + '`')
+            question = 'Which approved network vantage outside the Devbox checks `' + target + '` with Host/SNI 21h.dev?'
+            result, _, event = await self.assemble({SOURCE: matched}, matched, question)
+            self.assertEqual(event['grounding_action'], 'downgraded')
+            self.assertEqual(result['answer'], matched)
+            result, _, event = await self.assemble({SOURCE: matched}, matched, question.replace('`' + target + '`', '`' + target + '.`'))
+            self.assertEqual(event['grounding_action'], 'network_vantage_mismatch')
+            self.assertIsNone(result['answer'])
+
+    async def test_review_target_roles_cover_private_metadata_late_claims_and_sixth_sources(self):
+        question = 'What is the current approved network vantage outside the Devbox for fixture.xyz with Host/SNI other.dev?'
+        other = ORIGIN.replace('21h.dev', 'other.dev')
+        for private in ('summary: >\n  ' + other, '```text\n' + other + '\n```'):
+            result, _, event = await self.assemble({SOURCE: other}, other, question, validation={SOURCE: private})
+            self.assertEqual(event['grounding_action'], 'network_vantage_mismatch')
+            self.assertIsNone(result['answer'])
+        bodies = {SOURCE + '-' + str(i): other for i in range(6)}
+        bodies[list(bodies)[-1]] = 'summary: >\n  PRIVATE_TARGET_SENTINEL\n  ' + other
+        result, sent, event = await self.assemble(bodies, other, question)
+        self.assertEqual(event['grounding_action'], 'network_vantage_mismatch')
+        self.assertNotIn('PRIVATE_TARGET_SENTINEL', sent)
+        matched = other.replace('for `other.dev`', 'for `fixture.xyz`')
+        answer = matched + ' ' + 'Recorded background. ' * 110 + other
+        self.assertGreater(answer.index(other), 2000)
+        result, _, event = await self.assemble({SOURCE: matched + ' ' + other}, answer, question)
+        self.assertEqual(event['grounding_action'], 'network_vantage_mismatch')
+        self.assertIsNone(result['answer'])
+        safe_bodies = {SOURCE + '-' + str(i): matched for i in range(6)}
+        p = packet(safe_bodies)
+        value, _, action = validate(matched, p, list(safe_bodies), question)
+        self.assertEqual(action, 'downgraded')
+        self.assertEqual(len(value['sources']), 5)
+        self.assertEqual(value['confidence'], 'medium')
+
+    async def test_review_target_binding_applies_to_other_statement_forms_and_scoped_negatives(self):
+        question = 'Which network vantage outside the Devbox checks fixture.xyz with Host/SNI other.dev after October 14, 2026?'
+        for statement in (DELIVERY.replace('21h.dev', 'other.dev'),
+                          OBSERVATION.replace('21h.dev', 'other.dev'),
+                          ORIGIN_LACK.replace('21h.dev', 'other.dev')):
+            result, _, event = await self.assemble({SOURCE: statement}, statement, question)
+            self.assertEqual(event['grounding_action'], 'network_vantage_mismatch')
+            self.assertIsNone(result['answer'])
+        body = BASE.replace('for 21h.dev', 'for other.dev') + ' Host/SNI fixture.xyz.'
+        for answer in (DELIVERY_LACK, ORIGIN_LACK.replace('21h.dev', 'fixture.xyz')):
+            result, _, event = await self.assemble({SOURCE: body}, answer, question)
+            self.assertEqual(event['grounding_action'], 'network_vantage_mismatch')
+            self.assertIsNone(result['answer'])
+        matched = BASE.replace('21h.dev', 'fixture.xyz')
+        for answer in (DELIVERY_LACK, ORIGIN_LACK.replace('21h.dev', 'fixture.xyz')):
+            result, _, event = await self.assemble({SOURCE: matched}, answer, question)
+            self.assertEqual(event['grounding_action'], 'downgraded')
+            self.assertEqual(result['confidence'], 'medium')
+
+    async def test_review_short_local_origin_properties_use_only_bound_method_scope(self):
+        for contrary in ('`remote-check` has caller origin `Devbox`.', '`remote-check` origin is `Devbox`.'):
+            body = ORIGIN + '\n' + contrary
+            self.assert_network_rejection(validate(ORIGIN, packet({SOURCE: body})))
+            result, _, event = await self.assemble({SOURCE: body}, ORIGIN)
+            self.assertEqual(event['grounding_action'], 'network_vantage_mismatch')
+            self.assertEqual(result['superseded_note'], NETWORK_VANTAGE_REASON)
+            bodies = {SOURCE + '-' + str(i): ORIGIN for i in range(6)}
+            bodies[list(bodies)[-1]] = 'summary: >\n  PRIVATE_SHORT_ORIGIN_SENTINEL\n  ' + ORIGIN + '\n  ' + contrary
+            result, sent, event = await self.assemble(bodies, ORIGIN)
+            self.assertEqual(event['grounding_action'], 'network_vantage_mismatch')
+            self.assertNotIn('PRIVATE_SHORT_ORIGIN_SENTINEL', sent)
+            for other in (contrary.replace('remote-check', 'other-check'),
+                          contrary.rstrip('.') + ' for `other.dev`.'):
+                result, _, event = await self.assemble({SOURCE: ORIGIN + '\n' + other}, ORIGIN)
+                self.assertEqual(event['grounding_action'], 'downgraded')
+                self.assertIsNotNone(result['answer'])
+
+    async def test_review_whole_cutoff_and_origin_concept_formats_keep_private_validation(self):
+        old = DELIVERY.replace('2026-10-16', '2026-10-13')
+        for cutoff in ('`after October 14, 2026`', '`after 2026-10-14T00:00:00Z`',
+                       '`since an unknown date`'):
+            question = 'Did capd deliver a safe client for 21h.dev ' + cutoff + '?'
+            self.assert_network_rejection(validate(old, packet({SOURCE: old}), question=question))
+            result, _, event = await self.assemble({SOURCE: old}, old, question)
+            self.assertEqual(event['grounding_action'], 'network_vantage_mismatch')
+            self.assertEqual(result['superseded_note'], NETWORK_VANTAGE_REASON)
+        question = 'Which `independent remote origin` is approved for 21h.dev?'
+        result, _, event = await self.assemble({SOURCE: BASE}, WRONG, question)
+        self.assertEqual(event['grounding_action'], 'network_vantage_mismatch')
+        self.assertIsNone(result['answer'])
+        result, _, event = await self.assemble({SOURCE: ORIGIN}, ORIGIN, question)
+        self.assertEqual(event['grounding_action'], 'downgraded')
+        self.assertEqual(result['answer'], ORIGIN)
+        self.assertTrue(result['escalate'])
+        for method in ('after October 14, 2026', 'after', 'curl --data "after October 14, 2026"'):
+            historical = old.replace('safe-client', method)
+            question = 'Did capd deliver `' + method + '` as a safe client for 21h.dev?'
+            result, _, event = await self.assemble({SOURCE: historical}, historical, question)
+            self.assertEqual(event['grounding_action'], 'downgraded')
+            self.assertEqual(result['answer'], historical)
+
     async def test_unrelated_question_never_loads_private_source_context(self):
         g = SimpleNamespace(search_=mock.AsyncMock(return_value=SimpleNamespace(nodes=[], edges=[], episodes=[])))
         with mock.patch.object(graph, '_get_graph', new=mock.AsyncMock(return_value=g)), \
@@ -410,7 +525,7 @@ class NetworkVantageAnswerTests(unittest.IsolatedAsyncioTestCase):
              mock.patch.object(graph, '_source_validation_context', new=mock.AsyncMock()) as full:
             for question in ('What is the current Devbox version?', 'What is the capd version?', 'How does DNS work?',
                              'Where is `network vantage`?', 'What is the `capd` version?',
-                             'What is the `outside-Devbox` version?'):
+                             'What is the `outside-Devbox` version?', 'Where is `independent remote origin`?'):
                 p = await graph._assemble_packet(question, 3, answer_evidence=True)
                 self.assertNotIn('source_validation_texts', p)
         full.assert_not_awaited()

@@ -22,7 +22,17 @@ NETWORK_VANTAGE_BODY_REASON = (
 )
 _DATE = r"20\d{2}-\d{2}-\d{2}"
 _LITERAL = r"`[^`\n]+`"
-_DOMAIN = re.compile(r"(?<![\w./-])(?:[a-zA-Z0-9-]+\.)+(?:dev|com|net|org|ink|io|gd|app|bot)(?![\w/-])")
+_TARGET_TOKEN = re.compile(rf'{_LITERAL}|(?i:https?://)[^\s`]+|[^\s,;?]+')
+_TARGET_ROLE = re.compile(
+    r'(?<![\w./:-])(?:checks?(?:\s+for)?|for|targets?)(?![\w/:-])'
+    r'\s*(?:(?:is|:|=)\s*)?', re.I,
+)
+_OTHER_ROLE = re.compile(
+    rf'\b(?:Host/SNI|DNS|control|proxy|destination)(?:\s+(?:is|:|=))?\s+(?:for\s+)?'
+    rf'(?:{_LITERAL}|[^\s,;]+)|\bmethod\s*(?:is|:|=)\s*(?:{_LITERAL}|[^\s,;]+)'
+    rf'|\b(?:via|using)\s+{_LITERAL}|\bfor this check only\b', re.I,
+)
+_DOMAIN_VALUE = re.compile(r'[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)+\.?')
 _ORIGIN = re.compile(
     rf"(?:On|As of) (?P<date>{_DATE}), (?P<method>{_LITERAL}) is an approved network check "
     rf"for (?P<target>{_LITERAL}) from independent remote origin (?P<origin>{_LITERAL}) "
@@ -79,14 +89,14 @@ def network_vantage_required(question: str) -> bool:
             return value
         if concept_intent and re.fullmatch(
             r'(?:network|external|independent) vantages?|caller[- ]origins?|'
-            r'outside[- ](?:the[- ])?Devbox|safe client|network diagnostic(?: method)?', value, re.I,
+            r'independent (?:remote|external) origins?|outside[- ](?:the[- ])?Devbox|safe client|network diagnostic(?: method)?', value, re.I,
         ):
             return value
         return ' '
 
     text = re.sub(_LITERAL, intent_literal, question)
     return bool(re.search(
-        r"\b(?:(?:network|external|independent)\s+vantages?|caller[- ]origins?|independent\s+(?:remote|external)\s+origin)\b"
+        r"\b(?:(?:network|external|independent)\s+vantages?|caller[- ]origins?|independent\s+(?:remote|external)\s+origins?)\b"
         r"|\boutside[- ](?:the[- ])?devbox\b", text, re.I,
     ) or (re.search(r'\bcapd\b', text, re.I)
           and re.search(r'\b(?:deliver\w*|provided?)\b', text, re.I)
@@ -103,7 +113,12 @@ def _day(value: str) -> date | None:
 def _cutoff_text(question: str) -> str:
     def literal(match):
         value = match[0][1:-1]
-        if (value.casefold() in {'after', 'since'} or re.fullmatch(_DATE + r'(?:T[^\s]+)?', value)
+        # An explicit method or route argument is data, not a cutoff cue.
+        if re.search(r'\b(?:deliver(?:ed)?|using|via|named|called)\s+(?:the\s+)?$',
+                     question[:match.start()], re.I):
+            return ' '
+        if (value.casefold() in {'after', 'since'} or re.match(r'^(?:after|since)\s+', value, re.I)
+                or re.fullmatch(_DATE + r'(?:T[^\s]+)?', value)
                 or re.fullmatch(r'[A-Za-z]+ \d{1,2},? 20\d{2}', value)):
             return value
         return ' '
@@ -162,9 +177,74 @@ def _mentions(text: str, literal: str) -> bool:
                           + r'(?![\w/:-]|\.[A-Za-z0-9])', outside_literals))
 
 
+def _target_atom(text: str, offset: int) -> tuple[str | None, int]:
+    token = _TARGET_TOKEN.match(text, offset)
+    if not token:
+        return None, offset
+    value = token[0]
+    if value.startswith('`') and value.endswith('`'):
+        return value[1:-1], token.end()
+    if (re.fullmatch(r'(?i:https?://)[^/\s]+(?:/[^\s]*)?', value)
+            or _DOMAIN_VALUE.fullmatch(value)
+            or re.fullmatch(r'\[[A-Fa-f0-9:]+\]|[A-Fa-f0-9]*:[A-Fa-f0-9:]+', value)):
+        return value, token.end()
+    return None, token.end()
+
+
+def _requested_target(text: str) -> tuple[bool, str | None]:
+    """Read one primary target role, not a union of domain-shaped words.
+
+    Explicit unsupported or multiple targets stay invalid. Other network
+    roles and method literals cannot supply the primary target identity.
+    """
+    literals = [match.span() for match in re.finditer(_LITERAL, text)]
+
+    def inside_literal(offset):
+        return any(start <= offset < end for start, end in literals)
+
+    masked = list(text)
+    for role in _OTHER_ROLE.finditer(text):
+        if not inside_literal(role.start()):
+            masked[role.start():role.end()] = ' ' * (role.end() - role.start())
+    readable = ''.join(masked)
+    targets = []
+    consumed = []
+    for role in _TARGET_ROLE.finditer(readable):
+        if inside_literal(role.start()):
+            continue
+        target, end = _target_atom(readable, role.end())
+        if target is None:
+            return True, None
+        targets.append(target)
+        consumed.append((role.start(), end))
+        # A coordinated target list is outside this single-target grammar.
+        connector = re.match(r'\s*(?:,\s*)?(?:and|or)\s+', readable[end:], re.I)
+        if connector and _target_atom(readable, end + connector.end())[0] is not None:
+            return True, None
+    # An unbound domain or URL is ambiguous, not an absent requested target.
+    remaining = list(readable)
+    for start, end in literals + consumed:
+        remaining[start:end] = ' ' * (end - start)
+    remainder = ''.join(remaining)
+    if any(_target_atom(remainder, token.start())[0] is not None for token in re.finditer(r'\S+', remainder)):
+        return True, None
+    unique = set(targets)
+    return (True, unique.pop()) if len(unique) == 1 else (bool(targets), None)
+
+
 def _target_matches(question: str, target: str) -> bool:
-    targets = _DOMAIN.findall(question)
-    return not targets or target[1:-1] in targets
+    explicit, requested = _requested_target(question)
+    return not explicit or requested == target[1:-1]
+
+
+def _body_has_target(body: str, target: str) -> bool:
+    if _requested_target(body) == (True, target):
+        return True
+    # A target can be the explicit subject of a local access observation.
+    return bool(re.search(
+        rf'^(?:(?:On|As of) {_DATE},\s*)?' + _literal_reference('`' + target + '`')
+        + r'\s+(?:succeeds|fails|returns)\b', body,
+    ))
 
 
 def _origin_candidate(clause: str, target: str) -> bool:
@@ -193,7 +273,7 @@ def _literal_reference(literal: str) -> str:
             + re.escape(literal[1:-1]) + r'(?![\w/:`-]|\.[A-Za-z0-9]))')
 
 
-def _local_origin_veto(clause: str, match) -> bool:
+def _local_origin_veto(clause: str, match, bound_target: bool) -> bool:
     # Keep literal role values. A destination named Devbox is not an origin.
     method = _literal_reference(match['method'])
     target = _literal_reference(match['target'])
@@ -205,15 +285,24 @@ def _local_origin_veto(clause: str, match) -> bool:
         + target + r'(?i:\s+(?:inside|on|from|at)\s+)' + local,
         method + r'(?i:\s+(?:executed|executes|ran|runs?)\s+(?:inside|on|from|at)\s+)'
         + local + r'(?i:\s+for\s+)' + target,
-        method + r'(?i:\s+(?:executed|executes|ran|runs?)\s+(?:inside|on|from|at)\s+)'
-        + local + r'(?i:(?!\s+for\b))',
         method + r'(?i:\s+observed\s+HTTP\s+[1-5][0-9]{2}\s+for\s+)'
         + target + r'(?i:\s+from\s+)' + local,
         r'(?i:\b(?:all|every|both|only)\s+(?:observations?|checks?|requests?|executions?)\s+for\s+)'
         + target + r'(?i:\s+(?:originate[sd]?|execute[sd]?|run|ran|are|were)\s+(?:on|from|at)\s+)'
         + local,
     )
-    return any(re.search(relation, clause) for relation in relations)
+    if any(re.search(relation, clause) for relation in relations):
+        return True
+    if not bound_target:
+        return False
+    # A short role clause inherits only this method's target in this source.
+    short = (
+        method + r'(?i:\s+(?:has\s+)?(?:caller\s+)?origin\s+(?:(?:is|was)\s+)?)'
+        + local + r'(?i:(?!\s+for\b))',
+        method + r'(?i:\s+(?:executed|executes|ran|runs?)\s+(?:inside|on|from|at)\s+)'
+        + local + r'(?i:(?!\s+for\b))',
+    )
+    return any(re.search(relation, clause) for relation in short)
 
 
 def _contrary(values: list[str], match, kind: str) -> bool:
@@ -221,6 +310,7 @@ def _contrary(values: list[str], match, kind: str) -> bool:
         method_context = _mentions(text, match['method'])
         target_context = _mentions(text, match['target'])
         previous_method = None
+        previous_target = None
         for clause in _clauses(text):
             props = _properties(clause)
             subject = re.search(
@@ -228,12 +318,19 @@ def _contrary(values: list[str], match, kind: str) -> bool:
                 rf'(?P<method>{_LITERAL})\s+', clause,
             )
             if subject:
+                if previous_method != subject['method']:
+                    previous_target = None
                 previous_method = subject['method']
+            explicit, clause_target = _requested_target(clause)
+            if explicit:
+                previous_target = clause_target
             # A named local check must not transfer its limits to another check.
             inherited = previous_method == match['method'] or (previous_method is None and method_context)
             universal = target_context and re.search(r'^\s*(?:all|every|only|both)\b', props, re.I)
             relevant = inherited or universal
-            if kind == 'origin' and _local_origin_veto(clause, match):
+            if kind == 'origin' and _local_origin_veto(
+                clause, match, previous_method == match['method'] and previous_target == match['target'][1:-1],
+            ):
                 return True
             if not relevant:
                 continue
@@ -261,6 +358,9 @@ def network_vantage_problem(
     raw = [clause for text in values for clause in _clauses(text)]
     bodies = [clause for text in values for clause in _clauses(_source_body_text(text))]
     cutoff = _cutoff(question)
+    explicit_target, requested_target = _requested_target(question)
+    if explicit_target and requested_target is None:
+        return NETWORK_VANTAGE_REASON
     if re.search(r'(?<![\w./:-])(?:after|since)(?![\w/:-])', _cutoff_text(question), re.I) and cutoff is None:
         # An unsupported cutoff must not become an unrestricted history query.
         return NETWORK_VANTAGE_REASON
@@ -271,7 +371,7 @@ def network_vantage_problem(
         lack = _ORIGIN_LACK.fullmatch(claim)
         if lack:
             if (not _target_matches(question, lack['target'])
-                    or not any(_mentions(body, lack['target'])
+                    or not any(_body_has_target(body, lack['target'][1:-1])
                                and re.search(r'\b(?:network|Devbox|origin|vantage)\b', body, re.I) for body in bodies)
                     or any(_origin_candidate(clause, lack['target']) for clause in raw)):
                 return NETWORK_VANTAGE_REASON
@@ -280,7 +380,8 @@ def network_vantage_problem(
         lack = _DELIVERY_LACK.fullmatch(claim)
         if lack:
             if (not cutoff or _day(lack['date']) != cutoff
-                    or not any(re.search(r'\b(?:capd|network|Devbox|origin|vantage)\b', body, re.I) for body in bodies)
+                    or not any(re.search(r'\b(?:capd|network|Devbox|origin|vantage)\b', body, re.I)
+                               and (not explicit_target or _body_has_target(body, requested_target)) for body in bodies)
                     or any(_delivery_candidate(clause, cutoff) for clause in raw)):
                 return NETWORK_VANTAGE_REASON
             checked = True
