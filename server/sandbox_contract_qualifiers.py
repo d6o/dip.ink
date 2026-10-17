@@ -59,8 +59,9 @@ _CONCEPT = re.compile(
     r"\b(?:sandboxes?|sandbox|disposable[- ]tests?|private[- ]namespaces?|"
     r"sandbox[- ]contracts?|execution[- ]gates?)\b", re.I,
 )
+_CONTRACT_PREDICATE = r"(?:provides?|requires?|supports?)"
 _INTENT = re.compile(
-    r"\b(?:contracts?|provides?|features?|requires?|constraints?|permissions?|"
+    rf"\b(?:contracts?|{_CONTRACT_PREDICATE}|features?|constraints?|permissions?|"
     r"isolation|execute|execution|select|selection|methods?|gates?|safe|denial|allowlists?)\b", re.I,
 )
 _CONCEPT_PHRASE = re.compile(
@@ -147,7 +148,7 @@ def sandbox_contract_required(question: str) -> bool:
             return _unquote(match[0])
         if (role == "data" and _CONCEPT_PHRASE.fullmatch(_unquote(match[0]))
                 and not _DATA_ROLE.search(question[:match.start()])
-                and re.match(r"\s+(?:version|revision)\s+(?:provides?|requires?|supports?)\b",
+                and re.match(rf"\s+(?:version|revision)\s+{_CONTRACT_PREDICATE}\b",
                              question[match.end():], re.I)):
             return _unquote(match[0])
         return " "
@@ -176,7 +177,7 @@ def sandbox_contract_required(question: str) -> bool:
             r"\b(?:filename|file name|meaning|definition|version|revision|title|spell|means?)\b", clause, re.I,
         )
         operative = re.search(
-            r"\b(?:provides?|features?|requires?|constraints?|permissions?|isolation|execute|execution|"
+            rf"\b(?:{_CONTRACT_PREDICATE}|features?|constraints?|permissions?|isolation|execute|execution|"
             r"select|selection|gates?|safe|denial|allowlists?)\b", clause, re.I,
         )
         if metadata and not operative:

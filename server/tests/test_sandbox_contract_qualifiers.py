@@ -252,13 +252,27 @@ class SandboxContractTests(unittest.TestCase):
                 self.assertTrue(sandbox_contract_required(question), question)
                 self.reject(WRONG, {SOURCE: HISTORY}, question=question)
 
+    def test_support_predicates_keep_feature_queries_operative(self):
+        for predicate in ('provides', 'requires', 'supports'):
+            for concept in ('sandbox contract', '`sandbox contract`', 'sandbox-contract', '`sandbox-contract`'):
+                for feature in ('a new private proc mount', 'private mount/PID/network namespaces'):
+                    for prefix in ('', 'Currently, '):
+                        question = prefix + 'What ' + concept + ' version ' + predicate + ' ' + feature + '?'
+                        self.assertTrue(sandbox_contract_required(question), question)
+                        self.reject(WRONG, {SOURCE: HISTORY}, question=question)
+                        self.assertIsNone(problem(answer(COMPLETE), question=question))
+        self.assertTrue(sandbox_contract_required('What sandbox supports a new private proc mount?'))
+
     def test_metadata_only_contract_names_do_not_supply_operative_intent(self):
         for question in ('What is the sandbox contract version?',
                          'What sandbox contract filename is installed?',
                          'What is the title of the sandbox contract?',
                          'What is the version of method sandbox-contract?',
                          'What `sandbox permissions` version is installed?',
-                         'What is method sandbox-contract? Which version is that?'):
+                         'What is method sandbox-contract? Which version is that?',
+                         'What is the version of method `sandbox contract supports a new private proc mount`?',
+                         'What is the filename `sandbox contract supports private namespaces`?',
+                         'What is the version of method sandbox-supports-proc-mount?'):
             for prefix in ('', 'Currently, '):
                 self.assertFalse(sandbox_contract_required(prefix + question), prefix + question)
                 self.assertIsNone(problem('The record contains metadata.', question=prefix + question))

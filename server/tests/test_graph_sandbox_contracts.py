@@ -274,6 +274,25 @@ class GraphSandboxContractTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(value['superseded_note'], SANDBOX_CONTRACT_REASON)
                 self.assertIsNone(value['answer'])
 
+    async def test_actual_support_predicates_keep_private_feature_validation(self):
+        for concept in ('sandbox contract', '`sandbox contract`', 'sandbox-contract', '`sandbox-contract`'):
+            for version in ('', ' version'):
+                for feature in ('a new private proc mount', 'private mount/PID/network namespaces'):
+                    for prefix in ('', 'Currently, '):
+                        question = prefix + 'What ' + concept + version + ' supports ' + feature + '?'
+                        self.rejected(validate(WRONG, {SOURCE: HISTORY}, question=question))
+                        with mock.patch.object(graph, '_source_validation_context',
+                                               new=mock.AsyncMock(return_value={SOURCE: HISTORY})) as collector:
+                            value, _, event, assembled, _ = await self.assemble({SOURCE: HISTORY}, WRONG, question=question)
+                        collector.assert_awaited()
+                        self.assertEqual(assembled['source_validation_texts'], {SOURCE: HISTORY})
+                        self.assertEqual(event['grounding_action'], 'sandbox_contract_mismatch')
+                        self.assertEqual(value['superseded_note'], SANDBOX_CONTRACT_REASON)
+                        self.assertIsNone(value['answer'])
+                        value, _, event, _, _ = await self.assemble({SOURCE: COMPLETE}, answer(COMPLETE), question=question)
+                        self.qualified(value)
+                        self.assertEqual(event['grounding_action'], 'downgraded')
+
     async def test_actual_correct_and_mismatched_literal_request_roles(self):
         roles = {'method': 'synth-method', 'task': 'synth-task', 'app': 'synth-app',
                  'root': '/synthetic/root', 'phase': 'test', 'scope': 'offline-unit'}
@@ -319,7 +338,10 @@ class GraphSandboxContractTests(unittest.IsolatedAsyncioTestCase):
         metadata = 'The recorded sandbox contract version is synth-v1.'
         for base in ('What is the sandbox contract version?',
                      'What sandbox contract filename is installed?',
-                     'What is the version of method sandbox-contract?'):
+                     'What is the version of method sandbox-contract?',
+                     'What is the version of method `sandbox contract supports a new private proc mount`?',
+                     'What is the filename `sandbox contract supports private namespaces`?',
+                     'What is the version of method sandbox-supports-proc-mount?'):
             for prefix in ('', 'Currently, '):
                 question = prefix + base
                 backend = SimpleNamespace(search_=mock.AsyncMock(return_value=SimpleNamespace(nodes=[], edges=[], episodes=[])))
