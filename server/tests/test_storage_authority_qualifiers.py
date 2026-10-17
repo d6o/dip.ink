@@ -446,6 +446,35 @@ class StorageAuthorityTests(unittest.TestCase):
         other_hold = genuine + '.\n\nExpansion of ' + OBJECT + ' remains blocked.'
         self.assertIsNone(problem(answer(genuine), {SOURCE: other_hold}, question=query))
 
+    def test_type_leading_names_keep_the_kind_after_an_exterior_article(self):
+        bare = OBJECT[1:-1]
+        query = 'Who owns filesystem expansion?'
+        for prefix in ('filesystem ', 'storage volume ', 'The filesystem ', 'The storage volume '):
+            name = prefix + bare
+            target = '`' + name + '`'
+            owner = OWNER.replace(OBJECT, target)
+            restrictions = ('Expansion of the ' + name + ' remains blocked.',
+                            'Expansion for the ' + name + ' cannot proceed.',
+                            'Expansion of the ' + name + ' requires fresh guards.',
+                            'The ' + name + ' expansion remains blocked.',
+                            'Expansion of ' + target + ' remains blocked.',
+                            'Expansion of ' + name + ' remains blocked.')
+            for restriction in restrictions:
+                body = owner + '.\n\nAction: cleanup.\n\n' + restriction
+                self.assert_rejected(answer(owner), {SOURCE: body}, question=query)
+                reset = owner + '.\n\n`Other PVC` remains protected.\n\nAction: cleanup.\n\n' + restriction
+                self.assert_rejected(answer(owner), {SOURCE: reset}, question=query)
+            for other in (OBJECT, 'the `Other PVC`', 'the filesystem ' + OBJECT):
+                body = owner + '.\n\nAction: cleanup.\n\nExpansion of ' + other + ' remains blocked.'
+                self.assertIsNone(problem(answer(owner), {SOURCE: body}, question=query))
+            other_name = 'the ' + name
+            prior = METADATA.replace(OBJECT, '`' + other_name + '`')
+            hold = 'Expansion of ' + other_name + ' remains blocked.'
+            earlier = prior + '.\n\n' + owner + '.\n\nAction: cleanup.\n\n' + hold
+            self.assertIsNone(problem(answer(owner), {SOURCE: earlier}, question=query))
+            later = owner + '.\n\nAction: cleanup.\n\n' + hold + '\n\n' + prior
+            self.assert_rejected(answer(owner), {SOURCE: later}, question=query)
+
     def test_source_only_qualifiers_cannot_hide_protection_in_a_tail(self):
         body = OWNER + '\n\n' + OBJECT + ' custody release remains blocked.'
         self.assert_rejected(answer(OWNER), {SOURCE: body})

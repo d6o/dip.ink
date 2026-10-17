@@ -412,8 +412,10 @@ def _contrary(raw: str, record: _Record, answer_units: set[str]) -> bool:
                 if not quoted:
                     # Prefer an exact source name before a syntactic article
                     # or type prefix. Quoted identity bytes never lose words.
-                    prefix = (restriction.groupdict().get("determiner") or '') + (restriction.groupdict().get("kind") or '')
-                    exact = list(dict.fromkeys((prefix + source_object, source_object)))
+                    determiner = restriction.groupdict().get("determiner") or ''
+                    source_kind = restriction.groupdict().get("kind") or ''
+                    prefix = determiner + source_kind
+                    exact = list(dict.fromkeys((prefix + source_object, source_kind + source_object, source_object)))
                     candidates = exact + [candidate for value in exact
                                           if (candidate := ' '.join(value.split())) not in exact]
                     identity = next(('`' + candidate + '`' for candidate in candidates
