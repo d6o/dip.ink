@@ -278,6 +278,41 @@ class ExecutionPhaseTests(unittest.TestCase):
         self.assertGreater(len(draft), 2000)
         self.reject(draft)
 
+    def test_selector_keeps_version_bearing_concepts_and_operative_facets(self):
+        pairs = (
+            ('What does the Go 1.27 dry-run prove?', 'What does the `Go 1.27 dry-run` prove?'),
+            ('What executable identity does the dry-run record?',
+             'What executable identity does the dry-run version record?'),
+            ('What are the dry-run limits?', 'What are the dry-run version limits?'),
+        )
+        for pair in pairs:
+            for question in pair:
+                self.assertTrue(execution_phase_required(question), question)
+                self.reject(WRONG, question=question)
+                self.assertTrue(execution_phase_required(question + '; what is the filename?'), question)
+        for quote in ('`', '"', "'"):
+            for concept in ('Go 1.27 dry-run', 'Go v1.27.0 dry-run', 'Go 1.27 execution phase'):
+                question = 'What does the ' + quote + concept + quote + ' prove?'
+                self.assertTrue(execution_phase_required(question), question)
+                self.reject(WRONG, question=question)
+        for predicate in ('provides', 'requires', 'supports'):
+            question = 'Which version ' + predicate + ' `Go 1.27 dry-run` limits?'
+            self.assertTrue(execution_phase_required(question), question)
+            self.reject(WRONG, question=question)
+
+    def test_selector_keeps_version_and_facet_metadata_and_explicit_identities_opaque(self):
+        questions = [
+            'What is the dry-run version?', 'Which version is the dry-run record?',
+            'What is the version of the dry-run limits?', 'What is the definition of dry-run limits?',
+            'What is the filename of the Go 1.27 dry-run?', 'What is the title of the dry-run limits?',
+            'What does "/synthetic/dry-run" prove?',
+        ]
+        for role in ('method', 'source', 'source identity', 'path', 'version', 'filename'):
+            for quote in ('`', '"', "'"):
+                questions.append('What does ' + role + ' ' + quote + 'Go 1.27 dry-run' + quote + ' prove?')
+        for question in questions:
+            self.assertFalse(execution_phase_required(question), question)
+
     def test_query_selector_formatted_concepts_and_metadata_appendices(self):
         for concept in ('execution phase', '**execution phase**', '`execution phase`', '"execution phase"',
                         'dry-run', '**dry-run**', '`dry-run`', '"proof domain"'):

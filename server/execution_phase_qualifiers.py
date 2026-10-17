@@ -39,6 +39,12 @@ _ACTORS = "".join(rf"(?:, {role} (?P<{role}>{_VALUE}))?" for role in _IDENTITIES
 _DETAILS = "; ".join(rf"{role} (?P<{role.replace(' ', '_')}>{_VALUE})" for role in _FACETS)
 _GRAMMAR = re.compile(_HEADER.pattern + _DECLARATIONS + _ACTORS + ": " + _DETAILS)
 _CONCEPT = re.compile(r"\b(?:execution[- ]phases?|dry[- ]runs?|actual[- ]cleanup|filesystem[- ]probes?|write/fsync|proof[- ]domains?)\b", re.I)
+_CONCEPT_TOKEN = r"(?:[A-Za-z]+(?:-[A-Za-z]+)*|write/fsync|v?\d+(?:\.\d+){1,3})"
+_CONCEPT_TEXT = re.compile(rf"{_CONCEPT_TOKEN}(?: +{_CONCEPT_TOKEN})*", re.I)
+_METADATA_FORM = re.compile(
+    r"^(?:what|which)\s+(?:(?:is|are)\s+(?:the\s+)?)?"
+    r"(?:filename|file name|definition|meaning|title|version|revision)\b", re.I,
+)
 _PREDICATE = r"(?:provides?|requires?|supports?|establish(?:es)?|prov(?:e|es)|confirms?|permits?|allows?)"
 _INTENT = re.compile(rf"\b(?:what|which|can|does|describe|show|explain|select|selection|permission|effects?|identity|deadlines?|{_PREDICATE})\b", re.I)
 _DATA = re.compile(r"\b(?:filename|file name|path|title|source|note|record|revision|version|tag|digest|named|called)\s*(?:(?:is|of|:|=)\s*)?$", re.I)
@@ -68,7 +74,7 @@ def _literal_role(question: str, match: re.Match) -> str:
     if _DATA.search(before):
         return "data"
     value = _unquote(match[0])
-    if _CONCEPT.search(value) and re.fullmatch(r"[A-Za-z /-]+", value):
+    if _CONCEPT.search(value) and _CONCEPT_TEXT.fullmatch(value):
         return "concept"
     return "unbound"
 
@@ -82,12 +88,18 @@ def execution_phase_required(question: str) -> bool:
     text = re.sub(r"(?:;|\band\b)\s*(?=(?:what|which|how|can|does|describe|show|explain)\b)", "\n\n", text, flags=re.I)
     # Plain identities stay opaque too. Predicate words are not identities.
     def identity(match):
-        return match[0] if re.fullmatch(_PREDICATE + r"|is|are|of|for", match[2], re.I) else match[1] + " "
+        # These noun pairs request a facet, not a literal identity value.
+        facet = (re.search(r"\bexecutable\s*$", match[1], re.I) and match[2].lower() == "identity") or (
+            re.search(r"\b(?:version|revision)\s*$", match[1], re.I) and match[2].lower() in {"limits", "deadlines"}
+        )
+        return match[0] if facet or re.fullmatch(_PREDICATE + r"|is|are|of|for", match[2], re.I) else match[1] + " "
 
     text = re.sub(rf"(\b(?:{_QUERY_ROLE_PATTERN}|filename|title|source)\b\s*(?:(?:is|:|=)\s*)?)({_PLAIN})", identity, text, flags=re.I)
     for clause in _units(text):
+        if _METADATA_FORM.search(clause) and not re.search(rf"\b{_PREDICATE}\b", clause, re.I):
+            continue
         metadata = re.search(r"\b(?:filename|file name|definition|meaning|version|revision|title|means?)\b", clause, re.I)
-        operative = re.search(rf"\b(?:{_PREDICATE}|permission|selection|effects?|deadlines?)\b", clause, re.I)
+        operative = re.search(rf"\b(?:{_PREDICATE}|executable\s+identity|limits|permission|selection|effects?|deadlines?)\b", clause, re.I)
         if metadata and not operative:
             continue
         if _CONCEPT.search(clause) and _INTENT.search(clause):
