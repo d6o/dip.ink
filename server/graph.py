@@ -43,6 +43,9 @@ from temporal_negative_qualifiers import temporal_negative_problem, temporal_neg
 from resource_scope_qualifiers import resource_scope_problem, resource_scope_required
 from network_vantage_qualifiers import network_vantage_problem, network_vantage_required
 from release_scope_qualifiers import release_scope_problem, release_scope_required, RELEASE_SCOPE_SUFFIX
+from storage_authority_qualifiers import (
+    storage_authority_problem, storage_authority_required, STORAGE_AUTHORITY_REASON, STORAGE_AUTHORITY_SUFFIX,
+)
 from ingest import DEFAULT_GROUP_ID, build_graphiti
 from vector_search import install_read_search
 from graphiti_core.search.search_config_recipes import COMBINED_HYBRID_SEARCH_RRF
@@ -86,6 +89,7 @@ GROUNDING_COUNTS = {
     "qualifier_mismatch": 0,
     "network_vantage_mismatch": 0,
     "release_scope_mismatch": 0,
+    "storage_authority_mismatch": 0,
     "error": 0,
 }
 
@@ -881,7 +885,8 @@ async def _assemble_packet(
     if answer_evidence and credential_services(query):
         packet["credential_validation_texts"] = await _credential_validation_context(packet)
     if answer_evidence and (temporal_negative_required(query) or resource_scope_required(query)
-                            or network_vantage_required(query) or release_scope_required(query)):
+                            or network_vantage_required(query) or release_scope_required(query)
+                            or storage_authority_required(query)):
         packet["source_validation_texts"] = (
             packet["credential_validation_texts"] if "credential_validation_texts" in packet
             else await _source_validation_context(packet)
@@ -1208,6 +1213,22 @@ def _validate_distilled_answer(
             "superseded_note": qualifier_error,
         }, True, "qualifier_mismatch"
 
+    storage_validation = storage_authority_required(question)
+    if storage_validation:
+        # Full private bodies retain all retrieved vetoes before public caps.
+        # Mapping keys, source dates, and other guards cannot grant authority.
+        full = packet.get("source_validation_texts") or {}
+        storage_error = storage_authority_problem(
+            question, answer,
+            {source: str(full.get(source) or "") for source in cited_sources},
+            retrieved_texts=full,
+        )
+        if storage_error:
+            return {
+                "answer": None, "confidence": "not_found", "sources": [], "escalate": True,
+                "superseded_note": storage_error,
+            }, True, "storage_authority_mismatch"
+
     project_problem = question and _project_mismatch(question, answer, sources, packet)
     if project_problem:
         return {
@@ -1289,7 +1310,8 @@ def _validate_distilled_answer(
             result["as_of"] = max(observation_dates.values())
         action = "downgraded" if conf == "high" else action
 
-    if credential_services(question) or scoped_validation or network_validation or release_validation:
+    if (credential_services(question) or scoped_validation or network_validation
+            or release_validation or storage_validation):
         # A memory record does not verify external state or caller authority.
         result["escalate"] = True
         result["confidence"] = "medium" if result["confidence"] == "high" else result["confidence"]
@@ -1298,6 +1320,14 @@ def _validate_distilled_answer(
     note = parsed.get("superseded_note")
     if note and str(note).strip().lower() not in ("none", "null", "n/a"):
         result["superseded_note"] = str(note)[:500]
+    if storage_validation:
+        # A display cap must not remove a condition or protection limit.
+        if answer not in result["answer"] or len(result["answer"]) + len(STORAGE_AUTHORITY_SUFFIX) > 2000:
+            return {
+                "answer": None, "confidence": "not_found", "sources": [], "escalate": True,
+                "superseded_note": STORAGE_AUTHORITY_REASON,
+            }, True, "storage_authority_mismatch"
+        result["answer"] += STORAGE_AUTHORITY_SUFFIX
     result["answer"] = result["answer"][:2000]
     return result, True, action
 
