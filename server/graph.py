@@ -46,6 +46,9 @@ from release_scope_qualifiers import release_scope_problem, release_scope_requir
 from storage_authority_qualifiers import (
     storage_authority_problem, storage_authority_required, STORAGE_AUTHORITY_REASON, STORAGE_AUTHORITY_SUFFIX,
 )
+from sandbox_contract_qualifiers import (
+    sandbox_contract_problem, sandbox_contract_required, SANDBOX_CONTRACT_REASON, SANDBOX_CONTRACT_SUFFIX,
+)
 from ingest import DEFAULT_GROUP_ID, build_graphiti
 from vector_search import install_read_search
 from graphiti_core.search.search_config_recipes import COMBINED_HYBRID_SEARCH_RRF
@@ -90,6 +93,7 @@ GROUNDING_COUNTS = {
     "network_vantage_mismatch": 0,
     "release_scope_mismatch": 0,
     "storage_authority_mismatch": 0,
+    "sandbox_contract_mismatch": 0,
     "error": 0,
 }
 
@@ -886,7 +890,7 @@ async def _assemble_packet(
         packet["credential_validation_texts"] = await _credential_validation_context(packet)
     if answer_evidence and (temporal_negative_required(query) or resource_scope_required(query)
                             or network_vantage_required(query) or release_scope_required(query)
-                            or storage_authority_required(query)):
+                            or storage_authority_required(query) or sandbox_contract_required(query)):
         packet["source_validation_texts"] = (
             packet["credential_validation_texts"] if "credential_validation_texts" in packet
             else await _source_validation_context(packet)
@@ -1109,6 +1113,22 @@ def _validate_distilled_answer(
             "escalate": True,
         }, False, "rejected"
 
+    sandbox_validation = sandbox_contract_required(question)
+    if sandbox_validation:
+        # All raw citations need full private bodies before any display cap.
+        # Retrieved uncited bodies can veto, but cannot add provenance.
+        full = packet.get("source_validation_texts") or {}
+        sandbox_error = sandbox_contract_problem(
+            question, answer,
+            {source: str(full.get(source) or "") for source in cited_sources},
+            retrieved_texts=full,
+        )
+        if sandbox_error:
+            return {
+                "answer": None, "confidence": "not_found", "sources": [], "escalate": True,
+                "superseded_note": sandbox_error,
+            }, True, "sandbox_contract_mismatch"
+
     release_validation = release_scope_required(question)
     if release_validation:
         # Only retrieved identities enter this private validation view. The
@@ -1311,7 +1331,7 @@ def _validate_distilled_answer(
         action = "downgraded" if conf == "high" else action
 
     if (credential_services(question) or scoped_validation or network_validation
-            or release_validation or storage_validation):
+            or release_validation or storage_validation or sandbox_validation):
         # A memory record does not verify external state or caller authority.
         result["escalate"] = True
         result["confidence"] = "medium" if result["confidence"] == "high" else result["confidence"]
@@ -1328,6 +1348,14 @@ def _validate_distilled_answer(
                 "superseded_note": STORAGE_AUTHORITY_REASON,
             }, True, "storage_authority_mismatch"
         result["answer"] += STORAGE_AUTHORITY_SUFFIX
+    if sandbox_validation:
+        # A cap cannot remove a feature, scope role, or protection qualifier.
+        if answer not in result["answer"] or len(result["answer"]) + len(SANDBOX_CONTRACT_SUFFIX) > 2000:
+            return {
+                "answer": None, "confidence": "not_found", "sources": [], "escalate": True,
+                "superseded_note": SANDBOX_CONTRACT_REASON,
+            }, True, "sandbox_contract_mismatch"
+        result["answer"] += SANDBOX_CONTRACT_SUFFIX
     result["answer"] = result["answer"][:2000]
     return result, True, action
 
