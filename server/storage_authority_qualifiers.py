@@ -10,7 +10,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 
-from temporal_negative_qualifiers import _source_body_text
+from temporal_negative_qualifiers import _source_body_text, _SOURCE_FENCE
 
 STORAGE_AUTHORITY_REASON = (
     "The cited bodies do not establish the stated storage owner, operation, "
@@ -223,6 +223,50 @@ def _units(text: str) -> list[str]:
     token = re.compile(re.escape(marker) + r"(\d+)\x00")
     return [token.sub(lambda m: literals[int(m[1])], part.strip().rstrip(".!?"))
             for part in re.split(r"\n+|(?<=[.!?])\s+", masked) if part.strip()]
+
+
+def _raw_validation_units(text: str) -> list[str]:
+    """Keep fence presentation lines separate from raw body identities."""
+    lines = []
+    fence_character = None
+    fence_length = 0
+    minimum_indent = 0
+    maximum_indent = 3
+
+    def append_line(line):
+        heading = re.match(r"^ {0,3}#{1,6}(?:[ \t]+|$)(?P<content>.*)$", line)
+        if heading:
+            # Keep the original text. A second veto-only view separates
+            # the explicit heading marker from the source identity.
+            # Preserve soft continuations of the restriction clause.
+            lines.append(line + '\n\n' + heading['content'] + '\n')
+        else:
+            lines.append(line + '\n')
+
+    for line in text.splitlines():
+        if fence_character:
+            closing = re.fullmatch(r"(?P<indent>[ \t]*)(?P<marker>`+|~+)[ \t]*", line)
+            if (closing and closing['marker'][0] == fence_character
+                    and len(closing['marker']) >= fence_length
+                    and minimum_indent <= len(closing['indent'].expandtabs(4)) <= maximum_indent):
+                lines.append('\n\n')
+                fence_character = None
+                continue
+        else:
+            opening = _SOURCE_FENCE.match(line)
+            if opening:
+                fence_character = opening['marker'][0]
+                fence_length = len(opening['marker'])
+                minimum_indent = len((opening['indent'] + opening['container']).expandtabs(4)) if opening['container'] else 0
+                maximum_indent = minimum_indent + 3
+                # Retain header information for vetoes in its own unit.
+                # It cannot become the next body's object-name prefix.
+                lines.append('\n\n')
+                append_line(opening['info'])
+                lines.append('\n\n')
+                continue
+        append_line(line)
+    return _units(''.join(lines))
 
 
 def _raw_clause_units(text: str) -> list[str]:
@@ -448,7 +492,7 @@ def _contrary(raw: str, record: _Record, answer_units: set[str]) -> bool:
     def segment_problem(text):
         return any(clause_problem(clause) for clause in _raw_clause_units(text))
 
-    for unit in _units(raw):
+    for unit in _raw_validation_units(raw):
         events = sorted((match.start(), match.end(), phase, match)
                         for phase, grammar in _GRAMMARS.items() for match in grammar.finditer(unit))
         cursor = 0
@@ -495,7 +539,7 @@ def storage_authority_problem(
         # An unrelated negative clause cannot cancel a possible declaration.
         # Ambiguous declarations abstain; raw text never grants permission.
         if any(_POSSIBLE_CURRENT_PERMISSION.search(unit)
-               for raw in cited + _values(retrieved_texts) for unit in _units(raw)):
+               for raw in cited + _values(retrieved_texts) for unit in _raw_validation_units(raw)):
             return STORAGE_AUTHORITY_REASON
         return None
     prefix = "The cited source records: "

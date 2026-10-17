@@ -475,6 +475,36 @@ class StorageAuthorityTests(unittest.TestCase):
             later = owner + '.\n\nAction: cleanup.\n\n' + hold + '\n\n' + prior
             self.assert_rejected(answer(owner), {SOURCE: later}, question=query)
 
+    def test_raw_fence_and_heading_boundaries_cannot_prefix_an_object_identity(self):
+        bare = OBJECT[1:-1]
+        query = 'Who owns filesystem expansion?'
+        wrappers = ('```text\n{}\n```', '~~~python\n{}\n~~~', '# {}', '  ## {}',
+                    'summary: >\n  {}', '```text\n\n{}\n```')
+        for prefix in ('', 'PVC ', 'filesystem ', 'storage volume ', 'The ', 'text ', 'python '):
+            name = prefix + bare
+            owner = OWNER.replace(OBJECT, '`' + name + '`')
+            restriction = 'An ' + name + ' expansion requires fresh guards.'
+            for wrapper in wrappers:
+                body = owner + '.\n\nAction: cleanup.\n\n' + wrapper.format(restriction)
+                self.assert_rejected(answer(owner), {SOURCE: body}, question=query)
+                late = owner + '.\n\n' + ('Recorded context. ' * 300) + '\n\n`Other PVC` remains protected.\n\nAction: cleanup.\n\n' + wrapper.format(restriction)
+                self.assert_rejected(answer(owner), {SOURCE: owner}, question=query, retrieved={'sixth': late})
+                other = owner + '.\n\nAction: cleanup.\n\n' + wrapper.format('An Other PVC expansion remains blocked.')
+                self.assertIsNone(problem(answer(owner), {SOURCE: other}, question=query))
+        for wrapper in wrappers[:4]:
+            exact = OWNER + '.\n\nAction: cleanup.\n\n' + wrapper.format('The ' + bare + ' expansion remains blocked.')
+            self.assert_rejected(answer(OWNER), {SOURCE: exact}, question=query)
+        for prefix in ('text ', 'python ', '# ', '~~~text '):
+            target = '`' + prefix + bare + '`'
+            owner = OWNER.replace(OBJECT, target)
+            for wrapper in wrappers[:4]:
+                body = owner + '.\n\nAction: cleanup.\n\n' + wrapper.format(target + ' expansion remains blocked.')
+                self.assert_rejected(answer(owner), {SOURCE: body}, question=query)
+                other = OWNER + '.\n\nAction: cleanup.\n\n' + wrapper.format(target + ' expansion remains blocked.')
+                self.assertIsNone(problem(answer(OWNER), {SOURCE: other}, question=query))
+        for raw in ('```text\n' + OWNER + '\n```', '# ' + OWNER):
+            self.assert_rejected(answer(OWNER), {SOURCE: raw})
+
     def test_source_only_qualifiers_cannot_hide_protection_in_a_tail(self):
         body = OWNER + '\n\n' + OBJECT + ' custody release remains blocked.'
         self.assert_rejected(answer(OWNER), {SOURCE: body})
