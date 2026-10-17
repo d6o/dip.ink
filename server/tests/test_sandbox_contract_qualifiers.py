@@ -192,6 +192,34 @@ class SandboxContractTests(unittest.TestCase):
         self.reject(BOUNDED_LACK, question=modified)
         self.assertIsNone(problem(SAFE_UNKNOWN, question=modified))
 
+    def test_metadata_appendices_cannot_disable_an_operative_contract_clause(self):
+        questions = (
+            QUESTION + ' Which version is that?',
+            QUESTION + ' What is the filename `synth-record`?',
+            QUESTION + ' Source version: `synth-v1`.',
+            'What sandbox contract version provides isolation?',
+            'What `sandbox contract` version provides isolation?',
+            'What sandbox contract filename provides the required isolation features?',
+            'What is method sandbox-contract and what sandbox contract provides isolation?',
+            'What is method sandbox-contract; what sandbox contract provides isolation?',
+        )
+        for question in questions:
+            for prefix in ('', 'Currently, '):
+                question = prefix + question
+                self.assertTrue(sandbox_contract_required(question), question)
+                self.reject(WRONG, {SOURCE: HISTORY}, question=question)
+
+    def test_metadata_only_contract_names_do_not_supply_operative_intent(self):
+        for question in ('What is the sandbox contract version?',
+                         'What sandbox contract filename is installed?',
+                         'What is the title of the sandbox contract?',
+                         'What is the version of method sandbox-contract?',
+                         'What `sandbox permissions` version is installed?',
+                         'What is method sandbox-contract? Which version is that?'):
+            for prefix in ('', 'Currently, '):
+                self.assertFalse(sandbox_contract_required(prefix + question), prefix + question)
+                self.assertIsNone(problem('The record contains metadata.', question=prefix + question))
+
     def test_identity_words_cannot_supply_intent_or_force_private_collection(self):
         for question in ('What is the filename `sandbox-contract`?', 'What does method `sandbox-contract` mean?',
                          'What is the version of `current sandbox permissions`?',

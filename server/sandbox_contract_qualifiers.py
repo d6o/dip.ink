@@ -130,20 +130,52 @@ def _literal_role(question: str, match: re.Match) -> str:
 
 
 def sandbox_contract_required(question: str) -> bool:
-    """Collect full bodies for sandbox scope questions, not literal names."""
-    # Concept formatting can retain intent. Explicit identity roles cannot.
-    text = re.sub(_QUOTES, lambda m: _unquote(m[0]) if _literal_role(question, m) in {"concept", "ambiguous_concept"} else " ", question)
-    # A plain atom after an explicit identity role is data too. Unsupported
-    # compound identities do not contribute operative words in name queries.
-    if re.match(r"\s*what\s+is\s+(?:the\s+)?method\s+(?!for\b|that\b|which\b)", text, re.I):
-        return False
-    text = re.sub(
-        rf"(\b(?:method|task|app|root|phase|scope|source|filename|revision|version)\s*(?:(?:is|:|=)\s*)?)({_PLAIN})",
-        lambda m: m[1] + " ", text, flags=re.I,
-    )
-    text = re.sub(r"[*_]", "", text)
-    metadata = re.search(r"\b(?:filename|file name|meaning|definition|version|revision|title|spell|means?)\b", text, re.I)
-    return bool(_CONCEPT.search(text) and _INTENT.search(text) and not metadata)
+    """Collect operative contract clauses, not metadata-only name clauses."""
+    # Explicit identity roles stay opaque. A formatted concept before a
+    # version predicate can still express an operative contract constraint.
+    def concept(match):
+        role = _literal_role(question, match)
+        if role in {"concept", "ambiguous_concept"}:
+            return _unquote(match[0])
+        if (role == "data" and _CONCEPT_PHRASE.fullmatch(_unquote(match[0]))
+                and not _DATA_ROLE.search(question[:match.start()])
+                and re.match(r"\s+(?:version|revision)\s+(?:provides?|requires?|supports?)\b",
+                             question[match.end():], re.I)):
+            return _unquote(match[0])
+        return " "
+
+    text = re.sub(r"[*_]", "", re.sub(_QUOTES, concept, question))
+    # A later metadata question cannot cancel an earlier operative clause.
+    text = re.sub(r"(?:\s+and\s+|;\s*)(?=(?:what|which|how|can|does|describe|identify|explain|state|show)\b)",
+                  "\n\n", text, flags=re.I)
+    for clause in _units(text):
+        clause = re.sub(r"^(?:Currently|Now),?\s*", "", clause, flags=re.I)
+        if re.match(r"\s*what\s+is\s+(?:the\s+)?method\s+(?!for\b|that\b|which\b)", clause, re.I):
+            continue
+
+        def identity(match):
+            # A predicate after a role noun is not a named identity.
+            if match[2].casefold() in {"is", "are", "of", "for", "provides", "provide",
+                                       "requires", "require", "supports", "support", "applies", "apply"}:
+                return match[0]
+            return match[1] + " "
+
+        clause = re.sub(
+            rf"(\b(?:method|task|app|root|phase|scope|source|filename|revision|version)\s*(?:(?:is|:|=)\s*)?)({_PLAIN})",
+            identity, clause, flags=re.I,
+        )
+        metadata = re.search(
+            r"\b(?:filename|file name|meaning|definition|version|revision|title|spell|means?)\b", clause, re.I,
+        )
+        operative = re.search(
+            r"\b(?:provides?|features?|requires?|constraints?|permissions?|isolation|execute|execution|"
+            r"select|selection|gates?|safe|denial|allowlists?)\b", clause, re.I,
+        )
+        if metadata and not operative:
+            continue
+        if _CONCEPT.search(clause) and _INTENT.search(clause):
+            return True
+    return False
 
 
 def _question_roles(question: str) -> dict[str, set[str]]:

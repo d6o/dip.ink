@@ -209,6 +209,26 @@ class GraphSandboxContractTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIsNone(value['answer'])
                 self.assertEqual(event['grounding_action'], 'sandbox_contract_mismatch')
 
+    async def test_actual_metadata_appendices_retain_collector_and_new_route(self):
+        for base in (QUESTION + ' Which version is that?',
+                     QUESTION + ' What is the filename `synth-record`?',
+                     QUESTION + ' Source version: `synth-v1`.',
+                     'What sandbox contract version provides isolation?',
+                     'What `sandbox contract` version provides isolation?',
+                     'What sandbox contract filename provides the required isolation features?',
+                     'What is method sandbox-contract and what sandbox contract provides isolation?'):
+            for prefix in ('', 'Currently, '):
+                question = prefix + base
+                self.rejected(validate(WRONG, {SOURCE: HISTORY}, question=question))
+                with mock.patch.object(graph, '_source_validation_context',
+                                       new=mock.AsyncMock(return_value={SOURCE: HISTORY})) as collector:
+                    value, _, event, assembled, _ = await self.assemble({SOURCE: HISTORY}, WRONG, question=question)
+                collector.assert_awaited()
+                self.assertEqual(assembled['source_validation_texts'], {SOURCE: HISTORY})
+                self.assertEqual(event['grounding_action'], 'sandbox_contract_mismatch')
+                self.assertEqual(value['superseded_note'], SANDBOX_CONTRACT_REASON)
+                self.assertIsNone(value['answer'])
+
     async def test_actual_correct_and_mismatched_literal_request_roles(self):
         roles = {'method': 'synth-method', 'task': 'synth-task', 'app': 'synth-app',
                  'root': '/synthetic/root', 'phase': 'test', 'scope': 'offline-unit'}
@@ -250,9 +270,35 @@ class GraphSandboxContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(event['grounding_action'], 'downgraded')
         self.assertNotIn(COMPLETE, json.dumps(sent))
 
+    async def test_plain_metadata_records_keep_their_existing_answer_path(self):
+        metadata = 'The recorded sandbox contract version is synth-v1.'
+        for base in ('What is the sandbox contract version?',
+                     'What sandbox contract filename is installed?',
+                     'What is the version of method sandbox-contract?'):
+            for prefix in ('', 'Currently, '):
+                question = prefix + base
+                backend = SimpleNamespace(search_=mock.AsyncMock(return_value=SimpleNamespace(nodes=[], edges=[], episodes=[])))
+                with mock.patch.object(graph, '_get_graph', new=mock.AsyncMock(return_value=backend)), \
+                     mock.patch.object(graph, '_resolve_episode_slugs', new=mock.AsyncMock(return_value={})), \
+                     mock.patch.object(graph, '_wiki_semantic_hits', new=mock.AsyncMock(return_value=[
+                         {'name': SOURCE, 'content': metadata},
+                     ])), mock.patch.object(graph, '_source_validation_context', new=mock.AsyncMock()) as collector, \
+                     mock.patch.object(graph, '_distill', new=mock.AsyncMock(return_value={
+                         'answer': metadata, 'confidence': 'high', 'sources': [SOURCE], 'escalate': False,
+                     })), mock.patch.object(graph, '_record_query') as event:
+                    value = await graph._graph_answer_impl(question)
+                collector.assert_not_awaited()
+                self.assertIn(metadata, value['answer'])
+                self.assertIn(event.call_args.args[0]['grounding_action'], ('accepted', 'downgraded'))
+                self.assertNotIn(SANDBOX_CONTRACT_SUFFIX, value['answer'])
+
     async def test_unrelated_metadata_and_identity_words_collect_no_full_bodies(self):
         for question in ('What is the filename `sandbox-contract`?', 'What does method `sandbox-contract` mean?',
                          'What is the version of `current sandbox permissions`?',
+                         'What is the sandbox contract version?',
+                         'What sandbox contract filename is installed?',
+                         'What is the version of method sandbox-contract?',
+                         'What `sandbox permissions` version is installed?',
                          'What does method `sandbox contract provides execution` mean?',
                          'Can project leads implement or close tickets within their own project?'):
             backend = SimpleNamespace(search_=mock.AsyncMock(return_value=SimpleNamespace(nodes=[], edges=[], episodes=[])))
