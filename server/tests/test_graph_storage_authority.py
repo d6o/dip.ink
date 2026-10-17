@@ -486,6 +486,63 @@ class GraphStorageAuthorityTests(unittest.IsolatedAsyncioTestCase):
                 self.assert_qualified(value)
                 self.assertEqual(event['grounding_action'], 'downgraded')
 
+    async def test_article_roles_preserve_directed_vetoes_and_quoted_identity_limits(self):
+        bare = OBJECT[1:-1]
+        restrictions = ('Expansion of the ' + bare + ' remains blocked.',
+                        'Expansion for the ' + bare + ' is blocked.',
+                        'Expansion of the ' + bare + ' requires fresh guards.',
+                        'Expansion of the ' + bare + ' cannot proceed.',
+                        'The ' + bare + ' expansion remains blocked.',
+                        'Expansion of the filesystem ' + bare + ' remains blocked.',
+                        'Expansion of the\n  ' + bare + '\nremains blocked.',
+                        'Expansion of the Devbox\n  shared-home filesystem remains blocked.',
+                        'Expansion of the ' + OBJECT + ' remains blocked.')
+        for question in (QUESTION, CURRENT):
+            for restriction in restrictions:
+                body = OWNER + '.\n\nAction: cleanup.\n\n' + restriction
+                self.assert_rejected(validate(answer(OWNER), {SOURCE: body}, question=question))
+                value, _, event, _, _ = await self.assemble({SOURCE: body}, answer(OWNER), question=question)
+                self.assertIsNone(value['answer'])
+                self.assertEqual(event['grounding_action'], 'storage_authority_mismatch')
+                bodies = {SOURCE + '-' + str(index): OWNER for index in range(6)}
+                private = dict(bodies)
+                private[list(bodies)[-1]] += '.\n\n' + ('Recorded context. ' * 300) + '\n\n`Other PVC` remains protected.\n\nAction: cleanup.\n\n' + restriction
+                first = [list(bodies)[0]]
+                self.assert_rejected(validate(answer(OWNER), bodies, question=question, sources=first, private=private))
+                value, _, event, _, _ = await self.assemble(bodies, answer(OWNER), question=question,
+                                                           sources=first, private=private)
+                self.assertIsNone(value['answer'])
+                self.assertEqual(event['grounding_action'], 'storage_authority_mismatch')
+            for target in ('the Other PVC', '"The ' + bare + '"', '`The ' + bare + '`', 'the `Other PVC`'):
+                body = OWNER + '.\n\nAction: cleanup.\n\nExpansion of ' + target + ' remains blocked.'
+                value, _, event, _, _ = await self.assemble({SOURCE: body}, answer(OWNER), question=question)
+                self.assert_qualified(value)
+                self.assertEqual(event['grounding_action'], 'downgraded')
+        exact_other = METADATA.replace(OBJECT, '`The ' + bare + '`')
+        bare_hold = 'Expansion of The ' + bare + ' remains blocked.'
+        earlier_name = exact_other + '.\n\n' + OWNER + '.\n\nAction: cleanup.\n\n' + bare_hold
+        later_name = OWNER + '.\n\nAction: cleanup.\n\n' + bare_hold + '\n\n' + exact_other
+        for question in (QUESTION, CURRENT):
+            value, _, event, _, _ = await self.assemble({SOURCE: earlier_name}, answer(OWNER), question=question)
+            self.assert_qualified(value)
+            self.assertEqual(event['grounding_action'], 'downgraded')
+            value, _, event, _, _ = await self.assemble({SOURCE: later_name}, answer(OWNER), question=question)
+            self.assertIsNone(value['answer'])
+            self.assertEqual(event['grounding_action'], 'storage_authority_mismatch')
+        genuine = OWNER.replace(OBJECT, '`The ' + bare + '`')
+        for prefix in ('', 'Currently, '):
+            question = prefix + 'Who owns filesystem expansion?'
+            for target in ('The ' + bare, '`The ' + bare + '`', 'the `The ' + bare + '`'):
+                body = genuine + '.\n\nAction: cleanup.\n\nExpansion of ' + target + ' remains blocked.'
+                self.assert_rejected(validate(answer(genuine), {SOURCE: body}, question=question))
+                value, _, event, _, _ = await self.assemble({SOURCE: body}, answer(genuine), question=question)
+                self.assertIsNone(value['answer'])
+                self.assertEqual(event['grounding_action'], 'storage_authority_mismatch')
+            body = genuine + '.\n\nExpansion of ' + OBJECT + ' remains blocked.'
+            value, _, event, _, _ = await self.assemble({SOURCE: body}, answer(genuine), question=question)
+            self.assert_qualified(value)
+            self.assertEqual(event['grounding_action'], 'downgraded')
+
     async def test_literal_filename_and_method_questions_collect_no_private_body(self):
         for question in ('What does method `storage-mutation` mean?',
                          'What is the filename `storage-mutation`?',

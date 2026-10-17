@@ -413,6 +413,39 @@ class StorageAuthorityTests(unittest.TestCase):
         self.assert_rejected(answer(OWNER), {SOURCE: later_other})
         self.assertIsNone(problem(answer(COMPLETE), {SOURCE: COMPLETE + '.\n\n' + restrictions[0]}))
 
+    def test_bare_articles_are_syntax_but_quoted_article_names_keep_their_bytes(self):
+        bare = OBJECT[1:-1]
+        restrictions = ('Expansion of the ' + bare + ' remains blocked.',
+                        'Expansion for the ' + bare + ' is blocked.',
+                        'Expansion of the ' + bare + ' requires fresh guards.',
+                        'Expansion of the ' + bare + ' cannot proceed.',
+                        'The ' + bare + ' expansion remains blocked.',
+                        'Expansion of the filesystem ' + bare + ' remains blocked.',
+                        'Expansion of the\n  ' + bare + '\nremains blocked.',
+                        'Expansion of the Devbox\n  shared-home filesystem remains blocked.',
+                        'Expansion of the ' + OBJECT + ' remains blocked.')
+        for restriction in restrictions:
+            body = OWNER + '.\n\nAction: cleanup.\n\n' + restriction
+            self.assert_rejected(answer(OWNER), {SOURCE: body})
+            reset = OWNER + '.\n\n`Other PVC` remains protected.\n\nAction: cleanup.\n\n' + restriction
+            self.assert_rejected(answer(OWNER), {SOURCE: reset})
+        for other in ('the Other PVC', '"The ' + bare + '"', '`The ' + bare + '`', 'the `Other PVC`'):
+            body = OWNER + '.\n\nAction: cleanup.\n\nExpansion of ' + other + ' remains blocked.'
+            self.assertIsNone(problem(answer(OWNER), {SOURCE: body}))
+        exact_other = METADATA.replace(OBJECT, '`The ' + bare + '`')
+        bare_hold = 'Expansion of The ' + bare + ' remains blocked.'
+        earlier_name = exact_other + '.\n\n' + OWNER + '.\n\nAction: cleanup.\n\n' + bare_hold
+        self.assertIsNone(problem(answer(OWNER), {SOURCE: earlier_name}))
+        later_name = OWNER + '.\n\nAction: cleanup.\n\n' + bare_hold + '\n\n' + exact_other
+        self.assert_rejected(answer(OWNER), {SOURCE: later_name})
+        genuine = OWNER.replace(OBJECT, '`The ' + bare + '`')
+        query = 'Who owns filesystem expansion?'
+        for target in ('The ' + bare, '`The ' + bare + '`', 'the `The ' + bare + '`'):
+            body = genuine + '.\n\nAction: cleanup.\n\nExpansion of ' + target + ' remains blocked.'
+            self.assert_rejected(answer(genuine), {SOURCE: body}, question=query)
+        other_hold = genuine + '.\n\nExpansion of ' + OBJECT + ' remains blocked.'
+        self.assertIsNone(problem(answer(genuine), {SOURCE: other_hold}, question=query))
+
     def test_source_only_qualifiers_cannot_hide_protection_in_a_tail(self):
         body = OWNER + '\n\n' + OBJECT + ' custody release remains blocked.'
         self.assert_rejected(answer(OWNER), {SOURCE: body})

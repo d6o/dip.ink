@@ -29,9 +29,11 @@ _OBJECT_TYPE = r"(?:(?:the\s+)?(?:storage object|storage volume|filesystem|PVC|P
 _ACTION_PREDICATE = r"(?:is|remains|stays|requires|cannot|blocked)\b"
 _DIRECTED_RESTRICTION = re.compile(
     rf"\b(?P<action>{_ACTION_WORDS})\s+"
-    rf"(?:(?:of|for)\s+{_OBJECT_TYPE}(?P<object>{_RAW_OBJECT})\s+)?{_ACTION_PREDICATE}", re.I,
+    rf"(?:(?:of|for)\s+(?P<determiner>(?:the|a|an)\s+)?"
+    rf"(?P<kind>{_OBJECT_TYPE})(?P<object>{_RAW_OBJECT})\s+)?{_ACTION_PREDICATE}", re.I,
 )
 _REVERSE_RESTRICTION = re.compile(
+    rf"(?P<determiner>(?:the|a|an)\s+)?"
     rf"(?P<kind>(?:the\s+)?(?:storage object|storage volume|filesystem|PVC|PV|volume|disk)\s+)?"
     rf"(?P<object>{_RAW_OBJECT})\s+(?P<action>{_ACTION_WORDS})\s+{_ACTION_PREDICATE}", re.I,
 )
@@ -407,6 +409,15 @@ def _contrary(raw: str, record: _Record, answer_units: set[str]) -> bool:
                 if quoted:
                     source_object = source_object[1:-1]
                 identity = '`' + source_object + '`'
+                if not quoted:
+                    # Prefer an exact source name before a syntactic article
+                    # or type prefix. Quoted identity bytes never lose words.
+                    prefix = (restriction.groupdict().get("determiner") or '') + (restriction.groupdict().get("kind") or '')
+                    exact = list(dict.fromkeys((prefix + source_object, source_object)))
+                    candidates = exact + [candidate for value in exact
+                                          if (candidate := ' '.join(value.split())) not in exact]
+                    identity = next(('`' + candidate + '`' for candidate in candidates
+                                     if '`' + candidate + '`' == object_name or '`' + candidate + '`' in seen_objects), identity)
                 method_role = re.search(r"\b(?:method|via|through|using)\s*$", remainder[:start], re.I)
                 bare_identity = (identity in seen_objects or '/' in source_object
                                  or (re.search(r"\b(?:filesystem|PVC|PV|volume|disk)$", source_object, re.I)
