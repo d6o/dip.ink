@@ -368,6 +368,51 @@ class StorageAuthorityTests(unittest.TestCase):
         # A possible declaration can also be ambiguous. It never grants access.
         self.assert_rejected(SAFE_UNKNOWN, {SOURCE: 'No current caller permission is approved.'})
 
+    def test_unknown_modifiers_keep_selection_without_providing_factual_scope(self):
+        for modifier in ('current', 'urgent', 'emergency', 'operator', 'recently revised',
+                         'operator-approved', 'current, restricted', '(current)', '2026 current'):
+            for query in ('What `' + modifier + ' storage permissions` apply here?',
+                          'What `' + modifier + ' PVC expansion permission` applies here?',
+                          'What storage `' + modifier + ' permissions` apply here?',
+                          'What PVC `' + modifier + ' permissions` apply here?'):
+                self.assertTrue(storage_authority_required(query), query)
+                self.assert_rejected(WRONG, {SOURCE: METADATA}, question=query)
+                self.assert_rejected(answer(OWNER), {SOURCE: OWNER}, question=query)
+                self.assertIsNone(problem(SAFE_UNKNOWN, {SOURCE: OWNER}, question=query))
+            plain = 'What ' + modifier + ' storage permissions apply here?'
+            self.assertIsNone(problem(answer(METADATA), {SOURCE: METADATA}, question=plain))
+        for query in ('Can `urgent storage permissions` read pod metadata?',
+                      'What is the version of `current storage permissions`?',
+                      'What `emergency storage permissions` version is installed?',
+                      'What is the filename `operator storage permissions`?',
+                      'What is `/opt/current/storage-permissions`?'):
+            self.assertFalse(storage_authority_required(query), query)
+
+    def test_directed_action_and_object_restrictions_keep_their_local_roles(self):
+        bare = OBJECT[1:-1]
+        restrictions = ('Expansion of ' + OBJECT + ' remains blocked.',
+                        'Expansion of ' + OBJECT + ' is blocked.',
+                        'Expansion of ' + OBJECT + ' requires fresh guards.',
+                        'Expansion of ' + OBJECT + ' cannot proceed.',
+                        'Expansion for ' + OBJECT + ' remains blocked.',
+                        'Expansion of filesystem ' + OBJECT + ' remains blocked.',
+                        'Expansion of\n' + OBJECT + '\nremains blocked.',
+                        'Expansion of ' + bare + ' remains blocked.',
+                        'Expansion of "' + bare + '" remains blocked.',
+                        OBJECT + ' expansion remains blocked.')
+        for restriction in restrictions:
+            body = OWNER + '.\n\nAction: cleanup.\n\n' + restriction
+            self.assert_rejected(answer(OWNER), {SOURCE: body})
+            for wrapper in ('# {}', 'summary: >\n  {}', '```text\n{}\n```'):
+                late = OWNER + '.\n\n' + ('Recorded context. ' * 300) + '\n\nAction: cleanup.\n\n' + wrapper.format(restriction)
+                self.assert_rejected(answer(OWNER), {SOURCE: OWNER}, retrieved={'sixth': late})
+        for other in ('`Other PVC`', 'Other PVC', '"Other PVC"'):
+            body = OWNER + '.\n\nAction: cleanup.\n\nExpansion of ' + other + ' remains blocked.'
+            self.assertIsNone(problem(answer(OWNER), {SOURCE: body}))
+        later_other = OWNER + '.\n\nAction: cleanup.\n\nExpansion of ' + OBJECT + ' remains blocked; cleanup of `Other PVC` is blocked.'
+        self.assert_rejected(answer(OWNER), {SOURCE: later_other})
+        self.assertIsNone(problem(answer(COMPLETE), {SOURCE: COMPLETE + '.\n\n' + restrictions[0]}))
+
     def test_source_only_qualifiers_cannot_hide_protection_in_a_tail(self):
         body = OWNER + '\n\n' + OBJECT + ' custody release remains blocked.'
         self.assert_rejected(answer(OWNER), {SOURCE: body})

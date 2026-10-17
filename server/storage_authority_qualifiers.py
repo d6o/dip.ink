@@ -22,6 +22,19 @@ STORAGE_AUTHORITY_BODY_REASON = (
 )
 STORAGE_AUTHORITY_SUFFIX = " This is a source record, not current permission or a new live check."
 _LITERAL = r"`[^`\n]+`"
+_RAW_LITERAL = _LITERAL + r'''|"[^"\n]*"|'[^'\n]*' '''.strip()
+_ACTION_WORDS = r"expansion|cleanup|resize|deletion|write|patch"
+_RAW_OBJECT = (r"(?:" + _RAW_LITERAL + r"|[A-Za-z0-9_/.#:-]+(?:[ \t]+[A-Za-z0-9_/.#:-]+){0,7}?)")
+_OBJECT_TYPE = r"(?:(?:the\s+)?(?:storage object|storage volume|filesystem|PVC|PV|volume|disk)\s+)?"
+_ACTION_PREDICATE = r"(?:is|remains|stays|requires|cannot|blocked)\b"
+_DIRECTED_RESTRICTION = re.compile(
+    rf"\b(?P<action>{_ACTION_WORDS})\s+"
+    rf"(?:(?:of|for)\s+{_OBJECT_TYPE}(?P<object>{_RAW_OBJECT})\s+)?{_ACTION_PREDICATE}", re.I,
+)
+_REVERSE_RESTRICTION = re.compile(
+    rf"(?P<kind>(?:the\s+)?(?:storage object|storage volume|filesystem|PVC|PV|volume|disk)\s+)?"
+    rf"(?P<object>{_RAW_OBJECT})\s+(?P<action>{_ACTION_WORDS})\s+{_ACTION_PREDICATE}", re.I,
+)
 _DATE = r"20\d{2}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z)?"
 _STORAGE = re.compile(
     r"\b(?:storage|filesystems?|file[- ]systems?|shared[- ]home|home[- ]PVC|"
@@ -108,6 +121,12 @@ _PROTECTION = re.compile(
 )
 
 
+def _ordinary_phrase(value: str) -> bool:
+    """Exclude path and identifier punctuation from modifier phrases."""
+    return bool(re.fullmatch(r"[A-Za-z0-9 ,()'-]+", value) and re.search(r"[A-Za-z]", value)
+                and (not re.search(r"\d", value) or re.search(r"\s", value)))
+
+
 def _literal_role(question: str, match: re.Match) -> str:
     """Classify one literal without changing its identity bytes."""
     before = re.sub(r"[*_]", "", question[:match.start()])
@@ -119,7 +138,9 @@ def _literal_role(question: str, match: re.Match) -> str:
         if (re.search(rf"\b{noun}\s*(?:(?:is|:|=)\s*)?$", before, re.I)
                 or re.match(rf"\s+{noun}\b", after, re.I)):
             property_question = (
-                role == "object" and _CONCEPT.fullmatch(match[0][1:-1])
+                role == "object" and (_CONCEPT.fullmatch(match[0][1:-1])
+                                      or (_ordinary_phrase(match[0][1:-1])
+                                          and _INTENT.search(match[0][1:-1])))
                 and re.search(r"\b(?:filesystem|PVC|PV|volume|disk|Longhorn)\s*$", before, re.I)
                 and re.match(r"\s+(?:apply|applies|govern|governs|are|required)\b", after, re.I)
             )
@@ -131,11 +152,29 @@ def _literal_role(question: str, match: re.Match) -> str:
     if (re.search(r"\b(?:can|does|do|could)\s*$", before, re.I)
             and re.match(r"\s+(?:read|list|get|fetch|query|inspect|access|support)\w*\b", after, re.I)):
         return "method"
-    if re.search(r"\b(?:source|note|record|filename|file name|path|named|called|for reference)\s*$", before, re.I):
+    if (re.search(r"\b(?:source|note|record|filename|file name|path|title|version|revision|tag|digest|image|build)"
+                  r"\s*(?:(?:is|of|:|=)\s*)?$", before, re.I)
+            or re.search(r"\b(?:named|called|for reference)\s*$", before, re.I)
+            or re.match(r"\s+(?:filename|path|title|version|revision|tag|digest)\b", after, re.I)):
         return "data"
-    if _CONCEPT.fullmatch(match[0][1:-1]):
+    if re.search(r"\b(?:expansion of|cleanup of|resize of)\s+(?:the\s+)?$", before, re.I):
+        return "object"
+    value = match[0][1:-1]
+    if _CONCEPT.fullmatch(value):
+        if re.search(r"\b(?:toward|towards|concerning|regarding|about|for|to)\s*$", before, re.I):
+            return "ambiguous_concept"
         return "concept"
-    if re.search(r"\b(?:owns?|expansion of|cleanup of|resize of)\s+(?:the\s+)?$", before, re.I):
+    # Unknown ordinary modifiers cannot remove recognized safety intent.
+    # Identifier punctuation stays opaque. Ambiguous phrases cannot bind facts.
+    outside = re.sub(_LITERAL, " ", question)
+    known_literals = ' '.join(item[0][1:-1] for item in re.finditer(_LITERAL, question)
+                              if _CONCEPT.fullmatch(item[0][1:-1]))
+    combined = value + ' ' + outside + ' ' + known_literals
+    if (_ordinary_phrase(value)
+            and (_STORAGE.search(value) or _INTENT.search(value))
+            and _STORAGE.search(combined) and _INTENT.search(combined)):
+        return "ambiguous_concept"
+    if re.search(r"\bowns?\s+(?:the\s+)?$", before, re.I):
         return "object"
     # An unbound identity cannot silently become a generic scope question.
     return "unbound"
@@ -145,11 +184,11 @@ def _operative_question_text(question: str) -> str:
     """Keep concept presentation separate from explicit literal identities."""
     outside = re.sub(_LITERAL, " ", question)
     name_question = (not _STORAGE.search(outside) and re.search(
-        r"\b(?:filename|file name|path|meaning|definition|spell\w*|means?|named|called)\b", outside, re.I,
+        r"\b(?:filename|file name|path|title|version|revision|tag|digest|meaning|definition|spell\w*|means?|named|called)\b", outside, re.I,
     ))
 
     def concept(match):
-        if not name_question and _literal_role(question, match) == "concept":
+        if not name_question and _literal_role(question, match) in {"concept", "ambiguous_concept"}:
             return match[0][1:-1]
         return " "
 
@@ -182,6 +221,14 @@ def _units(text: str) -> list[str]:
     token = re.compile(re.escape(marker) + r"(\d+)\x00")
     return [token.sub(lambda m: literals[int(m[1])], part.strip().rstrip(".!?"))
             for part in re.split(r"\n+|(?<=[.!?])\s+", masked) if part.strip()]
+
+
+def _raw_clause_units(text: str) -> list[str]:
+    """Separate raw restriction clauses without changing quoted identities."""
+    parts = re.split('(' + _RAW_LITERAL + ')', text)
+    for index in range(0, len(parts), 2):
+        parts[index] = re.sub(r";|\s+\b(?:but|while|whereas|however)\b\s+", '\n\n', parts[index], flags=re.I)
+    return _units(''.join(parts))
 
 
 @dataclass(frozen=True)
@@ -221,6 +268,7 @@ def _question_roles(question: str) -> dict[str, set[str]]:
     roles: dict[str, set[str]] = {}
     for match in re.finditer(_LITERAL, question):
         role = _literal_role(question, match)
+        role = "unbound" if role == "ambiguous_concept" else role
         if role not in {"concept", "data"}:
             identity = match[0][1:-1] if role == "action" else match[0]
             roles.setdefault(role, set()).add(identity)
@@ -263,9 +311,6 @@ def _question_roles(question: str) -> dict[str, set[str]]:
             roles.setdefault("method", set()).add("\x00unsupported")
     collect("object", rf"({_LITERAL})\s+(?:filesystem|PVC|storage object)\b")
     collect("object", rf"\b(?:expansion of|cleanup of|resize of)\s+(?:the\s+)?({_LITERAL})")
-    for identity in re.findall(rf"\bowns?\s+(?:the\s+)?({_LITERAL})", question, re.I):
-        if not _CONCEPT.fullmatch(identity[1:-1]):
-            roles.setdefault("object", set()).add(identity)
     # Do not invent an alias between a filesystem and a PVC.
     collect("object", r"\b(?:the|for|of|owns?)\s+(?:the\s+)?"
             r"([A-Z][A-Za-z0-9_.-]*(?:[ -](?:shared[- ]home|home))? (?:filesystem|PVC))\b", flags=0)
@@ -309,8 +354,9 @@ def _contrary(raw: str, record: _Record, answer_units: set[str]) -> bool:
     # Object context and action context stay separate and follow source order.
     object_context = None
     action_context = None
+    seen_objects: set[str] = set()
 
-    def segment_problem(text):
+    def clause_problem(text):
         nonlocal object_context, action_context
         identity = object_name[1:-1]
         mentions = re.search(r"(?<![\w./:-])" + re.escape(identity) + r"(?![\w./:-])", text)
@@ -344,22 +390,50 @@ def _contrary(raw: str, record: _Record, answer_units: set[str]) -> bool:
                 if record.fields.get(role) != value:
                     return True
                 remainder = remainder.replace(prop[0], "")
-        # Explicit source actions can restore their own operation context.
-        # They cannot restore an object after an unrelated-object reset.
-        restrictions = list(re.finditer(
-            r"\b(?P<action>expansion|cleanup|resize|deletion|write|patch)\s+"
-            r"(?:is|remains|stays|requires|cannot|blocked)\b", remainder, re.I,
-        ))
-        operation_hold = any(match["action"].lower() == desired_action for match in restrictions)
-        if restrictions:
-            action_context = restrictions[-1]["action"].lower()
+        # Directed source roles bind an action, an optional object, and a
+        # restriction predicate. A matching clause can restore its own scope.
+        restrictions = sorted((match.start(), -match.end(), kind, match)
+                              for kind, pattern in (("directed", _DIRECTED_RESTRICTION), ("reverse", _REVERSE_RESTRICTION))
+                              for match in pattern.finditer(remainder))
+        cursor = 0
+        held = bool(_HOLD.search(remainder))
+        for start, negative_end, kind, restriction in restrictions:
+            if start < cursor:
+                continue
+            cursor = -negative_end
+            source_object = restriction["object"]
+            if source_object:
+                quoted = source_object[:1] in {'`', '"', "'"} and source_object[-1:] == source_object[:1]
+                if quoted:
+                    source_object = source_object[1:-1]
+                identity = '`' + source_object + '`'
+                method_role = re.search(r"\b(?:method|via|through|using)\s*$", remainder[:start], re.I)
+                bare_identity = (identity in seen_objects or '/' in source_object
+                                 or (re.search(r"\b(?:filesystem|PVC|PV|volume|disk)$", source_object, re.I)
+                                     and not _CONCEPT.fullmatch(source_object)))
+                bound_object = (kind == "directed" or (not method_role and (
+                    quoted or restriction.groupdict().get("kind") or bare_identity)))
+                if bound_object:
+                    object_context = identity == object_name
+            action_context = restriction["action"].lower()
+            # A later action or object cannot cancel this potential limit.
+            if held and authority_scope and object_context is not False and action_context == desired_action:
+                return True
         related_action = desired_action is None or action_context in {None, desired_action}
         event_conflict = record.fields.get("event") and record.fields["event"] in remainder and mentions
-        if _HOLD.search(remainder) and (authority_scope or event_conflict):
-            if object_context is not False and (operation_hold or (related_action and (
-                    mentions or _PROTECTION.search(remainder)))):
+        if held and (authority_scope or event_conflict) and object_context is not False:
+            if related_action and (mentions or _PROTECTION.search(remainder)):
+                return True
+            # Unknown restriction forms abstain only in the actual local
+            # object context. Literal method names do not supply action words.
+            outside = re.sub(_RAW_LITERAL, ' ', remainder)
+            head = re.match(r"\s*(?:[#>*-]+\s*)?(?P<action>" + _ACTION_WORDS + r")\b", outside, re.I)
+            if head and head["action"].lower() == desired_action:
                 return True
         return False
+
+    def segment_problem(text):
+        return any(clause_problem(clause) for clause in _raw_clause_units(text))
 
     for unit in _units(raw):
         events = sorted((match.start(), match.end(), phase, match)
@@ -371,6 +445,7 @@ def _contrary(raw: str, record: _Record, answer_units: set[str]) -> bool:
             if segment_problem(unit[cursor:start]):
                 return True
             fields = match.groupdict()
+            seen_objects.add(fields["object"])
             object_context = fields["object"] == object_name
             action_context = fields.get("action")
             if object_context:

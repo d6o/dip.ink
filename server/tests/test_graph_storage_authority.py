@@ -429,11 +429,72 @@ class GraphStorageAuthorityTests(unittest.IsolatedAsyncioTestCase):
             self.assert_qualified(value)
             self.assertEqual(event['grounding_action'], 'downgraded')
 
+    async def test_modified_concepts_keep_private_selection_but_cannot_invent_scope(self):
+        for modifier in ('current', 'urgent', 'emergency', 'operator', 'recently revised', '(current)', '2026 current'):
+            for base in ('What `' + modifier + ' storage permissions` apply here?',
+                         'What `' + modifier + ' PVC expansion permission` applies here?',
+                         'What PVC `' + modifier + ' permissions` apply here?'):
+                for prefix in ('', 'Currently, '):
+                    question = prefix + base
+                    self.assert_rejected(validate(WRONG, {SOURCE: METADATA}, question=question))
+                    with mock.patch.object(graph, '_source_validation_context',
+                                           new=mock.AsyncMock(return_value={SOURCE: METADATA})) as collector:
+                        value, _, event, _, _ = await self.assemble({SOURCE: METADATA}, WRONG, question=question)
+                    collector.assert_awaited()
+                    self.assertIsNone(value['answer'])
+                    self.assertEqual(event['grounding_action'], 'storage_authority_mismatch')
+                    self.assert_rejected(validate(answer(OWNER), {SOURCE: OWNER}, question=question))
+                    value, _, event, _, _ = await self.assemble({SOURCE: OWNER}, SAFE_UNKNOWN, question=question)
+                    self.assert_qualified(value)
+                    self.assertEqual(event['grounding_action'], 'downgraded')
+            plain = 'What ' + modifier + ' storage permissions apply here?'
+            value, _, event, _, _ = await self.assemble({SOURCE: METADATA}, answer(METADATA), question=plain)
+            self.assert_qualified(value)
+            self.assertEqual(event['grounding_action'], 'downgraded')
+
+    async def test_directed_restrictions_veto_even_when_only_the_first_source_is_cited(self):
+        bare = OBJECT[1:-1]
+        restrictions = ('Expansion of ' + OBJECT + ' remains blocked.',
+                        'Expansion of ' + OBJECT + ' is blocked.',
+                        'Expansion of ' + OBJECT + ' requires fresh guards.',
+                        'Expansion of ' + OBJECT + ' cannot proceed.',
+                        'Expansion for ' + OBJECT + ' remains blocked.',
+                        'Expansion of filesystem ' + OBJECT + ' remains blocked.',
+                        'Expansion of\n' + OBJECT + '\nremains blocked.',
+                        'Expansion of ' + bare + ' remains blocked.',
+                        'Expansion of "' + bare + '" remains blocked.')
+        for question in (QUESTION, CURRENT):
+            for restriction in restrictions:
+                body = OWNER + '.\n\nAction: cleanup.\n\n' + restriction
+                self.assert_rejected(validate(answer(OWNER), {SOURCE: body}, question=question))
+                value, _, event, _, _ = await self.assemble({SOURCE: body}, answer(OWNER), question=question)
+                self.assertIsNone(value['answer'])
+                self.assertEqual(event['grounding_action'], 'storage_authority_mismatch')
+                for wrapper in ('{}', 'summary: >\n  {}', '```text\n{}\n```'):
+                    bodies = {SOURCE + '-' + str(index): OWNER for index in range(6)}
+                    private = dict(bodies)
+                    private[list(bodies)[-1]] += '.\n\n' + ('Recorded context. ' * 300) + '\n\nAction: cleanup.\n\n' + wrapper.format(restriction)
+                    first = [list(bodies)[0]]
+                    self.assert_rejected(validate(answer(OWNER), bodies, question=question, sources=first, private=private))
+                    value, _, event, _, _ = await self.assemble(bodies, answer(OWNER), question=question,
+                                                               sources=first, private=private)
+                    self.assertIsNone(value['answer'])
+                    self.assertEqual(event['grounding_action'], 'storage_authority_mismatch')
+            for other in ('`Other PVC`', 'Other PVC', '"Other PVC"'):
+                body = OWNER + '.\n\nAction: cleanup.\n\nExpansion of ' + other + ' remains blocked.'
+                value, _, event, _, _ = await self.assemble({SOURCE: body}, answer(OWNER), question=question)
+                self.assert_qualified(value)
+                self.assertEqual(event['grounding_action'], 'downgraded')
+
     async def test_literal_filename_and_method_questions_collect_no_private_body(self):
         for question in ('What does method `storage-mutation` mean?',
                          'What is the filename `storage-mutation`?',
                          'Which method is named `storage-mutation`?',
-                         'What `storage-mutation` method is installed?'):
+                         'What `storage-mutation` method is installed?',
+                         'What is the version of `current storage permissions`?',
+                         'What `urgent storage permissions` version is installed?',
+                         'What is the filename `operator storage permissions`?',
+                         'What is `/opt/current/storage-permissions`?'):
             g = SimpleNamespace(search_=mock.AsyncMock(return_value=SimpleNamespace(nodes=[], edges=[], episodes=[])))
             with mock.patch.object(graph, '_get_graph', new=mock.AsyncMock(return_value=g)), \
                  mock.patch.object(graph, '_resolve_episode_slugs', new=mock.AsyncMock(return_value={})), \
