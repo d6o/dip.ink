@@ -17,7 +17,7 @@ from sandbox_contract_qualifiers import (
     SANDBOX_CONTRACT_REASON, SANDBOX_CONTRACT_SUFFIX,
 )
 from test_sandbox_contract_qualifiers import (
-    AUTONOMY, COMPLETE, CURRENT, FEATURES, HISTORY, PARTIAL, QUESTION, SOURCE, WRONG, answer,
+    AUTONOMY, COMPLETE, CURRENT, FEATURES, HISTORY, PARTIAL, QUESTION, SOURCE, WRONG, answer, raw_field_failures,
 )
 
 
@@ -171,6 +171,51 @@ class GraphSandboxContractTests(unittest.IsolatedAsyncioTestCase):
         value, _, event, _, _ = await self.assemble(bodies, answer(COMPLETE), private={**private, list(bodies)[-1]: ''})
         self.assertEqual(event['grounding_action'], 'sandbox_contract_mismatch')
         self.assertEqual(value['superseded_note'], SANDBOX_CONTRACT_BODY_REASON)
+
+    async def test_actual_raw_field_boundaries_reject_same_method_failure(self):
+        for question in (QUESTION, CURRENT):
+            for raw in raw_field_failures():
+                for wrapper in ('{}', '```text\n{}\n```', '# {}', 'summary: >\n  {}'):
+                    wrapped = wrapper.format(raw.replace('\n', '\n  ') if wrapper.startswith('summary') else raw)
+                    body = COMPLETE + '.\n\n' + wrapped
+                    self.rejected(validate(answer(COMPLETE), {SOURCE: body}, question=question))
+                    value, _, event, _, _ = await self.assemble({SOURCE: body}, answer(COMPLETE), question=question)
+                    self.assertEqual(event['grounding_action'], 'sandbox_contract_mismatch')
+                    self.assertEqual(value['superseded_note'], SANDBOX_CONTRACT_REASON)
+                    self.assertIsNone(value['answer'])
+            for raw in raw_field_failures()[:5]:
+                bodies = {SOURCE + '-' + str(index): COMPLETE for index in range(6)}
+                private = dict(bodies)
+                private[list(bodies)[-1]] = ('Recorded context. ' * 300) + '\n\n' + raw
+                self.assertGreater(private[list(bodies)[-1]].index('method'), 4096)
+                for citations in (list(bodies), [list(bodies)[0]]):
+                    self.rejected(validate(answer(COMPLETE), bodies, question=question,
+                                           sources=citations, private=private))
+                    value, _, event, _, _ = await self.assemble(bodies, answer(COMPLETE), question=question,
+                                                               sources=citations, private=private)
+                    self.assertEqual(event['grounding_action'], 'sandbox_contract_mismatch')
+                    self.assertEqual(value['superseded_note'], SANDBOX_CONTRACT_REASON)
+                    self.assertIsNone(value['answer'])
+
+    async def test_actual_other_raw_method_and_scope_controls_stay_qualified(self):
+        for question in (QUESTION, CURRENT):
+            for raw in raw_field_failures()[:5]:
+                other = raw.replace('synth-method', 'other-method')
+                value, _, event, _, _ = await self.assemble({SOURCE: COMPLETE + '.\n\n' + other},
+                                                           answer(COMPLETE), question=question)
+                self.qualified(value)
+                self.assertEqual(event['grounding_action'], 'downgraded')
+            for role, value in (('task', 'other-task'), ('root', '/synthetic/other'), ('scope', 'other-scope')):
+                raw = 'method: synth-method\n' + role + ': ' + value + '\nproc mount: failed'
+                private = {SOURCE: COMPLETE, 'other-tuple': raw}
+                value, _, event, _, _ = await self.assemble({SOURCE: COMPLETE}, answer(COMPLETE),
+                                                           question=question, private=private)
+                self.qualified(value)
+                self.assertEqual(event['grounding_action'], 'downgraded')
+                body = COMPLETE + '.\n\n' + raw
+                value, _, event, _, _ = await self.assemble({SOURCE: body}, answer(COMPLETE), question=question)
+                self.assertEqual(event['grounding_action'], 'sandbox_contract_mismatch')
+                self.assertEqual(value['superseded_note'], SANDBOX_CONTRACT_REASON)
 
     async def test_ten_views_exclude_full_private_bodies_and_private_ids(self):
         sentinel = 'PRIVATE_SANDBOX_BODY_SENTINEL'

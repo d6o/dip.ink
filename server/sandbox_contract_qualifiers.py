@@ -76,10 +76,18 @@ _DATA_ROLE = re.compile(
 )
 _ROLE = re.compile(r"\b(?P<role>method|task|app|root|phase|scope|object|action|operation)\s*(?:(?:is|:|=)\s*)?$", re.I)
 _PLAIN = r"[A-Za-z0-9_/.#:-]+"
+_PROPERTY_ROLES = (
+    "method|task|app|root|phase|scope|object|action|operation|proc mount|socket denial|"
+    "allowlist|timeout|cleanup|contract|status|host credential access|container-socket access"
+)
 _PROPERTY = re.compile(
-    rf"(?<!\w)(?P<quote>[`\"']?)(?P<role>method|task|app|root|phase|scope|object|action|operation|"
-    rf"proc mount|socket denial|allowlist|timeout|cleanup|contract|status|host credential access|container-socket access)(?P=quote)\s*"
+    rf"(?<!\w)(?P<quote>[`\"']?)(?P<role>{_PROPERTY_ROLES})(?P=quote)\s*"
     rf"(?:(?:is|was|remains)\s*[:=]?|[:=])\s*(?P<value>{_QUOTES}|[^\n;]+)", re.I,
+)
+_RAW_FIELD = re.compile(
+    rf"^(?P<indent>[ \t]*)(?:(?:>\s*|[-+*]\s+))?"
+    rf"(?P<key>(?P<quote>[`\"']?)(?:{_PROPERTY_ROLES})(?P=quote))"
+    r"[ \t]*(?:(?:is|was|remains)[ \t]*[:=]?|[:=])[ \t]*(?P<value>[^\n]*)$", re.I,
 )
 # These qualifiers veto a full record only in an actual source scope.
 _FEATURE = re.compile(
@@ -254,11 +262,46 @@ def _values(texts: Mapping[str, str] | Sequence[str]) -> list[str]:
 
 
 def _raw_units(text: str) -> list[str]:
+    """Keep raw fields separate. Only narrative text uses soft continuations."""
     # Raw presentation is veto-only. A heading or fence cannot hide a limit.
     text = re.sub(r"(?m)^[ \t]*(?:`{3,}|~{3,})([^\n]*)$",
                   lambda match: "\n\n" + match[1] + "\n\n", text)
     text = re.sub(r"(?m)^\s*#{1,6}\s+", "", text)
-    return _units(text)
+    lines = text.splitlines()
+    units, prose = [], []
+    index = 0
+    while index < len(lines):
+        field = _RAW_FIELD.fullmatch(lines[index])
+        if not field:
+            prose.append(lines[index])
+            index += 1
+            continue
+        units.extend(_units("\n".join(prose)))
+        prose = []
+        value = field["value"]
+        index += 1
+        if value.strip() in {"", ">", "|", ">-", "|-", ">+", "|+"}:
+            continuation = []
+            indent = len(field["indent"].expandtabs(4))
+            while index < len(lines):
+                line = lines[index]
+                if _RAW_FIELD.fullmatch(line):
+                    break
+                if not line.strip():
+                    index += 1
+                    continue
+                depth = len(line) - len(line.lstrip(" \t"))
+                if len(line[:depth].expandtabs(4)) <= indent:
+                    break
+                continuation.append(line.strip())
+                index += 1
+            # Multiple scalar lines cannot invent an identity alias. Keep an
+            # explicit unknown qualifier instead of a false other-method reset.
+            value = continuation[0] if len(continuation) == 1 else "\x00unknown-raw-field"
+        # Do not normalize whitespace or identity bytes in raw field values.
+        units.append(field["key"] + ": " + value)
+    units.extend(_units("\n".join(prose)))
+    return units
 
 
 def _contrary(raw: str, record: _Record) -> bool:
@@ -267,24 +310,38 @@ def _contrary(raw: str, record: _Record) -> bool:
     # A prefix can inherit only its first actual source anchor.
     anchors = [match for unit in units for match in re.finditer(_HEADER, unit)]
     context = bool(anchors and all(anchors[0][role] == record.fields[role] for role in _ROLES))
+    anchored_context = context
     for unit in units:
         # A complete source record supplies context, but its expected negative
         # protection phrases are not contrary claims.
         declared = _record(unit)
         if declared:
             context = all(declared.fields[role] == record.fields[role] for role in _ROLES)
+            anchored_context = context
             if context and declared.full != record.full:
                 return record.full
             continue
         if anchor := re.search(_HEADER, unit):
             context = all(anchor[role] == record.fields[role] for role in _ROLES)
+            anchored_context = context
         remainder = unit
         for prop in _PROPERTY.finditer(unit):
-            role, value = prop["role"].lower(), _unquote(prop["value"].strip().rstrip("."))
+            role = prop["role"].lower()
+            raw_value = prop["value"].strip()
+            value = _unquote(raw_value)
             if role == "method":
-                context = value == _unquote(record.fields["method"])
+                if value == _unquote(record.fields["method"]):
+                    context = True
+                elif (_FAILURE.fullmatch(value) or value.casefold() in {"none", "false", "no"}
+                      or not (re.fullmatch(_QUOTES, raw_value) or re.fullmatch(_PLAIN, value))):
+                    if context and record.full:
+                        return True
+                else:
+                    context, anchored_context = False, False
             elif context and role in _ROLES and value != _unquote(record.fields[role]):
-                return True
+                if anchored_context:
+                    return True
+                context = False
             elif context and role in {"action", "operation", "object"}:
                 return True
             elif context and role not in _ROLES:

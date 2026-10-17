@@ -24,6 +24,23 @@ WRONG = ('The historical Companion 0.3.14 private Wine QA root supplies the full
 AUTONOMY = 'A project lead can implement project tickets. This does not select an execution method.'
 
 
+def raw_field_failures():
+    """Return inert raw fields with explicit method and failure roles."""
+    values = [
+        'method: synth-method\nproc mount: failed',
+        'method = synth-method\nproc mount = failed',
+        'method: >\n  synth-method\nproc mount: failed',
+        'method: |\n  synth-method\nproc mount: failed',
+        'method: synth-method\nThe proc mount failed.',
+        'method: synth-method; proc mount: failed',
+    ]
+    for quote in ('`', '"', "'", ''):
+        for relation in (': ', ' = '):
+            values.append(quote + 'method' + quote + relation + quote + 'synth-method' + quote
+                          + '\n' + quote + 'proc mount' + quote + relation + quote + 'failed' + quote)
+    return values
+
+
 def answer(record):
     return PREFIX + record + '.'
 
@@ -134,6 +151,32 @@ class SandboxContractTests(unittest.TestCase):
             'other-task': '`synth-method` has a failed proc mount for task `other-task`.'}))
         self.assertIsNone(problem(answer(COMPLETE), retrieved={
             'other-method': 'other-method has a failed proc mount.'}))
+
+    def test_raw_fields_and_scalar_boundaries_keep_same_method_failures(self):
+        for raw in raw_field_failures():
+            for wrapper in ('{}', '```text\n{}\n```', '# {}', 'summary: >\n  {}'):
+                wrapped = wrapper.format(raw.replace('\n', '\n  ') if wrapper.startswith('summary') else raw)
+                self.reject(answer(COMPLETE), {SOURCE: COMPLETE + '.\n\n' + wrapped})
+                self.reject(answer(COMPLETE), {SOURCE: COMPLETE}, retrieved={'private-fields': wrapped})
+        for value in ('unknown', '"unknown"', 'synth-method proc mount: failed',
+                      '>\n  synth-method\n  extra-data', '>'):
+            raw = 'method: ' + value + '\nproc mount: failed'
+            self.reject(answer(COMPLETE), {SOURCE: COMPLETE + '.\n\n' + raw})
+
+    def test_raw_other_method_and_scope_fields_keep_source_local_context(self):
+        for raw in raw_field_failures():
+            other = raw.replace('synth-method', 'other-method')
+            self.assertIsNone(problem(answer(COMPLETE), {SOURCE: COMPLETE + '.\n\n' + other}))
+        for role, value in (('task', 'other-task'), ('app', 'other-app'), ('root', '/synthetic/other'),
+                            ('phase', 'other-phase'), ('scope', 'other-scope')):
+            raw = 'method: synth-method\n' + role + ': ' + value + '\nproc mount: failed'
+            self.assertIsNone(problem(answer(COMPLETE), {SOURCE: COMPLETE}, retrieved={'other-tuple': raw}))
+            self.reject(answer(COMPLETE), {SOURCE: COMPLETE + '.\n\n' + raw})
+        for value in ('"SYNTH-METHOD"', '"synth-method "', '"synth--method"', '"synth-method/"'):
+            raw = 'method: ' + value + '\nproc mount: failed'
+            self.assertIsNone(problem(answer(COMPLETE), {SOURCE: COMPLETE + '.\n\n' + raw}))
+        # A raw field cannot supply missing positive body support.
+        self.reject(answer(COMPLETE), {SOURCE: HISTORY}, retrieved={'fields': 'method: synth-method'})
 
     def test_late_sixth_uncited_and_source_order_context_cannot_hide_vetoes(self):
         bodies = {str(i): COMPLETE for i in range(6)}
