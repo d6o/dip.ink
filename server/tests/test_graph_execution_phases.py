@@ -207,6 +207,20 @@ class GraphExecutionPhaseTests(unittest.IsolatedAsyncioTestCase):
         for role in ('root', 'object', 'operation', 'scope', 'who'):
             self.rejected(validate(answer(DRY), question=QUESTION[:-1] + ' for ' + role + ' "different"?'))
 
+    def test_version_facet_orders_keep_positive_records_through_actual_validator(self):
+        for question in ('What are the dry-run version limits?', 'What version limits apply to the dry-run?',
+                         'Which version deadlines constrain the dry-run?',
+                         'What executable identity does the dry-run version record?'):
+            for query in (question, 'Currently, ' + question):
+                value, grounded, route = validate(answer(DRY), question=query)
+                self.qualified(value)
+                self.assertTrue(grounded)
+                self.assertEqual(route, 'downgraded')
+                self.assertIn(DRY, value['answer'])
+                self.rejected(validate(WRONG, question=query))
+        for value in ('"limits"', '`deadlines`', '= limits', ': supports'):
+            self.rejected(validate(answer(DRY), question=QUESTION[:-1] + ' for version ' + value + '?'))
+
     def test_operation_date_does_not_come_from_the_source_capture_date(self):
         self.qualified(validate(answer(DRY), question=QUESTION + ' On 2026-10-16?')[0])
         self.rejected(validate(answer(DRY), question=QUESTION + ' On 2026-10-17?'))
@@ -309,6 +323,68 @@ class GraphExecutionPhaseTests(unittest.IsolatedAsyncioTestCase):
                 p = await graph._assemble_packet(question, 3, answer_evidence=True)
                 self.assertNotIn('source_validation_texts', p)
             collect.assert_not_awaited()
+
+    async def test_review_flags_and_reordered_facets_reach_actual_new_stage_in_both_modes(self):
+        for base in ('What does Go 1.27 clean -n -cache prove?', 'What does `-n -cache` prove?',
+                     'What version limits apply to the dry-run?', 'Which version deadlines constrain the dry-run?'):
+            for question in (base, 'Currently, ' + base):
+                for draft in (WRONG, answer(DRY)):
+                    value, _, event, _, _ = await self.assemble({SOURCE: DRY}, draft, question=question)
+                    if draft == WRONG:
+                        self.assertIsNone(value['answer'])
+                        self.assertEqual(value['superseded_note'], EXECUTION_PHASE_REASON)
+                        self.assertEqual(event['grounding_action'], 'execution_phase_mismatch')
+                    else:
+                        self.qualified(value)
+                        self.assertEqual(event['grounding_action'], 'downgraded')
+
+    async def test_review_environment_proof_promotions_refuse_before_confidence(self):
+        for body, promotion in ((PROBE, 'The write/fsync probe confirms executable identity and a clean environment'),
+                                (BROKER, 'The broker staging proves no side effects')):
+            corrupt = body.replace('environment "recorded conditions only"', 'environment "' + promotion + '"')
+            for question in (QUESTION, CURRENT):
+                self.rejected(validate(answer(corrupt), {SOURCE: corrupt}, question=question))
+                value, _, event, _, _ = await self.assemble({SOURCE: corrupt}, answer(corrupt), question=question)
+                self.assertIsNone(value['answer'])
+                self.assertEqual(value['superseded_note'], EXECUTION_PHASE_REASON)
+                self.assertEqual(event['grounding_action'], 'execution_phase_mismatch')
+                self.qualified(validate(answer(body), {SOURCE: body}, question=question)[0])
+
+    async def test_review_unknown_annotations_keep_raw_source_scope(self):
+        for role, value in (('method', 'unknown method'), ('phase', 'unverified phase'),
+                            ('executable', 'unavailable executable'), ('version', 'unknown version'),
+                            ('command', 'unknown command'), ('resource', 'unknown resource')):
+            body = DRY + '.\n\n' + role + ': "' + value + '"\nproof domain: unknown'
+            for question in (QUESTION, CURRENT):
+                self.rejected(validate(answer(DRY), {SOURCE: body}, question=question))
+                result, _, event, _, _ = await self.assemble({SOURCE: body}, answer(DRY), question=question)
+                self.assertIsNone(result['answer'])
+                self.assertEqual(result['superseded_note'], EXECUTION_PHASE_REASON)
+                self.assertEqual(event['grounding_action'], 'execution_phase_mismatch')
+        for scope in ('method: brokered', 'method: direct\nphase: actual-cleanup', 'method: direct\nresource: cache-B'):
+            self.qualified(validate(answer(DRY), {SOURCE: DRY + '.\n\n' + scope + '\nproof domain: unknown'})[0])
+
+    async def test_review_quoted_long_role_controls_pass_actual_assembly(self):
+        for role, value in (('caller deadline', '20s'), ('operation date', '2026-10-16')):
+            for base in (QUESTION, CURRENT):
+                question = base + ' For ' + role + ' "' + value + '"?'
+                self.qualified(validate(answer(DRY), question=question)[0])
+                result, _, event, _, _ = await self.assemble({SOURCE: DRY}, answer(DRY), question=question)
+                self.qualified(result)
+                self.assertEqual(event['grounding_action'], 'downgraded')
+                self.rejected(validate(answer(DRY), question=base + ' For ' + role + ' "different"?'))
+
+    async def test_review_natural_method_and_version_constraints_have_actual_positive_controls(self):
+        for base, other in (('What does the Go 1.27 dry-run prove?', DRY.replace('version "1.27"', 'version "1.28"')),
+                            ('What does the direct dry-run prove?', DRY.replace('method "direct"', 'method "brokered"'))):
+            for question in (base, 'Currently, ' + base):
+                good, _, event, _, _ = await self.assemble({SOURCE: DRY}, answer(DRY), question=question)
+                self.qualified(good)
+                self.assertEqual(event['grounding_action'], 'downgraded')
+                bad, _, event, _, _ = await self.assemble({SOURCE: other}, answer(other), question=question)
+                self.assertIsNone(bad['answer'])
+                self.assertEqual(bad['superseded_note'], EXECUTION_PHASE_REASON)
+                self.assertEqual(event['grounding_action'], 'execution_phase_mismatch')
 
     async def test_formatted_concepts_and_metadata_appendix_reach_actual_new_stage(self):
         for question in ('What does `dry-run` version supports?',

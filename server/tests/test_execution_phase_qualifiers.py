@@ -313,6 +313,119 @@ class ExecutionPhaseTests(unittest.TestCase):
         for question in questions:
             self.assertFalse(execution_phase_required(question), question)
 
+    def test_version_facet_order_keeps_valid_records_not_literal_version_constraints(self):
+        questions = (
+            'What are the dry-run version limits?', 'What version limits apply to the dry-run?',
+            'Which version deadlines constrain the dry-run?', 'Which revision deadlines constrain the dry-run?',
+            'What executable identity does the dry-run version record?',
+        )
+        for question in questions:
+            self.assertTrue(execution_phase_required(question), question)
+            self.assertIsNone(problem(answer(DRY), question=question), question)
+            self.reject(WRONG, question=question)
+        for base in ('What version of the dry-run method is recorded?',
+                     'What is the definition of version limits for the dry-run?',
+                     'What is the title of the dry-run version deadlines?'):
+            for question in (base, 'Currently, ' + base, 'Now, ' + base):
+                self.assertFalse(execution_phase_required(question), question)
+
+    def test_explicit_version_facet_words_remain_literal_identity_values(self):
+        for value in ('limits', 'deadlines', 'supports', 'island-A'):
+            for relation in (': ', ' = ', ' is '):
+                question = QUESTION[:-1] + ' for version' + relation + value + '?'
+                self.assertTrue(execution_phase_required(question), question)
+                self.reject(answer(DRY), question=question)
+            for quote in ('`', '"', "'"):
+                question = QUESTION[:-1] + ' for version ' + quote + value + quote + '?'
+                self.reject(answer(DRY), question=question)
+        body = DRY.replace('version "1.27"', 'version "island-A"')
+        self.assertIsNone(problem(answer(body), {SOURCE: body}, question=QUESTION[:-1] + ' for version island-A?'))
+
+    def test_preview_flags_are_operative_but_explicit_command_identities_stay_opaque(self):
+        for text in ('Go 1.27 clean -n -cache', '`Go 1.27 clean -n -cache`', '"clean -n -cache"', '`-n -cache`'):
+            for question in ('What does ' + text + ' prove?', 'Currently, what does ' + text + ' prove?'):
+                self.assertTrue(execution_phase_required(question), question)
+                self.reject(WRONG, question=question)
+                self.assertIsNone(problem(answer(DRY), question=question))
+        for question in ('What does command "Go 1.27 clean -n -cache" prove?',
+                         'What does method `clean -n -cache` mean?', 'What is the filename of `-n -cache`?'):
+            self.assertFalse(execution_phase_required(question), question)
+
+    def test_environment_conditions_cannot_contain_proof_or_side_effect_claims(self):
+        for body in (DRY, ACTUAL, PROBE, PATH, BROKER, PROPOSAL):
+            for value in ('The write/fsync probe confirms executable identity and a clean environment',
+                          'The broker staging proves no side effects', 'fresh executable identity',
+                          'The environment guarantees a fresh lease'):
+                corrupt = body.replace('environment "recorded conditions only"', 'environment "' + value + '"')
+                self.reject(answer(corrupt), {SOURCE: corrupt})
+            for value in ('recorded conditions only', 'unknown'):
+                good = body.replace('environment "recorded conditions only"', 'environment "' + value + '"')
+                self.assertIsNone(problem(answer(good), {SOURCE: good}))
+        for body in (DRY, ACTUAL):
+            good = body.replace('environment "recorded conditions only"', 'environment "clean environment"')
+            self.assertIsNone(problem(answer(good), {SOURCE: good}))
+        for body in (PROBE, PATH, BROKER):
+            corrupt = body.replace('environment "recorded conditions only"', 'environment "clean environment"')
+            self.reject(answer(corrupt), {SOURCE: corrupt})
+
+    def test_role_aware_unknown_annotations_do_not_replace_established_scope(self):
+        for role, value in (('method', 'unknown method'), ('phase', 'unverified phase'),
+                            ('executable', 'unavailable executable'), ('version', 'unknown version'),
+                            ('command', 'unknown command'), ('resource', 'unknown resource'),
+                            ('path', 'unverified path'), ('sourceIdentity', 'unknown sourceIdentity')):
+            raw = role + ': "' + value + '"\nproof domain: unknown'
+            for wrapper in ('{}', '# {}', 'summary: >\n  {}', '```text\n{}\n```'):
+                wrapped = wrapper.format(raw.replace('\n', '\n  ') if wrapper.startswith('summary') else raw)
+                self.reject(answer(DRY), {SOURCE: DRY + '.\n\n' + wrapped})
+        for scope in ('method: brokered', 'method: direct\nphase: actual-cleanup',
+                      'method: direct\nresource: cache-B', 'method: "unknown-method"'):
+            self.assertIsNone(problem(answer(DRY), {SOURCE: DRY + '.\n\n' + scope + '\nproof domain: unknown'}))
+
+    def test_unknown_words_inside_real_paths_and_identity_data_stay_literal(self):
+        for role, old, value in (('executable', '/synthetic/Tool', '/synthetic/unavailable executable'),
+                                 ('version', '1.27', 'unknown-version'),
+                                 ('source identity', 'dated-path-record', 'unknown sourceIdentity')):
+            body = DRY.replace(role + ' "' + old + '"', role + ' "' + value + '"')
+            question = QUESTION + ' For ' + role + ' "' + value + '"?'
+            self.assertIsNone(problem(answer(body), {SOURCE: body}, question=question))
+        self.assertIsNone(problem(answer(DRY), retrieved={
+            'other': 'method: direct\nexecutable: "/other/unavailable executable"\nproof domain: unknown'}))
+
+    def test_owned_role_literal_spans_do_not_leave_shorter_role_constraints(self):
+        fields = {'phase': 'dry-run', 'method': 'direct', 'action': 'cache-clean', 'command': 'toy clean -n -cache',
+                  'executable': '/synthetic/Tool', 'version': '1.27', 'source identity': 'dated-path-record',
+                  'resource': 'cache-A', 'task': 'task-A', 'app': 'app-A', 'caller': 'caller-A', 'candidate': 'candidate-A',
+                  'TERM': '10s', 'kill': '2s', 'caller deadline': '20s', 'environment': 'recorded conditions only',
+                  'selection': 'spent', 'observed effect': 'no deletion or headroom effect',
+                  'proof domain': 'address selection only', 'start': '2026-10-16T08:00:00Z',
+                  'end': '2026-10-16T08:00:01Z', 'operation date': '2026-10-16'}
+        for role, value in fields.items():
+            for quote in ('`', '"', "'"):
+                question = QUESTION + ' For ' + role + ' ' + quote + value + quote + '?'
+                self.assertIsNone(problem(answer(DRY), question=question), question)
+        same = QUESTION + ' For caller deadline "20s", caller "20s"?'
+        self.reject(answer(DRY), question=same)
+        body = DRY.replace('caller "caller-A"', 'caller "20s"')
+        self.assertIsNone(problem(answer(body), {SOURCE: body}, question=same))
+
+    def test_natural_method_version_and_ticket_requests_keep_literal_constraints(self):
+        questions = ('What does the Go 1.27 dry-run prove?', 'What does the direct dry-run prove?',
+                     'What does direct Go 1.27 cache-only dry-run prove?',
+                     'What does Go 1.27 direct dry-run prove?', 'What does `Go 1.27 dry-run` prove?')
+        for question in questions:
+            self.assertIsNone(problem(answer(DRY), question=question))
+        for question in (questions[0], questions[2], questions[3], questions[4]):
+            other = DRY.replace('version "1.27"', 'version "1.28"')
+            self.reject(answer(other), {SOURCE: other}, question=question)
+        for question in (questions[1], questions[2], questions[3]):
+            other = DRY.replace('method "direct"', 'method "brokered"')
+            self.reject(answer(other), {SOURCE: other}, question=question)
+        body = DRY.replace('task "task-A"', 'task "k3s#30"')
+        self.assertIsNone(problem(answer(body), {SOURCE: body}, question=RETAINED_QUESTION))
+        self.reject(answer(DRY), question=RETAINED_QUESTION)
+        self.assertIsNone(problem(answer(DRY, ACTUAL), {SOURCE: DRY + '. ' + ACTUAL},
+                                  question='What do the direct dry-run and actual cleanup records establish?'))
+
     def test_query_selector_formatted_concepts_and_metadata_appendices(self):
         for concept in ('execution phase', '**execution phase**', '`execution phase`', '"execution phase"',
                         'dry-run', '**dry-run**', '`dry-run`', '"proof domain"'):
