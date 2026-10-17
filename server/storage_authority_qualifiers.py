@@ -34,8 +34,8 @@ _INTENT = re.compile(
 )
 _CONCEPT = re.compile(
     r"(?:storage|filesystem|file system|shared-home|home PVC|capacity|cleanup|expansion|"
-    r"resize|retention|unpin|protection|authority)(?:[ -]+(?:storage|filesystem|capacity|"
-    r"risk|cleanup|expansion|constraints|authority|permission))*", re.I,
+    r"resize|retention|unpin|protection|authority|mutation|permission)(?:[ -]+(?:storage|filesystem|capacity|"
+    r"risk|cleanup|expansion|constraints|authority|permission|mutation))*", re.I,
 )
 # These are complete source-record forms, not operational instructions.
 # Conditions and limits are mandatory and remain part of the record identity.
@@ -64,7 +64,7 @@ _METADATA = re.compile(
     r"this is metadata only, not an actor or permission record"
 )
 _HISTORY = re.compile(
-    rf"On (?P<event>{_DATE}), project (?P<owner>{_LITERAL}) completed cleanup "
+    rf"On (?P<event>{_DATE}), project (?P<owner>{_LITERAL}) completed (?P<action>cleanup) "
     rf"of (?P<object>{_LITERAL}) under ticket (?P<ticket>{_LITERAL}); "
     r"this historical record grants no new cleanup or deletion permission"
 )
@@ -83,8 +83,7 @@ _GRAMMARS = {"owner": _OWNER, "completed": _COMPLETE, "metadata": _METADATA,
              "history": _HISTORY, "retention": _RETENTION, "read": _READ}
 _UNKNOWN = re.compile(
     r"The (?:cited|retrieved|supplied) (?:source text|bodies|evidence) "
-    r"(?:does not establish|does not identify) (?:the storage owner and protection gates|"
-    r"current storage permission|a storage operation method|the requested storage scope)"
+    r"(?:does not establish|does not identify) current storage permission"
     r"(?:\. Current permission remains unverified)?\.?"
 )
 _HOLD = re.compile(
@@ -92,21 +91,44 @@ _HOLD = re.compile(
     r"conditional|only|sole|writer|owner|owns|gates?|guards?|retains?|unverified)\b", re.I,
 )
 _PROPERTY = re.compile(
-    rf"\b(?P<role>owner|project|ticket|method|hold|conditions|scope|phase|protection limits|sole writer)"
-    rf"\s*(?:(?:is|was|remains)\s*[:=]?|[:=])\s*(?P<value>{_LITERAL}|[^\n]*?)(?=$|\n)", re.I,
+    r"(?<![\w])(?P<quote>[`\"']?)(?P<role>owner|project|ticket|method|hold|action|operation|conditions|scope|phase|protection limits|sole writer)"
+    r"(?P=quote)\s*(?:(?:is|was|remains)\s*[:=]?|[:=])\s*"
+    rf"(?P<value>{_LITERAL}|\"[^\"\n]*\"|'[^'\n]*'|[^\n]*?)(?=$|\n)", re.I,
 )
+_CURRENT_GRANT = re.compile(
+    r"\b(?:current|caller|now)\b.{0,100}\b(?:permission|authorized|approved|granted|can|may)\b", re.I,
+)
+_NEGATIVE = re.compile(r"\b(?:no|not|never|cannot|unverified|unknown|blocked|conditional)\b", re.I)
 _PROTECTION = re.compile(
-    r"^(?:(?:The|This|All|Existing|Current|Its|Their)\s+)*(?:activation|cleanup|"
+    r"\b(?:(?:The|This|All|Existing|Current|Its|Their)\s+)*(?:activation|"
     r"partials?|worktrees?|custody|fence|capture|retention|retirement|protection|hold|"
     r"rollback|candidate|timestamp|it\b|they\b)", re.I,
 )
 
 
+def _operative_question_text(question: str) -> str:
+    """Keep concept presentation separate from explicit literal identities."""
+    outside = re.sub(_LITERAL, " ", question)
+    name_question = (not _STORAGE.search(outside) and re.search(
+        r"\b(?:filename|file name|path|meaning|definition|spell\w*|means?|named|called)\b", outside, re.I,
+    ))
+
+    def concept(match):
+        before, after = question[:match.start()], question[match.end():]
+        identity_role = (re.search(r"\b(?:method|filename|path|named|called|storage object|storage volume|filesystem|PVC)\s*$",
+                                   before, re.I)
+                         or re.match(r"\s+(?:method|filename|path|filesystem|PVC|storage object)\b", after, re.I))
+        if not name_question and not identity_role and _CONCEPT.fullmatch(match[0][1:-1]):
+            return match[0][1:-1]
+        return " "
+
+    return re.sub(r"[*_]", "", re.sub(_LITERAL, concept, question))
+
+
 def storage_authority_required(question: str) -> bool:
     """Select storage scope questions, including formatted concept words."""
     # A filename alone cannot supply intent. Quoted concept words can.
-    text = re.sub(_LITERAL, lambda m: m[0][1:-1] if _CONCEPT.fullmatch(m[0][1:-1]) else " ", question)
-    text = re.sub(r"[*_]", "", text)
+    text = _operative_question_text(question)
     cleanup_scope = (re.search(r"\b(?:clean[- ]?up|retention)\b", text, re.I)
                      and re.search(r"\b(?:own(?:s|er|ership)?|authority|permissions?|protect\w*|constraints?)\b",
                                    text, re.I))
@@ -160,40 +182,90 @@ def _values(texts: Mapping[str, str] | Sequence[str]) -> list[str]:
     return [str(value or "") for value in (texts.values() if isinstance(texts, Mapping) else texts)]
 
 
-def _question_roles(question: str) -> dict[str, str]:
-    # Explicit roles bind literally. An incidental mention cannot bind a role.
-    roles = {}
-    for role, pattern in {
-        "owner": rf"\bproject\s+({_LITERAL})",
-        "ticket": rf"\bticket\s+({_LITERAL})",
-        "object": rf"\b(?:storage object|filesystem|PVC|expansion of|cleanup of)\s+({_LITERAL})",
-        "method": rf"\b(?:via|through|using|method)\s+({_LITERAL})",
-        "hold": rf"\bhold\s+({_LITERAL})",
-    }.items():
-        matches = list(dict.fromkeys(re.findall(pattern, question, re.I)))
-        if len(matches) == 1:
-            roles[role] = matches[0]
-        elif matches:
-            roles[role] = "\x00ambiguous"
-    # A plain named filesystem is also an explicit question role.
-    # Do not invent aliases between a filesystem, a PVC, and another object.
-    named_objects = list(dict.fromkeys(re.findall(
-        r"\b(?:the|for|of|owns?)\s+([A-Z][A-Za-z0-9_.-]*(?:[ -](?:shared[- ]home|home))? "
-        r"(?:filesystem|PVC))\b", question,
-    )))
-    if named_objects:
-        identities = set('`' + value + '`' for value in named_objects)
-        if "object" in roles:
-            identities.add(roles["object"])
-        roles["object"] = next(iter(identities)) if len(identities) == 1 else "\x00ambiguous"
+def _question_roles(question: str) -> dict[str, set[str]]:
+    # Explicit roles bind literally. Multiple identities refuse a selection.
+    # A generic interrogative role does not name an identity.
+    plain = r"[A-Za-z0-9_/.#:-]+"
+    named = r"(?:[A-Z][A-Za-z0-9_/.#:-]*|[A-Za-z0-9_/.#:-]*[0-9_/.#:-][A-Za-z0-9_/.#:-]*)"
+    roles: dict[str, set[str]] = {}
+
+    def collect(role, pattern, *, flags=re.I):
+        for identity in re.findall(pattern, question, flags):
+            identity = identity if identity.startswith('`') else '`' + identity + '`'
+            roles.setdefault(role, set()).add(identity)
+
+    nouns = {"owner": "(?:project|owner)", "ticket": "ticket", "hold": "hold",
+             "method": "method", "object": "(?:storage object|storage volume|filesystem|PVC|volume)"}
+    for role, noun in nouns.items():
+        collect(role, rf"\b{noun}\s+({_LITERAL})")
+        # Plain compound identities and capitalized names are explicit too.
+        collect(role, rf"\b(?i:{noun})\s+({named})(?![\w./#:-])", flags=0)
+        # These frames make even an unfamiliar plain value explicit.
+        frame = rf"\b(?:under|by|from|with|for|to|of|does|did|can|is|has)\s+(?:the\s+)?{noun}\s+"
+        collect(role, frame + rf"({_LITERAL}|{plain})")
+        for match in re.finditer(frame, question, re.I):
+            if not re.match(rf"(?:{_LITERAL}|{plain})(?=\s|[?,)]|$)", question[match.end():]):
+                roles.setdefault(role, set()).add("\x00unsupported")
+    for role, noun in {"owner": "project", "ticket": "ticket"}.items():
+        for match in re.finditer(rf"\b{noun}\s+({_LITERAL}|{plain})", question, re.I):
+            generic = (re.search(r"\b(?:Which|What)\s*$", question[:match.start()], re.I)
+                       and re.match(r"(?:owns?\b|and existing tickets own\b|(?:does|can|is|has)\b)",
+                                    question[match.start(1):], re.I))
+            if not generic:
+                identity = match[1] if match[1].startswith('`') else '`' + match[1] + '`'
+                roles.setdefault(role, set()).add(identity)
+    for role, noun in nouns.items():
+        collect(role, rf"\b{noun}\s*(?:is|:|=)\s*({_LITERAL}|{plain})")
+    method_frame = r"\b(?:via|through|using)\s+(?:the\s+)?(?:method\s+)?"
+    collect("method", method_frame + rf"({_LITERAL}|{plain})")
+    for match in re.finditer(method_frame, question, re.I):
+        if not re.match(rf"(?:{_LITERAL}|{plain})(?=\s|[?,)]|$)", question[match.end():]):
+            roles.setdefault("method", set()).add("\x00unsupported")
+    collect("object", rf"({_LITERAL})\s+(?:filesystem|PVC|storage object)\b")
+    collect("object", rf"\b(?:expansion of|cleanup of|resize of)\s+(?:the\s+)?({_LITERAL})")
+    for identity in re.findall(rf"\bowns?\s+(?:the\s+)?({_LITERAL})", question, re.I):
+        if not _CONCEPT.fullmatch(identity[1:-1]):
+            roles.setdefault("object", set()).add(identity)
+    # Do not invent an alias between a filesystem and a PVC.
+    collect("object", r"\b(?:the|for|of|owns?)\s+(?:the\s+)?"
+            r"([A-Z][A-Za-z0-9_.-]*(?:[ -](?:shared[- ]home|home))? (?:filesystem|PVC))\b", flags=0)
+    for identity in re.findall(
+        r"\b(?:the|for|of|owns?)\s+(?:the\s+)?([A-Z][A-Za-z0-9_.-]*(?:[ -](?:shared[- ]home|home))? (?:filesystem|PVC))\b",
+        _operative_question_text(question),
+    ):
+        roles.setdefault("object", set()).add('`' + identity + '`')
+    # A plain compound name before an object type is still an explicit role.
+    collect("object", rf"\b(?:owns?|for|of)\s+(?:the\s+)?({named})\s+(?:filesystem|PVC)\b", flags=0)
+    collect("object", rf"\bstorage object\s+({_LITERAL}|{plain})")
+    # Action alternatives are choices, not an ambiguous identity union.
+    outside = _operative_question_text(question)
+    actions = {"expansion": r"\bexpan(?:sion|d|ds)\b", "cleanup": r"\bclean[- ]?up\b",
+               "resize": r"\bresize\b", "deletion": r"\bdelet(?:e|ion)\b",
+               "write": r"\bwrit(?:e|ing)\b", "patch": r"\bpatch\b"}
+    requested = {action for action, pattern in actions.items() if re.search(pattern, outside, re.I)}
+    for identity in re.findall(rf"\b(?:action|operation)\s+({_LITERAL}|{plain})", question, re.I):
+        requested.add(identity[1:-1] if identity.startswith('`') else identity)
+    if requested:
+        roles["action"] = requested
     return roles
+
+
+def _role_mismatch(record: _Record, roles: dict[str, set[str]]) -> bool:
+    for role, identities in roles.items():
+        if role == "action":
+            if record.fields.get(role) and record.fields[role] not in identities:
+                return True
+        elif len(identities) != 1 or record.fields.get(role) not in identities:
+            return True
+    return False
 
 
 def _contrary(raw: str, record: _Record, answer_units: set[str]) -> bool:
     """Raw text only vetoes. It cannot fill a missing positive field."""
     object_name = record.fields["object"]
-    raw_objects = {match["object"] for grammar in _GRAMMARS.values() for match in grammar.finditer(raw)}
-    scoped_context = raw_objects == {object_name}
+    # Unknown prefix qualifiers can veto, but cannot establish a relation.
+    # A later unrelated object must not erase an earlier potential limit.
+    scoped_context = None
     for unit in _units(raw):
         # Narrative, metadata scalars, headings, and code can all retain holds.
         # A raw record can occur inside a scalar or a fenced example.
@@ -224,17 +296,30 @@ def _contrary(raw: str, record: _Record, answer_units: set[str]) -> bool:
         elif re.search(rf"^{_LITERAL}\s+(?:is|remains|has)\b", remainder) and _STORAGE.search(remainder):
             scoped_context = False
         authority_scope = record.phase in {"owner", "retention", "read"}
-        if authority_scope and scoped_context:
+        if authority_scope and scoped_context is not False:
             for prop in _PROPERTY.finditer(remainder):
                 role = prop["role"].lower()
-                role = "owner" if role == "project" else role
+                role = {"project": "owner", "protection limits": "limits", "operation": "action"}.get(role, role)
+                value = prop["value"]
+                if value[:1] in {'`', '"', "'"} and value[-1:] == value[:1]:
+                    value = value[1:-1]
+                if role in {"owner", "ticket", "method", "hold"}:
+                    value = '`' + value + '`'
+                if role == "action" and value != record.fields.get("action"):
+                    scoped_context = False
+                    continue
                 # Raw fields can contradict a record, never supply its roles.
-                if record.fields.get(role) != prop["value"]:
+                if record.fields.get(role) != value:
                     return True
+                remainder = remainder.replace(prop[0], "")
         event_conflict = (record.fields.get("event") and record.fields["event"] in remainder
                           and mentions)
+        action = record.fields.get("action")
+        operation_hold = action and re.search(
+            r"\b" + re.escape(action) + r"\s+(?:is|remains|stays|requires|cannot|blocked)\b", remainder, re.I,
+        )
         if (_HOLD.search(remainder) and (authority_scope or event_conflict)
-                and (mentions or (scoped_context and _PROTECTION.search(remainder)))):
+                and (mentions or (scoped_context is not False and (_PROTECTION.search(remainder) or operation_hold)))):
             return True
     return False
 
@@ -253,6 +338,11 @@ def storage_authority_problem(
     if not cited or any(not body.strip() for body in cited):
         return STORAGE_AUTHORITY_BODY_REASON
     if _UNKNOWN.fullmatch(answer.strip()):
+        # Conditional ownership does not establish current caller permission.
+        # Other negative retrieval facets abstain instead of claiming absence.
+        if any(_CURRENT_GRANT.search(unit) and not _NEGATIVE.search(unit)
+               for raw in cited + _values(retrieved_texts) for unit in _units(raw)):
+            return STORAGE_AUTHORITY_REASON
         return None
     prefix = "The cited source records: "
     if not answer.startswith(prefix):
@@ -266,7 +356,7 @@ def storage_authority_problem(
     for record in records:
         if not any(record == source for source in supported):
             return STORAGE_AUTHORITY_REASON
-        if any(record.fields.get(role) != identity for role, identity in roles.items()):
+        if _role_mismatch(record, roles):
             return STORAGE_AUTHORITY_REASON
         if any(_contrary(raw, record, set(units)) for raw in cited + _values(retrieved_texts)):
             return STORAGE_AUTHORITY_REASON

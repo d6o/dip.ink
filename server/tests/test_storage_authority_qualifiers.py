@@ -8,7 +8,7 @@ from storage_authority_qualifiers import (
 
 QUESTION = ('Which project and existing tickets own the Devbox shared-home filesystem capacity risk, '
             'and what protection constraints apply to cleanup or expansion?')
-CURRENT = 'What is the current storage owner and protection limits for the Devbox shared-home filesystem expansion?'
+CURRENT = 'What is the current storage owner and protection limits for the Devbox shared-home filesystem cleanup or expansion?'
 SOURCE = '2026-10-17-040333-storage-record'
 OBJECT = '`Devbox shared-home filesystem`'
 OWNER = (f'Project `K3s` owns ticket `k3s#29` for expansion of {OBJECT} as the sole writer, '
@@ -32,6 +32,7 @@ RETENTION = (f'{OBJECT} retention requires 72 hours after final verified activat
 READ = (f'`metadata-client` supports read-only metadata for {OBJECT}; '
         'method acceptance grants no write permission or protection release')
 UNKNOWN = 'The cited source text does not establish the storage owner and protection gates.'
+SAFE_UNKNOWN = 'The cited source text does not establish current storage permission.'
 AUTONOMY = ('Project leads decide and implement or close tickets within their own project. '
             'The ticket process has no human approval loop. This does not select a storage method.')
 WRONG = ('The project lead can clean up or expand the Devbox shared-home filesystem '
@@ -84,7 +85,8 @@ class StorageAuthorityTests(unittest.TestCase):
                 self.assertIsNone(problem(answer(record), {SOURCE: record}))
 
     def test_unknown_is_source_scoped_not_universal_absence(self):
-        self.assertIsNone(problem(UNKNOWN, {SOURCE: AUTONOMY}))
+        self.assertIsNone(problem(SAFE_UNKNOWN, {SOURCE: AUTONOMY}))
+        self.assert_rejected(UNKNOWN, {SOURCE: OWNER})
         for draft in ('No storage authority exists.', 'No project owns the capacity risk.',
                       'The sources prove no storage permission exists anywhere.',
                       UNKNOWN + ' Therefore cleanup is allowed.'):
@@ -226,10 +228,90 @@ class StorageAuthorityTests(unittest.TestCase):
         later = conflict.replace('2026-10-17T04:02:40.594847Z', '2026-10-18T04:02:40.594847Z')
         self.assertIsNone(problem(answer(COMPLETE), {SOURCE: COMPLETE}, retrieved={'later': later}))
 
+    def test_negative_retrieval_facets_abstain_without_erasing_owner_records(self):
+        for draft in (UNKNOWN, 'The cited source text does not establish a storage operation method.',
+                      'The cited source text does not establish the requested storage scope.'):
+            self.assert_rejected(draft, {SOURCE: OWNER + '. ' + COMPLETE})
+        for record in (OWNER, COMPLETE, METADATA, RETENTION):
+            self.assertIsNone(problem(SAFE_UNKNOWN, {SOURCE: record}))
+        raw = OWNER + '\n\nCurrent caller permission is approved.'
+        self.assert_rejected(SAFE_UNKNOWN, {SOURCE: raw})
+
+    def test_requested_plain_and_quoted_roles_and_actions_cannot_disappear(self):
+        for wrong, correct in (
+            ('Does project Other own filesystem expansion?', 'Does project K3s own filesystem expansion?'),
+            ('Who owns filesystem expansion under ticket wrong#9?', 'Who owns filesystem expansion under ticket k3s#29?'),
+            ('Who owns storage volume `Other PVC` for expansion?', 'Who owns storage volume ' + OBJECT + ' for expansion?'),
+            ('Who owns filesystem expansion via other-method?', 'Who owns filesystem expansion via guarded-patch?'),
+            ('Who owns filesystem expansion under hold Other#15?', 'Who owns filesystem expansion under hold EEE#15?'),
+            ('Which project owns `other-filesystem` filesystem capacity for expansion?',
+             'Which project owns ' + OBJECT + ' filesystem capacity for expansion?'),
+        ):
+            self.assert_rejected(answer(COMPLETE), {SOURCE: COMPLETE}, question=wrong)
+            self.assertIsNone(problem(answer(COMPLETE), {SOURCE: COMPLETE}, question=correct))
+        for query in ('Who owns filesystem expansion under ticket [wrong]?',
+                      'Which project other owns filesystem expansion?',
+                      'Who owns filesystem expansion for project other?',
+                      'Who owns filesystem expansion via [other-method]?',
+                      'Does project K3s or project Other own filesystem expansion?'):
+            self.assert_rejected(answer(COMPLETE), {SOURCE: COMPLETE}, question=query)
+        cleanup = 'Which project owns cleanup of ' + OBJECT + '?'
+        self.assert_rejected(answer(COMPLETE), {SOURCE: COMPLETE}, question=cleanup)
+        self.assert_rejected(answer(OWNER), {SOURCE: OWNER}, question=cleanup)
+        self.assertIsNone(problem(answer(HISTORY), {SOURCE: HISTORY}, question=cleanup))
+
+    def test_quoted_mutation_concepts_select_but_names_do_not_supply_intent(self):
+        for query in ('What storage mutation authority does generic lead autonomy provide?',
+                      'What `storage mutation authority` does generic lead autonomy provide?',
+                      'What storage-mutation permission applies here?',
+                      'What `storage-mutation` `permission` applies here?'):
+            self.assertTrue(storage_authority_required(query))
+            self.assert_rejected(WRONG, {SOURCE: METADATA}, question=query)
+        for query in ('What does method `storage-mutation` mean?',
+                      'What is the filename `storage-mutation`?',
+                      'Which method is named `storage-mutation`?',
+                      'What `storage-mutation` method is installed?'):
+            self.assertFalse(storage_authority_required(query), query)
+
+    def test_quoted_raw_property_keys_preserve_values_and_context(self):
+        for quote in ('', '`', '"', "'"):
+            for value_quote in ('`', '"', "'"):
+                bad = quote + 'Owner' + quote + ': ' + value_quote + 'Other' + value_quote + '.'
+                good = quote + 'Owner' + quote + ': ' + value_quote + 'K3s' + value_quote + '.'
+                self.assert_rejected(answer(OWNER), {SOURCE: OWNER + '.\n\n' + bad})
+                self.assertIsNone(problem(answer(OWNER), {SOURCE: OWNER + '.\n\n' + good}))
+                reset = OWNER + '.\n\n`Other PVC` remains protected.\n\n' + bad
+                self.assertIsNone(problem(answer(OWNER), {SOURCE: reset}))
+        self.assert_rejected(answer(OWNER), {SOURCE: OWNER + '.\n\n"protection limits": "none".'})
+        matching = OWNER + '.\n\n"protection limits": "' + LIMITS + '".'
+        self.assertIsNone(problem(answer(OWNER), {SOURCE: matching}))
+
+    def test_operation_holds_bind_the_declared_action_not_another_action(self):
+        for raw in ('Expansion remains blocked.', '# Expansion remains blocked.',
+                    'summary: >\n  Expansion remains blocked.', '```text\nExpansion remains blocked.\n```'):
+            self.assert_rejected(answer(OWNER), {SOURCE: OWNER + '.\n\n' + raw})
+        for reset in ('Cleanup remains blocked.', 'Action: cleanup.\n\nCleanup remains blocked.',
+                      '`Other PVC` remains protected.\n\nExpansion remains blocked.'):
+            self.assertIsNone(problem(answer(OWNER), {SOURCE: OWNER + '.\n\n' + reset}))
+        self.assertIsNone(problem(answer(COMPLETE), {SOURCE: COMPLETE + '.\n\nExpansion remains blocked.'}))
+
+    def test_source_order_does_not_erase_an_earlier_owner_property(self):
+        other = METADATA.replace(OBJECT, '`Other PVC`')
+        for key in ('Owner', '`Owner`', '"Owner"'):
+            prefix = key + ': `Other`.\n\n'
+            body = prefix + OWNER + '.\n\n' + other
+            self.assert_rejected(answer(OWNER), {SOURCE: body})
+            late = ('Background context. ' * 300) + '\n\n' + body
+            self.assertGreater(late.index(prefix), 4096)
+            self.assert_rejected(answer(OWNER), {SOURCE: OWNER, 'sixth': late})
+            self.assertIsNone(problem(answer(OWNER), {SOURCE: key + ': `K3s`.\n\n' + OWNER + '.\n\n' + other}))
+            reset = '`Other PVC` remains protected.\n\n' + prefix + OWNER
+            self.assertIsNone(problem(answer(OWNER), {SOURCE: reset}))
+
     def test_source_only_qualifiers_cannot_hide_protection_in_a_tail(self):
         body = OWNER + '\n\n' + OBJECT + ' custody release remains blocked.'
         self.assert_rejected(answer(OWNER), {SOURCE: body})
-        self.assertIsNone(problem(UNKNOWN, {SOURCE: body}))
+        self.assertIsNone(problem(SAFE_UNKNOWN, {SOURCE: body}))
 
 
 if __name__ == '__main__':

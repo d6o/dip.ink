@@ -17,7 +17,7 @@ from storage_authority_qualifiers import (
 )
 from test_storage_authority_qualifiers import (
     AUTONOMY, COMPLETE, CURRENT, HISTORY, METADATA, OBJECT, OWNER, QUESTION, READ,
-    RETENTION, SOURCE, UNKNOWN, WRONG, answer,
+    RETENTION, SOURCE, UNKNOWN, SAFE_UNKNOWN, WRONG, answer,
 )
 
 
@@ -141,10 +141,11 @@ class GraphStorageAuthorityTests(unittest.IsolatedAsyncioTestCase):
         private = {SOURCE: OWNER, '2026-10-17-060000-other': OBJECT + ' remains blocked by `EEE#15`.',
                    '2099-01-01-000000-unrelated': '`Other PVC` is metadata only.'}
         self.assert_rejected(validate(answer(OWNER), {SOURCE: OWNER}, private=private))
-        self.assert_qualified(validate(UNKNOWN, {SOURCE: OWNER}, private=private)[0])
+        self.assert_qualified(validate(SAFE_UNKNOWN, {SOURCE: OWNER}, private=private)[0])
 
     def test_safe_unknown_is_not_global_absence_or_permission(self):
-        self.assert_qualified(validate(UNKNOWN, {SOURCE: AUTONOMY})[0])
+        self.assert_qualified(validate(SAFE_UNKNOWN, {SOURCE: AUTONOMY})[0])
+        self.assert_rejected(validate(UNKNOWN, {SOURCE: OWNER}))
         for draft in ('No storage permission exists.', 'No project owns the filesystem.',
                       UNKNOWN + ' Cleanup can proceed.'):
             self.assert_rejected(validate(draft, {SOURCE: AUTONOMY}))
@@ -243,6 +244,131 @@ class GraphStorageAuthorityTests(unittest.IsolatedAsyncioTestCase):
                 self.assertNotIn(private_identity, serialized)
                 self.assertNotIn('source_validation_texts', serialized)
             self.assertEqual(event['grounding_action'], 'storage_authority_mismatch')
+
+    async def test_false_owner_negative_abstains_but_caller_permission_stays_unknown(self):
+        for question in (QUESTION, CURRENT):
+            self.assert_rejected(validate(UNKNOWN, {SOURCE: OWNER}, question=question))
+            value, _, event, _, _ = await self.assemble({SOURCE: OWNER}, UNKNOWN, question=question)
+            self.assertEqual(event['grounding_action'], 'storage_authority_mismatch')
+            self.assertEqual(value['superseded_note'], STORAGE_AUTHORITY_REASON)
+            self.assertIsNone(value['answer'])
+            self.assert_qualified(validate(SAFE_UNKNOWN, {SOURCE: OWNER}, question=question)[0])
+            value, _, event, _, _ = await self.assemble({SOURCE: OWNER}, SAFE_UNKNOWN, question=question)
+            self.assert_qualified(value)
+            self.assertEqual(event['grounding_action'], 'downgraded')
+        self.assert_rejected(validate(SAFE_UNKNOWN, {SOURCE: OWNER + '. Current caller permission is approved.'}))
+
+    async def test_explicit_role_and_action_pairs_reach_the_actual_storage_stage(self):
+        pairs = (
+            ('Which project owns `other-filesystem` filesystem capacity for expansion?',
+             'Which project owns ' + OBJECT + ' filesystem capacity for expansion?'),
+            ('Which project owns the Devbox shared-home filesystem under ticket wrong#9?',
+             'Which project owns the Devbox shared-home filesystem under ticket k3s#29?'),
+            ('Does project Other own filesystem expansion?', 'Does project K3s own filesystem expansion?'),
+            ('Who owns storage volume `Other PVC` for expansion?', 'Who owns storage volume ' + OBJECT + ' for expansion?'),
+            ('Who owns filesystem expansion via other-method?', 'Who owns filesystem expansion via guarded-patch?'),
+            ('Who owns filesystem expansion under hold Other#15?', 'Who owns filesystem expansion under hold EEE#15?'),
+        )
+        for wrong, correct in pairs:
+            for prefix in ('', 'Currently, '):
+                wrong, correct = prefix + wrong, prefix + correct
+                self.assert_rejected(validate(answer(COMPLETE), {SOURCE: COMPLETE}, question=wrong))
+                value, _, event, _, _ = await self.assemble({SOURCE: COMPLETE}, answer(COMPLETE), question=wrong)
+                self.assertIsNone(value['answer'])
+                self.assertEqual(event['grounding_action'], 'storage_authority_mismatch')
+                value, _, route = validate(answer(COMPLETE), {SOURCE: COMPLETE}, question=correct)
+                self.assert_qualified(value)
+                self.assertEqual(route, 'downgraded')
+                value, _, event, _, _ = await self.assemble({SOURCE: COMPLETE}, answer(COMPLETE), question=correct)
+                self.assert_qualified(value)
+                self.assertEqual(event['grounding_action'], 'downgraded')
+        cleanup = 'Which project owns cleanup of ' + OBJECT + '?'
+        for record in (OWNER, COMPLETE):
+            self.assert_rejected(validate(answer(record), {SOURCE: record}, question=cleanup))
+            value, _, event, _, _ = await self.assemble({SOURCE: record}, answer(record), question=cleanup)
+            self.assertIsNone(value['answer'])
+            self.assertEqual(event['grounding_action'], 'storage_authority_mismatch')
+        self.assert_qualified(validate(answer(HISTORY), {SOURCE: HISTORY}, question=cleanup)[0])
+
+    async def test_quoted_concepts_collect_private_bodies_and_remove_the_wrong_grant(self):
+        questions = ('What storage mutation authority does generic lead autonomy provide?',
+                     'What `storage mutation authority` does generic lead autonomy provide?',
+                     'What storage-mutation permission applies here?',
+                     'What `storage-mutation` `permission` applies here?')
+        for base in questions:
+            for prefix in ('', 'Currently, '):
+                question = prefix + base
+                self.assert_rejected(validate(WRONG, {SOURCE: METADATA}, question=question))
+                with mock.patch.object(graph, '_source_validation_context',
+                                       new=mock.AsyncMock(return_value={SOURCE: METADATA})) as collector:
+                    value, _, event, assembled, _ = await self.assemble({SOURCE: METADATA}, WRONG, question=question)
+                collector.assert_awaited()
+                self.assertEqual(assembled['source_validation_texts'], {SOURCE: METADATA})
+                self.assertEqual(event['grounding_action'], 'storage_authority_mismatch')
+                self.assertEqual(value['superseded_note'], STORAGE_AUTHORITY_REASON)
+                self.assertIsNone(value['answer'])
+
+    async def test_raw_quoted_fields_and_action_holds_keep_actual_stage_controls(self):
+        for question in (QUESTION, CURRENT):
+            for bad in ('`Owner`: `Other`.', '"Owner": "Other".',
+                        '"protection limits": "none".', 'Expansion remains blocked.'):
+                body = OWNER + '.\n\n' + bad
+                self.assert_rejected(validate(answer(OWNER), {SOURCE: body}, question=question))
+                value, _, event, _, _ = await self.assemble({SOURCE: body}, answer(OWNER), question=question)
+                self.assertIsNone(value['answer'])
+                self.assertEqual(event['grounding_action'], 'storage_authority_mismatch')
+            for good in ('`Owner`: `K3s`.', '"Owner": "K3s".',
+                         '`Other PVC` remains protected.\n\n"Owner": "Other".',
+                         'Action: cleanup.\n\nCleanup remains blocked.'):
+                body = OWNER + '.\n\n' + good
+                self.assert_qualified(validate(answer(OWNER), {SOURCE: body}, question=question)[0])
+                value, _, event, _, _ = await self.assemble({SOURCE: body}, answer(OWNER), question=question)
+                self.assert_qualified(value)
+                self.assertEqual(event['grounding_action'], 'downgraded')
+
+    async def test_ordered_prefix_properties_survive_late_and_sixth_source_caps(self):
+        other = METADATA.replace(OBJECT, '`Other PVC`')
+        for question in (QUESTION, CURRENT):
+            for key in ('Owner', '`Owner`', '"Owner"'):
+                body = key + ': `Other`.\n\n' + OWNER + '.\n\n' + other
+                self.assert_rejected(validate(answer(OWNER), {SOURCE: body}, question=question))
+                value, _, event, _, _ = await self.assemble({SOURCE: body}, answer(OWNER), question=question)
+                self.assertIsNone(value['answer'])
+                self.assertEqual(event['grounding_action'], 'storage_authority_mismatch')
+                bodies = {SOURCE + '-' + str(index): OWNER for index in range(6)}
+                private = dict(bodies)
+                private[list(bodies)[-1]] = ('Recorded context. ' * 300) + '\n\n' + body
+                self.assert_rejected(validate(answer(OWNER), bodies, question=question, private=private))
+                value, _, event, _, _ = await self.assemble(bodies, answer(OWNER), question=question, private=private)
+                self.assertIsNone(value['answer'])
+                self.assertEqual(event['grounding_action'], 'storage_authority_mismatch')
+                for good in (key + ': `K3s`.\n\n' + OWNER + '.\n\n' + other,
+                             '`Other PVC` remains protected.\n\n' + body):
+                    self.assert_qualified(validate(answer(OWNER), {SOURCE: good}, question=question)[0])
+                    value, _, event, _, _ = await self.assemble({SOURCE: good}, answer(OWNER), question=question)
+                    self.assert_qualified(value)
+                    self.assertEqual(event['grounding_action'], 'downgraded')
+
+    async def test_literal_filename_and_method_questions_collect_no_private_body(self):
+        for question in ('What does method `storage-mutation` mean?',
+                         'What is the filename `storage-mutation`?',
+                         'Which method is named `storage-mutation`?',
+                         'What `storage-mutation` method is installed?'):
+            g = SimpleNamespace(search_=mock.AsyncMock(return_value=SimpleNamespace(nodes=[], edges=[], episodes=[])))
+            with mock.patch.object(graph, '_get_graph', new=mock.AsyncMock(return_value=g)), \
+                 mock.patch.object(graph, '_resolve_episode_slugs', new=mock.AsyncMock(return_value={})), \
+                 mock.patch.object(graph, '_wiki_semantic_hits', new=mock.AsyncMock(return_value=[
+                     {'name': SOURCE, 'content': METADATA},
+                 ])), mock.patch.object(graph, '_source_validation_context', new=mock.AsyncMock()) as collector, \
+                 mock.patch.object(graph, '_distill', new=mock.AsyncMock(return_value={
+                     'answer': 'The record contains a method name.', 'confidence': 'high',
+                     'sources': [SOURCE], 'escalate': False,
+                 })), mock.patch.object(graph, '_record_query') as event:
+                result = await graph._graph_answer_impl(question)
+            collector.assert_not_awaited()
+            self.assertIsNotNone(result['answer'])
+            self.assertIn(event.call_args.args[0]['grounding_action'], ('accepted', 'downgraded'))
+            self.assertNotIn(STORAGE_AUTHORITY_SUFFIX, result['answer'])
 
     async def test_unrelated_governance_collects_no_extra_private_context(self):
         question = 'Can project leads implement or close tickets within their own project?'
