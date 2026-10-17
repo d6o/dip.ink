@@ -28,15 +28,18 @@ _STORAGE = re.compile(
     r"capacity|PVCs?|PVs?|Longhorn|disks?|volumes?|expansion|resize|unpin)\b", re.I,
 )
 _INTENT = re.compile(
-    r"\b(?:own(?:s|er|ership)?|authority|permissions?|constraints?|protect\w*|"
+    r"\b(?:own(?:s|ers?|ership)?|authority|authorities|permissions?|constraints?|protect\w*|"
     r"holds?|gates?|conditions?|risks?|clean[- ]?up|expan\w*|resize|retention|unpin|"
     r"delet\w*|remov\w*|patch\w*|writ\w*|mutat\w*)\b", re.I,
 )
-_CONCEPT = re.compile(
-    r"(?:storage|filesystem|file system|shared-home|home PVC|capacity|cleanup|expansion|"
-    r"resize|retention|unpin|protection|authority|mutation|permission)(?:[ -]+(?:storage|filesystem|capacity|"
-    r"risk|cleanup|expansion|constraints|authority|permission|mutation))*", re.I,
+_CONCEPT_WORD = (
+    r"(?:storage|filesystems?|file[ -]systems?|shared-home|home[ -]PVCs?|capacity|"
+    r"PVCs?|PVs?|Longhorn|disks?|volumes?|expand(?:s)?|expansion|resize|unpin|"
+    r"owners?|ownership|authority|authorities|permissions?|constraints?|protect(?:ion|ed|s)?|"
+    r"holds?|gates?|conditions?|risks?|clean[ -]?up|retention|delet(?:e|ion)|remov(?:e|al)|"
+    r"patch(?:es)?|writ(?:e|es)|mutat(?:e|ions?)|operations?)"
 )
+_CONCEPT = re.compile(_CONCEPT_WORD + r"(?:[ -]+" + _CONCEPT_WORD + r")*", re.I)
 # These are complete source-record forms, not operational instructions.
 # Conditions and limits are mandatory and remain part of the record identity.
 GUARDS = ("fresh StorageClass allowVolumeExpansion, exact UID/RV/old size, ext4, "
@@ -95,15 +98,47 @@ _PROPERTY = re.compile(
     r"(?P=quote)\s*(?:(?:is|was|remains)\s*[:=]?|[:=])\s*"
     rf"(?P<value>{_LITERAL}|\"[^\"\n]*\"|'[^'\n]*'|[^\n]*?)(?=$|\n)", re.I,
 )
-_CURRENT_GRANT = re.compile(
+_POSSIBLE_CURRENT_PERMISSION = re.compile(
     r"\b(?:current|caller|now)\b.{0,100}\b(?:permission|authorized|approved|granted|can|may)\b", re.I,
 )
-_NEGATIVE = re.compile(r"\b(?:no|not|never|cannot|unverified|unknown|blocked|conditional)\b", re.I)
 _PROTECTION = re.compile(
     r"\b(?:(?:The|This|All|Existing|Current|Its|Their)\s+)*(?:activation|"
     r"partials?|worktrees?|custody|fence|capture|retention|retirement|protection|hold|"
     r"rollback|candidate|timestamp|it\b|they\b)", re.I,
 )
+
+
+def _literal_role(question: str, match: re.Match) -> str:
+    """Classify one literal without changing its identity bytes."""
+    before = re.sub(r"[*_]", "", question[:match.start()])
+    after = re.sub(r"[*_]", "", question[match.end():])
+    nouns = {"owner": "(?:project|owner)", "ticket": "ticket", "hold": "hold",
+             "method": "method", "action": "(?:action|operation)",
+             "object": "(?:target|storage object|storage volume|filesystem|PVC|PV|volume|disk|Longhorn)"}
+    for role, noun in nouns.items():
+        if (re.search(rf"\b{noun}\s*(?:(?:is|:|=)\s*)?$", before, re.I)
+                or re.match(rf"\s+{noun}\b", after, re.I)):
+            property_question = (
+                role == "object" and _CONCEPT.fullmatch(match[0][1:-1])
+                and re.search(r"\b(?:filesystem|PVC|PV|volume|disk|Longhorn)\s*$", before, re.I)
+                and re.match(r"\s+(?:apply|applies|govern|governs|are|required)\b", after, re.I)
+            )
+            if not property_question:
+                return role
+    if re.search(r"\b(?:via|through|using)\s+(?:the\s+)?$", before, re.I):
+        return "method"
+    # A method subject must stay opaque in a read-capability question.
+    if (re.search(r"\b(?:can|does|do|could)\s*$", before, re.I)
+            and re.match(r"\s+(?:read|list|get|fetch|query|inspect|access|support)\w*\b", after, re.I)):
+        return "method"
+    if re.search(r"\b(?:source|note|record|filename|file name|path|named|called|for reference)\s*$", before, re.I):
+        return "data"
+    if _CONCEPT.fullmatch(match[0][1:-1]):
+        return "concept"
+    if re.search(r"\b(?:owns?|expansion of|cleanup of|resize of)\s+(?:the\s+)?$", before, re.I):
+        return "object"
+    # An unbound identity cannot silently become a generic scope question.
+    return "unbound"
 
 
 def _operative_question_text(question: str) -> str:
@@ -114,11 +149,7 @@ def _operative_question_text(question: str) -> str:
     ))
 
     def concept(match):
-        before, after = question[:match.start()], question[match.end():]
-        identity_role = (re.search(r"\b(?:method|filename|path|named|called|storage object|storage volume|filesystem|PVC)\s*$",
-                                   before, re.I)
-                         or re.match(r"\s+(?:method|filename|path|filesystem|PVC|storage object)\b", after, re.I))
-        if not name_question and not identity_role and _CONCEPT.fullmatch(match[0][1:-1]):
+        if not name_question and _literal_role(question, match) == "concept":
             return match[0][1:-1]
         return " "
 
@@ -188,14 +219,23 @@ def _question_roles(question: str) -> dict[str, set[str]]:
     plain = r"[A-Za-z0-9_/.#:-]+"
     named = r"(?:[A-Z][A-Za-z0-9_/.#:-]*|[A-Za-z0-9_/.#:-]*[0-9_/.#:-][A-Za-z0-9_/.#:-]*)"
     roles: dict[str, set[str]] = {}
+    for match in re.finditer(_LITERAL, question):
+        role = _literal_role(question, match)
+        if role not in {"concept", "data"}:
+            identity = match[0][1:-1] if role == "action" else match[0]
+            roles.setdefault(role, set()).add(identity)
+
+    # Literal roles come only from the classifier above. A plain-role scan
+    # must not reinterpret a concept literal or cross its opaque marker.
+    plain_question = re.sub(_LITERAL, "\x00", question)
 
     def collect(role, pattern, *, flags=re.I):
-        for identity in re.findall(pattern, question, flags):
+        for identity in re.findall(pattern, plain_question, flags):
             identity = identity if identity.startswith('`') else '`' + identity + '`'
             roles.setdefault(role, set()).add(identity)
 
     nouns = {"owner": "(?:project|owner)", "ticket": "ticket", "hold": "hold",
-             "method": "method", "object": "(?:storage object|storage volume|filesystem|PVC|volume)"}
+             "method": "method", "object": "(?:target|storage object|storage volume|filesystem|PVC|PV|volume|disk|Longhorn)"}
     for role, noun in nouns.items():
         collect(role, rf"\b{noun}\s+({_LITERAL})")
         # Plain compound identities and capitalized names are explicit too.
@@ -263,63 +303,87 @@ def _role_mismatch(record: _Record, roles: dict[str, set[str]]) -> bool:
 def _contrary(raw: str, record: _Record, answer_units: set[str]) -> bool:
     """Raw text only vetoes. It cannot fill a missing positive field."""
     object_name = record.fields["object"]
-    # Unknown prefix qualifiers can veto, but cannot establish a relation.
-    # A later unrelated object must not erase an earlier potential limit.
-    scoped_context = None
+    desired_action = record.fields.get("action")
+    authority_scope = record.phase in {"owner", "retention", "read"}
+    # Unknown prefixes can veto. Only actual source anchors change context.
+    # Object context and action context stay separate and follow source order.
+    object_context = None
+    action_context = None
+
+    def segment_problem(text):
+        nonlocal object_context, action_context
+        identity = object_name[1:-1]
+        mentions = re.search(r"(?<![\w./:-])" + re.escape(identity) + r"(?![\w./:-])", text)
+        if mentions:
+            if object_context is False:
+                action_context = None
+            object_context = True
+        elif (re.search(rf"(?:storage object|storage volume|filesystem|PVC|PV|volume)\s+{_LITERAL}", text, re.I)
+              or (re.search(rf"^\s*{_LITERAL}\s+(?:is|remains|has)\b", text) and _STORAGE.search(text))):
+            object_context, action_context = False, None
+        remainder = text
+        for prop in _PROPERTY.finditer(text):
+            role = {"project": "owner", "protection limits": "limits", "operation": "action"}.get(
+                prop["role"].lower(), prop["role"].lower(),
+            )
+            value = prop["value"]
+            if value[:1] in {'`', '"', "'"} and value[-1:] == value[:1]:
+                value = value[1:-1]
+            if role == "action":
+                if value not in {"expansion", "cleanup", "resize", "deletion", "write", "patch", "read", "retention"}:
+                    if authority_scope and object_context is not False:
+                        return True
+                else:
+                    action_context = value
+                remainder = remainder.replace(prop[0], "")
+                continue
+            if role in {"owner", "ticket", "method", "hold"}:
+                value = '`' + value + '`'
+            related_action = desired_action is None or action_context in {None, desired_action}
+            if authority_scope and object_context is not False and related_action:
+                if record.fields.get(role) != value:
+                    return True
+                remainder = remainder.replace(prop[0], "")
+        # Explicit source actions can restore their own operation context.
+        # They cannot restore an object after an unrelated-object reset.
+        restrictions = list(re.finditer(
+            r"\b(?P<action>expansion|cleanup|resize|deletion|write|patch)\s+"
+            r"(?:is|remains|stays|requires|cannot|blocked)\b", remainder, re.I,
+        ))
+        operation_hold = any(match["action"].lower() == desired_action for match in restrictions)
+        if restrictions:
+            action_context = restrictions[-1]["action"].lower()
+        related_action = desired_action is None or action_context in {None, desired_action}
+        event_conflict = record.fields.get("event") and record.fields["event"] in remainder and mentions
+        if _HOLD.search(remainder) and (authority_scope or event_conflict):
+            if object_context is not False and (operation_hold or (related_action and (
+                    mentions or _PROTECTION.search(remainder)))):
+                return True
+        return False
+
     for unit in _units(raw):
-        # Narrative, metadata scalars, headings, and code can all retain holds.
-        # A raw record can occur inside a scalar or a fenced example.
-        remainder = unit
-        for phase, grammar in _GRAMMARS.items():
-            for match in grammar.finditer(unit):
-                fields = match.groupdict()
-                scoped_context = fields["object"] == object_name
-                if not scoped_context:
-                    continue
+        events = sorted((match.start(), match.end(), phase, match)
+                        for phase, grammar in _GRAMMARS.items() for match in grammar.finditer(unit))
+        cursor = 0
+        for start, end, phase, match in events:
+            if start < cursor:
+                continue
+            if segment_problem(unit[cursor:start]):
+                return True
+            fields = match.groupdict()
+            object_context = fields["object"] == object_name
+            action_context = fields.get("action")
+            if object_context:
                 if record.phase == "owner" and phase == "owner" and fields != record.fields:
                     return True
                 if (record.phase in {"completed", "history"} and phase == record.phase
                         and fields.get("event") == record.fields.get("event") and fields != record.fields):
                     return True
-                # A complete negative limit stays attached to its own phase.
-                # The surrounding raw text can still contain a contrary hold.
-                if match[0] in answer_units or phase in {"history", "completed", "metadata", "read"}:
-                    remainder = remainder.replace(match[0], "")
-        # Match the literal object even when raw prose omits backticks.
-        identity = object_name[1:-1]
-        mentions = re.search(r"(?<![\w./:-])" + re.escape(identity) + r"(?![\w./:-])", remainder)
-        if mentions:
-            scoped_context = True
-        # A new explicit storage object ends inherited veto context.
-        elif re.search(rf"(?:storage object|filesystem|PVC)\s+{_LITERAL}", remainder, re.I):
-            scoped_context = False
-        elif re.search(rf"^{_LITERAL}\s+(?:is|remains|has)\b", remainder) and _STORAGE.search(remainder):
-            scoped_context = False
-        authority_scope = record.phase in {"owner", "retention", "read"}
-        if authority_scope and scoped_context is not False:
-            for prop in _PROPERTY.finditer(remainder):
-                role = prop["role"].lower()
-                role = {"project": "owner", "protection limits": "limits", "operation": "action"}.get(role, role)
-                value = prop["value"]
-                if value[:1] in {'`', '"', "'"} and value[-1:] == value[:1]:
-                    value = value[1:-1]
-                if role in {"owner", "ticket", "method", "hold"}:
-                    value = '`' + value + '`'
-                if role == "action" and value != record.fields.get("action"):
-                    scoped_context = False
-                    continue
-                # Raw fields can contradict a record, never supply its roles.
-                if record.fields.get(role) != value:
-                    return True
-                remainder = remainder.replace(prop[0], "")
-        event_conflict = (record.fields.get("event") and record.fields["event"] in remainder
-                          and mentions)
-        action = record.fields.get("action")
-        operation_hold = action and re.search(
-            r"\b" + re.escape(action) + r"\s+(?:is|remains|stays|requires|cannot|blocked)\b", remainder, re.I,
-        )
-        if (_HOLD.search(remainder) and (authority_scope or event_conflict)
-                and (mentions or (scoped_context is not False and (_PROTECTION.search(remainder) or operation_hold)))):
+                if match[0] not in answer_units and phase not in {"history", "completed", "metadata", "read"}:
+                    if segment_problem(match[0]):
+                        return True
+            cursor = end
+        if segment_problem(unit[cursor:]):
             return True
     return False
 
@@ -340,7 +404,9 @@ def storage_authority_problem(
     if _UNKNOWN.fullmatch(answer.strip()):
         # Conditional ownership does not establish current caller permission.
         # Other negative retrieval facets abstain instead of claiming absence.
-        if any(_CURRENT_GRANT.search(unit) and not _NEGATIVE.search(unit)
+        # An unrelated negative clause cannot cancel a possible declaration.
+        # Ambiguous declarations abstain; raw text never grants permission.
+        if any(_POSSIBLE_CURRENT_PERMISSION.search(unit)
                for raw in cited + _values(retrieved_texts) for unit in _units(raw)):
             return STORAGE_AUTHORITY_REASON
         return None

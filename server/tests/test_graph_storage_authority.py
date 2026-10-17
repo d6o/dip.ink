@@ -349,6 +349,86 @@ class GraphStorageAuthorityTests(unittest.IsolatedAsyncioTestCase):
                     self.assert_qualified(value)
                     self.assertEqual(event['grounding_action'], 'downgraded')
 
+    async def test_plural_concept_tokens_keep_the_collector_and_actual_storage_route(self):
+        questions = ('What storage permissions apply here?',
+                     'What `storage permissions` apply here?',
+                     'What PVC expansion permission applies here?',
+                     'What `PVC expansion permission` applies here?',
+                     'What PVC `permissions` apply here?',
+                     'What volume `constraints` apply here?',
+                     'What `PV` `mutation` `permissions` apply here?')
+        for base in questions:
+            for prefix in ('', 'Currently, '):
+                question = prefix + base
+                self.assert_rejected(validate(WRONG, {SOURCE: METADATA}, question=question))
+                with mock.patch.object(graph, '_source_validation_context',
+                                       new=mock.AsyncMock(return_value={SOURCE: METADATA})) as collector:
+                    value, _, event, assembled, _ = await self.assemble({SOURCE: METADATA}, WRONG, question=question)
+                collector.assert_awaited()
+                self.assertEqual(assembled['source_validation_texts'], {SOURCE: METADATA})
+                self.assertIsNone(value['answer'])
+                self.assertEqual(event['grounding_action'], 'storage_authority_mismatch')
+                value, _, event, _, _ = await self.assemble({SOURCE: METADATA}, answer(METADATA), question=question)
+                self.assert_qualified(value)
+                self.assertEqual(event['grounding_action'], 'downgraded')
+
+    async def test_unbound_literal_targets_refuse_instead_of_becoming_generic(self):
+        for base in ('What protection constraints apply for `other-filesystem` storage volume?',
+                     'What protection constraints apply to storage expansion target `other-filesystem`?',
+                     'What storage protection constraints apply toward `other-filesystem`?',
+                     'What storage protection constraints apply concerning ' + OBJECT + '?'):
+            for prefix in ('', 'Currently, '):
+                question = prefix + base
+                self.assert_rejected(validate(answer(OWNER), {SOURCE: OWNER}, question=question))
+                value, _, event, _, _ = await self.assemble({SOURCE: OWNER}, answer(OWNER), question=question)
+                self.assertIsNone(value['answer'])
+                self.assertEqual(event['grounding_action'], 'storage_authority_mismatch')
+        for base in ('What protection constraints apply for ' + OBJECT + ' storage volume?',
+                     'What protection constraints apply to storage expansion target ' + OBJECT + '?'):
+            for prefix in ('', 'Currently, '):
+                for record in (OWNER, METADATA):
+                    value, _, event, _, _ = await self.assemble({SOURCE: record}, answer(record), question=prefix + base)
+                    self.assert_qualified(value)
+                    self.assertEqual(event['grounding_action'], 'downgraded')
+
+    async def test_local_action_restrictions_can_restore_their_own_source_context(self):
+        bad = OWNER + '.\nAction: cleanup.\n\nExpansion remains blocked.'
+        good = OWNER + '.\nAction: cleanup.\n\nCleanup remains blocked.'
+        reset = OWNER + '.\n\n`Other PVC` remains protected.\nAction: cleanup.\n\nExpansion remains blocked.'
+        for question in (QUESTION, CURRENT):
+            self.assert_rejected(validate(answer(OWNER), {SOURCE: bad}, question=question))
+            value, _, event, _, _ = await self.assemble({SOURCE: bad}, answer(OWNER), question=question)
+            self.assertIsNone(value['answer'])
+            self.assertEqual(event['grounding_action'], 'storage_authority_mismatch')
+            bodies = {SOURCE + '-' + str(index): OWNER for index in range(6)}
+            private = dict(bodies)
+            private[list(bodies)[-1]] += '\n\n' + ('Recorded context. ' * 300) + '\n\n' + bad
+            value, _, event, _, _ = await self.assemble(bodies, answer(OWNER), question=question, private=private)
+            self.assertIsNone(value['answer'])
+            self.assertEqual(event['grounding_action'], 'storage_authority_mismatch')
+            for body in (good, reset):
+                value, _, event, _, _ = await self.assemble({SOURCE: body}, answer(OWNER), question=question)
+                self.assert_qualified(value)
+                self.assertEqual(event['grounding_action'], 'downgraded')
+
+    async def test_possible_caller_permission_is_not_cancelled_by_an_unrelated_negative(self):
+        bad = ('Current caller permission is approved for ' + OBJECT
+               + '; cleanup of `Other PVC` is blocked.')
+        for question in (QUESTION, CURRENT):
+            self.assert_rejected(validate(SAFE_UNKNOWN, {SOURCE: OWNER + '.\n\n' + bad}, question=question))
+            value, _, event, _, _ = await self.assemble({SOURCE: OWNER + '.\n\n' + bad}, SAFE_UNKNOWN, question=question)
+            self.assertIsNone(value['answer'])
+            self.assertEqual(event['grounding_action'], 'storage_authority_mismatch')
+            bodies = {SOURCE + '-' + str(index): OWNER for index in range(6)}
+            private = dict(bodies)
+            private[list(bodies)[-1]] += '\n\n' + ('Recorded context. ' * 300) + '\n\n' + bad
+            value, _, event, _, _ = await self.assemble(bodies, SAFE_UNKNOWN, question=question, private=private)
+            self.assertIsNone(value['answer'])
+            self.assertEqual(event['grounding_action'], 'storage_authority_mismatch')
+            value, _, event, _, _ = await self.assemble({SOURCE: OWNER}, SAFE_UNKNOWN, question=question)
+            self.assert_qualified(value)
+            self.assertEqual(event['grounding_action'], 'downgraded')
+
     async def test_literal_filename_and_method_questions_collect_no_private_body(self):
         for question in ('What does method `storage-mutation` mean?',
                          'What is the filename `storage-mutation`?',

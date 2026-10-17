@@ -308,6 +308,66 @@ class StorageAuthorityTests(unittest.TestCase):
             reset = '`Other PVC` remains protected.\n\n' + prefix + OWNER
             self.assertIsNone(problem(answer(OWNER), {SOURCE: reset}))
 
+    def test_concept_tokens_preserve_plural_intent_and_resource_words(self):
+        phrases = ('storage permissions', 'PVC expansion permission', 'PV mutation permissions',
+                   'Longhorn volume cleanup constraints', 'disk expansion conditions',
+                   'filesystem protection gates')
+        for phrase in phrases:
+            for words in (phrase, '`' + phrase + '`', ' '.join('`' + word + '`' for word in phrase.split())):
+                query = 'What ' + words + ' apply here?'
+                self.assertTrue(storage_authority_required(query), query)
+                self.assert_rejected(WRONG, {SOURCE: METADATA}, question=query)
+                self.assertIsNone(problem(answer(METADATA), {SOURCE: METADATA}, question=query))
+        for resource in ('storage', 'PVC', 'PV', 'Longhorn', 'volume', 'filesystem', 'disk'):
+            query = 'What ' + resource + ' `permissions` apply here?'
+            self.assertTrue(storage_authority_required(query), query)
+            self.assert_rejected(WRONG, {SOURCE: METADATA}, question=query)
+            self.assertIsNone(problem(answer(METADATA), {SOURCE: METADATA}, question=query))
+        for query in ('Can `storage permissions` read pod metadata?',
+                      'Does `PVC expansion permission` support pod metadata?',
+                      'What does method `PVC expansion permission` mean?',
+                      'What is the filename `storage permissions`?'):
+            self.assertFalse(storage_authority_required(query), query)
+
+    def test_all_requested_literals_need_a_known_role_or_refuse(self):
+        for query in ('What protection constraints apply for `other-filesystem` storage volume?',
+                      'What protection constraints apply to storage expansion target `other-filesystem`?',
+                      'What storage protection constraints apply toward `other-filesystem`?',
+                      'What storage protection constraints apply concerning ' + OBJECT + '?'):
+            self.assert_rejected(answer(OWNER), {SOURCE: OWNER}, question=query)
+        for query in ('What protection constraints apply for ' + OBJECT + ' storage volume?',
+                      'What protection constraints apply to storage expansion target ' + OBJECT + '?'):
+            self.assertIsNone(problem(answer(OWNER), {SOURCE: OWNER}, question=query))
+            self.assertIsNone(problem(answer(METADATA), {SOURCE: METADATA}, question=query))
+        reference = 'For reference `other-filesystem`, which project owns storage expansion?'
+        self.assertIsNone(problem(answer(OWNER), {SOURCE: OWNER}, question=reference))
+
+    def test_action_reset_does_not_delete_the_actual_object_context(self):
+        for tail in ('Action: cleanup.\n\nExpansion remains blocked.',
+                     '"Action": "cleanup".\n\n# Expansion remains blocked.',
+                     'Action: cleanup.\n\n```text\nExpansion remains blocked.\n```'):
+            self.assert_rejected(answer(OWNER), {SOURCE: OWNER + '.\n' + tail})
+        for tail in ('Action: cleanup.', 'Action: cleanup.\n\nCleanup remains blocked.',
+                     '`Other PVC` remains protected.\nAction: cleanup.\n\nExpansion remains blocked.'):
+            self.assertIsNone(problem(answer(OWNER), {SOURCE: OWNER + '.\n\n' + tail}))
+        body = OWNER + '.\nAction: cleanup.\n\nExpansion remains blocked.'
+        bodies = {str(index): OWNER for index in range(6)}
+        bodies['5'] += '\n\n' + ('Recorded context. ' * 300) + '\n\n' + body
+        self.assert_rejected(answer(OWNER), bodies)
+
+    def test_unknown_permission_does_not_borrow_another_target_negation(self):
+        permission = 'Current caller permission is approved for ' + OBJECT
+        for tail in ('; cleanup of `Other PVC` is blocked.',
+                     ' and cleanup of `Other PVC` is blocked.',
+                     '; no other action is permitted.'):
+            self.assert_rejected(SAFE_UNKNOWN, {SOURCE: OWNER + '.\n\n' + permission + tail})
+        self.assertIsNone(problem(SAFE_UNKNOWN, {SOURCE: OWNER}))
+        self.assertIsNone(problem(SAFE_UNKNOWN, {SOURCE: METADATA}))
+        late = ('Recorded context. ' * 300) + '\n\n' + permission + '; `Other PVC` is blocked.'
+        self.assert_rejected(SAFE_UNKNOWN, {SOURCE: OWNER}, retrieved={'sixth': late})
+        # A possible declaration can also be ambiguous. It never grants access.
+        self.assert_rejected(SAFE_UNKNOWN, {SOURCE: 'No current caller permission is approved.'})
+
     def test_source_only_qualifiers_cannot_hide_protection_in_a_tail(self):
         body = OWNER + '\n\n' + OBJECT + ' custody release remains blocked.'
         self.assert_rejected(answer(OWNER), {SOURCE: body})
