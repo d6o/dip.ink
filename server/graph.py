@@ -49,6 +49,9 @@ from storage_authority_qualifiers import (
 from sandbox_contract_qualifiers import (
     sandbox_contract_problem, sandbox_contract_required, SANDBOX_CONTRACT_REASON, SANDBOX_CONTRACT_SUFFIX,
 )
+from execution_phase_qualifiers import (
+    execution_phase_problem, execution_phase_required, EXECUTION_PHASE_REASON, EXECUTION_PHASE_SUFFIX,
+)
 from ingest import DEFAULT_GROUP_ID, build_graphiti
 from vector_search import install_read_search
 from graphiti_core.search.search_config_recipes import COMBINED_HYBRID_SEARCH_RRF
@@ -94,6 +97,7 @@ GROUNDING_COUNTS = {
     "release_scope_mismatch": 0,
     "storage_authority_mismatch": 0,
     "sandbox_contract_mismatch": 0,
+    "execution_phase_mismatch": 0,
     "error": 0,
 }
 
@@ -890,7 +894,8 @@ async def _assemble_packet(
         packet["credential_validation_texts"] = await _credential_validation_context(packet)
     if answer_evidence and (temporal_negative_required(query) or resource_scope_required(query)
                             or network_vantage_required(query) or release_scope_required(query)
-                            or storage_authority_required(query) or sandbox_contract_required(query)):
+                            or storage_authority_required(query) or sandbox_contract_required(query)
+                            or execution_phase_required(query)):
         packet["source_validation_texts"] = (
             packet["credential_validation_texts"] if "credential_validation_texts" in packet
             else await _source_validation_context(packet)
@@ -1113,6 +1118,22 @@ def _validate_distilled_answer(
             "escalate": True,
         }, False, "rejected"
 
+    execution_validation = execution_phase_required(question)
+    if execution_validation:
+        # Every raw citation needs a full private body before display caps.
+        # Uncited bodies can veto support, but cannot supply provenance.
+        full = packet.get("source_validation_texts") or {}
+        phase_error = execution_phase_problem(
+            question, answer,
+            {source: str(full.get(source) or "") for source in cited_sources},
+            retrieved_texts=full,
+        )
+        if phase_error:
+            return {
+                "answer": None, "confidence": "not_found", "sources": [], "escalate": True,
+                "superseded_note": phase_error,
+            }, True, "execution_phase_mismatch"
+
     sandbox_validation = sandbox_contract_required(question)
     if sandbox_validation:
         # All raw citations need full private bodies before any display cap.
@@ -1331,7 +1352,7 @@ def _validate_distilled_answer(
         action = "downgraded" if conf == "high" else action
 
     if (credential_services(question) or scoped_validation or network_validation
-            or release_validation or storage_validation or sandbox_validation):
+            or release_validation or storage_validation or sandbox_validation or execution_validation):
         # A memory record does not verify external state or caller authority.
         result["escalate"] = True
         result["confidence"] = "medium" if result["confidence"] == "high" else result["confidence"]
@@ -1356,6 +1377,14 @@ def _validate_distilled_answer(
                 "superseded_note": SANDBOX_CONTRACT_REASON,
             }, True, "sandbox_contract_mismatch"
         result["answer"] += SANDBOX_CONTRACT_SUFFIX
+    if execution_validation:
+        # A display cap cannot remove a phase, deadline, or proof limit.
+        if answer not in result["answer"] or len(result["answer"]) + len(EXECUTION_PHASE_SUFFIX) > 2000:
+            return {
+                "answer": None, "confidence": "not_found", "sources": [], "escalate": True,
+                "superseded_note": EXECUTION_PHASE_REASON,
+            }, True, "execution_phase_mismatch"
+        result["answer"] += EXECUTION_PHASE_SUFFIX
     result["answer"] = result["answer"][:2000]
     return result, True, action
 
