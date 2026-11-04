@@ -67,6 +67,11 @@ One process, one MCP endpoint (`/mcp`), all tools. One image, three roles:
   The API also preserves the legacy `capture-captured`, `capture-session`, and
   `capture-topic` aliases. Empty or absent frontmatter remains valid.
 
+## Operations and evaluation
+
+See the [v0.1.57 checklist](../docs/v0.1.57-operations.md) for scope consistency, alert state, manual janitor use, and read-only audits.
+The [evaluation guide](../docs/eval/README.md) separates synthetic validator checks from private live capture and human review.
+
 ## Structured ingest
 
 See [structured ingest and recoverable quarantine](INGEST_RELIABILITY.md) for output modes, bounded corrective retries, metrics, and operator recovery.
@@ -146,7 +151,7 @@ Optional [indexed vector retrieval](VECTOR_RETRIEVAL.md) accelerates graph reads
 | `memory_alerts.py` | 30 min | dead-man checks: pending note→episode lag (not wall-clock quiet), server `/health`. Quiet memory with zero pending is healthy. Exit 1 = alert. |
 | `memory_healthcheck.py` | daily | deep end-to-end: write path (canary if quiet), per-note ingest verification, curation backlog/liveness/lag, server exposure incl. `graph_answer` correctness + no-hallucination guard, index freshness, usage counts. Failures drop a note into the inbox. |
 | `memory_gaps.py` | weekly | mines the query log for zero-hit / low-relevance / not-found queries and files a "memory gaps" report note — which gets ingested: the memory knows what it's missing. |
-| `contradiction_janitor.py` | monthly | LLM audit of the densest entities' current facts; report-only by default (`DRY_RUN=1`). |
+| `contradiction_janitor.py` | manual only | Suspended by default; explicit reports use `DRY_RUN=1`, and failures remain visible. |
 
 ## Key env
 

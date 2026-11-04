@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import re
 import time
@@ -28,9 +29,20 @@ from dataclasses import asdict, dataclass
 log = logging.getLogger("notify")
 
 TELEGRAM_API = os.environ.get("TELEGRAM_API_BASE", "https://api.telegram.org").rstrip("/")
-REPEAT_HOURS = float(os.environ.get("NOTIFY_REPEAT_HOURS", "12"))
+def repeat_hours() -> float:
+    try:
+        value = float(os.environ.get("NOTIFY_REPEAT_HOURS", "12"))
+        if math.isfinite(value) and value > 0:
+            return value
+    except ValueError:
+        pass
+    log.warning("invalid NOTIFY_REPEAT_HOURS; using the 12-hour default")
+    return 12.0
+
+
+REPEAT_HOURS = repeat_hours()
 INSTANCE = os.environ.get("NOTIFY_INSTANCE", "dip.ink memory")
-USER_AGENT = "dip.ink-memory-notify/1"
+USER_AGENT = "OpenAI File Downloader, XaiImageApiFetch/1.0"
 MESSAGE_MAX = 3800  # Telegram rejects text over 4096 characters.
 
 OWNER_LEAD = "lead"
@@ -90,11 +102,14 @@ def send_telegram(text: str) -> bool:
 
 
 class Neo4jStateStore:
-    """Keeps one (fingerprint, last_sent) record per job name in Neo4j."""
+    """Keep fingerprint/time per job, group, and instance in an explicit database."""
 
     def __init__(self) -> None:
         from neo4j import GraphDatabase
 
+        self._database = os.environ.get("NEO4J_DATABASE", "neo4j")
+        self._group = os.environ.get("GROUP_ID", "main")
+        self._instance = os.environ.get("NOTIFY_INSTANCE", "dip.ink memory")
         self._driver = GraphDatabase.driver(
             os.environ.get("NEO4J_URI", "bolt://neo4j:7687"),
             auth=(os.environ.get("NEO4J_USER", "neo4j"), os.environ.get("NEO4J_PASSWORD", "")),
@@ -103,8 +118,10 @@ class Neo4jStateStore:
 
     def get(self, name: str) -> tuple[str, float]:
         records, _, _ = self._driver.execute_query(
-            "MATCH (s:DipinkAlertState {name: $name}) RETURN s.fingerprint AS fp, s.last_sent AS ts",
-            name=name,
+            "MATCH (s:DipinkAlertState {name: $name, group_id: $group_id, instance: $instance}) "
+            "RETURN s.fingerprint AS fp, s.last_sent AS ts",
+            name=name, group_id=self._group, instance=self._instance, database_=self._database,
+            routing_="r",
         )
         if not records:
             return "", 0.0
@@ -112,8 +129,10 @@ class Neo4jStateStore:
 
     def put(self, name: str, fingerprint: str, last_sent: float) -> None:
         self._driver.execute_query(
-            "MERGE (s:DipinkAlertState {name: $name}) SET s.fingerprint = $fp, s.last_sent = $ts",
-            name=name, fp=fingerprint, ts=last_sent,
+            "MERGE (s:DipinkAlertState {name: $name, group_id: $group_id, instance: $instance}) "
+            "SET s.fingerprint = $fp, s.last_sent = $ts",
+            name=name, group_id=self._group, instance=self._instance, database_=self._database,
+            fp=fingerprint, ts=last_sent,
         )
 
     def close(self) -> None:
@@ -185,11 +204,11 @@ def notify(
         return None
     now = time.time() if now is None else now
     current = fingerprint(alerts)
-    owned_store = False
+    owned_store = None
     if store is None:
         try:
             store = Neo4jStateStore()
-            owned_store = True
+            owned_store = store
         except Exception as error:  # noqa: BLE001
             print(f"alert state store unavailable: {type(error).__name__}")
     try:
@@ -218,5 +237,8 @@ def notify(
                 print(f"alert state write failed: {type(error).__name__}")
         return action
     finally:
-        if owned_store and store is not None:
-            store.close()
+        if owned_store is not None:
+            try:
+                owned_store.close()
+            except Exception as error:
+                print(f"alert state close failed: {type(error).__name__}")

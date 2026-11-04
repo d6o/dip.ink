@@ -107,6 +107,8 @@ jobs:
         run: bash curator/pi-runner/tests/test-prepared-boundary.sh
       - name: Run curator supervisor shell tests
         run: bash curator/scripts/test-processnotes-supervisor.sh
+      - name: Check read-only blocked-note audit
+        run: python curator/scripts/test-audit-blocked-notes.py
       - name: Validate a fresh template repository
         shell: bash
         run: |
@@ -144,6 +146,8 @@ jobs:
           rhysd/actionlint:1.7.7
       - name: Validate release and path contracts
         run: python ci/check-repo-contract.py --release
+      - name: Prevent scope drift and scheduled janitor activation
+        run: python ci/test-operations-contracts.py
       - name: Render Docker Compose with fixture environment
         run: docker compose --env-file ci/compose.env config --quiet
       - name: Render and inspect Kubernetes manifests

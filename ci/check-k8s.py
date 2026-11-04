@@ -9,7 +9,7 @@ from typing import Any
 
 import yaml
 
-PINNED_MEMORY = "ghcr.io/d6o/dip.ink/memory:v0.1.56"
+PINNED_MEMORY = "ghcr.io/d6o/dip.ink/memory:v0.1.57"
 APP_NAMESPACE = "dipink"
 
 
@@ -82,6 +82,34 @@ def validate_rendered(resources: list[dict[str, Any]]) -> set[str]:
         raise ValueError(
             "kubectl kustomize output includes a Secret; the placeholder example must stay outside the apply set"
         )
+
+    config = next((r.get("data", {}) for r in resources
+                   if r.get("kind") == "ConfigMap" and r["metadata"]["name"] == "dipink-config"), {})
+    if not config.get("GROUP_ID") or not config.get("NEO4J_DATABASE"):
+        raise ValueError("dipink-config must declare GROUP_ID and NEO4J_DATABASE")
+    for resource in resources:
+        if resource.get("kind") == "CronJob" and resource["metadata"]["name"] == "contradiction-janitor":
+            if resource.get("spec", {}).get("suspend") is not True:
+                raise ValueError("contradiction-janitor must remain suspended")
+        spec = resource.get("spec", {})
+        if resource.get("kind") == "CronJob":
+            pod_spec = spec.get("jobTemplate", {}).get("spec", {}).get("template", {}).get("spec", {})
+        else:
+            pod_spec = spec.get("template", {}).get("spec", {})
+        for container in pod_spec.get("containers", []):
+            if not str(container.get("image", "")).startswith("ghcr.io/d6o/dip.ink/memory:"):
+                continue
+            env = {item["name"]: item for item in container.get("env", [])}
+            inherited = any(item.get("configMapRef", {}).get("name") == "dipink-config"
+                            for item in container.get("envFrom", []))
+            for key in ("GROUP_ID", "NEO4J_DATABASE"):
+                if key in env:
+                    reference = env[key].get("valueFrom", {}).get("configMapKeyRef", {})
+                    if (env[key].get("value") != config[key]
+                            and reference != {"name": "dipink-config", "key": key}):
+                        raise ValueError(f"memory workload overrides the shared {key}")
+                elif not inherited:
+                    raise ValueError(f"memory workload lacks the shared {key} configuration")
 
     service_port_names: set[str] = set()
     release_memory_images = 0

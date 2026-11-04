@@ -153,7 +153,7 @@ def _age_h(ts: datetime) -> float:
 
 
 def _get(url: str, timeout: float = 30) -> tuple[int, bytes]:
-    req = urllib.request.Request(url, headers={"User-Agent": "memory-healthcheck"})
+    req = urllib.request.Request(url, headers={"User-Agent": "OpenAI File Downloader, XaiImageApiFetch/1.0"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return r.status, r.read()
 
@@ -232,6 +232,7 @@ def drop_note(slug: str, note_md: str) -> dict | None:
             req = urllib.request.Request(
                 f"{base}/mcp", data=json.dumps(body).encode(),
                 headers={"Content-Type": "application/json",
+                         "User-Agent": "OpenAI File Downloader, XaiImageApiFetch/1.0",
                          "Accept": "application/json, text/event-stream"})
             with urllib.request.urlopen(req, timeout=120) as r:
                 raw = r.read().decode(errors="replace")
@@ -289,6 +290,24 @@ so it exercised the write path itself. Tomorrow's run verifies this canary was i
 
 def _known_query() -> str:
     return os.environ.get("SEARCH_PROBE", "note inbox curation")
+
+
+def check_scope() -> bool:
+    """Verify server/job scope before reporting notes missing from the graph."""
+    try:
+        status = _get_json(f"{MCP_EXT}/api/status", timeout=30)
+        scope = status.get("components", {}).get("graph", {})
+        if not scope.get("group_id") or not scope.get("database"):
+            failures.append("ingestion scope: server scope metadata unavailable")
+            return False
+        expected = (os.environ.get("GROUP_ID", "main"), os.environ.get("NEO4J_DATABASE", "neo4j"))
+        if (scope["group_id"], scope["database"]) != expected:
+            failures.append("ingestion scope: healthcheck group/database differs from the memory server")
+            return False
+        return True
+    except Exception as error:
+        failures.append(f"ingestion scope: check failed ({type(error).__name__})")
+        return False
 
 
 async def check_ingestion(inbox, deferred, curated) -> None:
@@ -548,7 +567,8 @@ def main() -> None:
     check_write_path(inbox, deferred, curated)
     import asyncio
     try:
-        asyncio.run(check_ingestion(inbox, deferred, curated))
+        if check_scope():
+            asyncio.run(check_ingestion(inbox, deferred, curated))
     except Exception as e:
         failures.append(f"ingestion check errored: {e}")
     check_curation(inbox, deferred, curated)

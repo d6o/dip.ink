@@ -7,6 +7,9 @@ data:
   # Repository and graph isolation defaults.
   WIKI_BRANCH: "main"
   GROUP_ID: "main"
+  NEO4J_DATABASE: "neo4j"
+  NOTIFY_INSTANCE: "dip.ink memory"
+  NOTIFY_REPEAT_HOURS: "12"
 
   # Extraction/distillation defaults. Empty ladders/overrides inherit the
   # corresponding single-model extraction setting in server code.

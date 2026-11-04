@@ -1,4 +1,4 @@
-"""contradiction janitor — monthly hygiene for the bitemporal layer.
+"""Manual-only contradiction report for the bitemporal layer.
 
 Structural detection of un-superseded contradictions drowns in false positives
 (high-churn entities like Aisle legitimately hold 50+ distinct current facts).
@@ -15,22 +15,28 @@ Conservative by design: only acts when the LLM answers with a parseable pair
 list AND the two facts have different valid_at (so "older" is well-defined).
 DRY_RUN=1 reports without writing.
 
-Env: TOP_N (default 50), DRY_RUN, plus the usual NEO4J_*/LITELLM_* from the pod.
+Env: TOP_N (default 50), DRY_RUN (default 1), GROUP_ID, NEO4J_*, LLM_*.
+Writes also require explicit JANITOR_ALLOW_WRITES=1 approval.
 """
 from __future__ import annotations
 
 import asyncio
 import json
 import os
-import re
 import sys
 from datetime import datetime, timezone
 
 sys.path.insert(0, "/app")
-from ingest import build_graphiti  # noqa: E402
+from ingest import DEFAULT_GROUP_ID, build_graphiti  # noqa: E402
+from graphiti_core.prompts.models import Message
+from pydantic import BaseModel, StrictInt
+
+
+class Contradictions(BaseModel):
+    pairs: list[tuple[StrictInt, StrictInt]]
 
 TOP_N = int(os.environ.get("TOP_N", "50"))
-DRY_RUN = os.environ.get("DRY_RUN", "0") in ("1", "true")
+DRY_RUN = os.environ.get("DRY_RUN", "1").lower() in ("1", "true")
 MAX_FACTS_PER_ENTITY = 40
 
 JUDGE_PROMPT = """You are auditing a knowledge graph for contradictions.
@@ -48,67 +54,62 @@ FACTS:
 
 
 async def judge_contradictions(g, name: str, facts: list[dict]) -> list[tuple[int, int]]:
-    listing = "\n".join(f"{i}. [{f['valid_at'][:10]}] {f['fact'][:200]}" for i, f in enumerate(facts))
+    listing = "\n".join(f"{i}. [{(f.get('valid_at') or 'unknown')[:10]}] {f['fact'][:200]}" for i, f in enumerate(facts))
     prompt = JUDGE_PROMPT.format(name=name, facts=listing)
     try:
-        resp = await g.llm_client._generate_response(  # reuse the wired LLM client
-            [{"role": "user", "content": prompt}], response_model=None,
-            max_tokens=1000, model_size=None,
+        resp = await g.llm_client.generate_response(
+            [Message(role="user", content=prompt)], response_model=Contradictions, max_tokens=1000,
         )
-        text = resp if isinstance(resp, str) else json.dumps(resp)
-    except Exception as e:
-        print(f"[janitor] LLM error for {name}: {e}")
-        return []
-    m = re.search(r'\{.*\}', text, re.S)
-    if not m:
-        return []
-    try:
-        pairs = json.loads(m.group(0)).get("pairs", [])
-        return [(int(a), int(b)) for a, b in pairs if isinstance(a, int) or str(a).isdigit()]
-    except Exception:
-        return []
+        return Contradictions.model_validate(resp).pairs
+    except Exception as error:
+        raise RuntimeError(f"Janitor analysis failed ({type(error).__name__})") from None
 
 
 async def main() -> None:
+    if not DRY_RUN and os.environ.get("JANITOR_ALLOW_WRITES") != "1":
+        raise RuntimeError("Janitor writes require explicit JANITOR_ALLOW_WRITES=1 approval")
     g = build_graphiti()
     invalidated = 0
     reports = []
     try:
         rows, _, _ = await g.driver.execute_query(
-            "MATCH (n:Entity)-[r:RELATES_TO]-() WHERE r.fact IS NOT NULL AND r.invalid_at IS NULL "
+            "MATCH (n:Entity {group_id: $group_id})-[r:RELATES_TO]-() "
+            "WHERE r.group_id = $group_id AND r.fact IS NOT NULL AND r.invalid_at IS NULL "
             "WITH n, count(r) AS c ORDER BY c DESC LIMIT $topn RETURN n.uuid AS uuid, n.name AS name, c",
-            topn=TOP_N,
+            topn=TOP_N, group_id=DEFAULT_GROUP_ID,
         )
         print(f"[janitor] auditing {len(rows)} densest entities (DRY_RUN={DRY_RUN})")
         for row in rows:
             frows, _, _ = await g.driver.execute_query(
-                "MATCH (n:Entity {uuid: $uuid})-[r:RELATES_TO]-(m:Entity) "
-                "WHERE r.fact IS NOT NULL AND r.invalid_at IS NULL "
+                "MATCH (n:Entity {uuid: $uuid, group_id: $group_id})-[r:RELATES_TO]-(m:Entity) "
+                "WHERE r.group_id = $group_id AND r.fact IS NOT NULL AND r.invalid_at IS NULL "
                 "RETURN r.uuid AS uuid, r.fact AS fact, toString(r.valid_at) AS valid_at "
                 "ORDER BY r.valid_at ASC LIMIT $mx",
-                uuid=row["uuid"], mx=MAX_FACTS_PER_ENTITY,
+                uuid=row["uuid"], mx=MAX_FACTS_PER_ENTITY, group_id=DEFAULT_GROUP_ID,
             )
             facts = [dict(f) for f in frows]
             if len(facts) < 2:
                 continue
             pairs = await judge_contradictions(g, row["name"], facts)
             for a, b in pairs:
-                if a >= len(facts) or b >= len(facts) or a == b:
+                if a < 0 or b < 0 or a >= len(facts) or b >= len(facts) or a == b:
+                    continue
+                if not facts[a]["valid_at"] or not facts[b]["valid_at"]:
                     continue
                 older, newer = sorted((facts[a], facts[b]), key=lambda f: f["valid_at"])
                 if older["valid_at"] == newer["valid_at"]:
                     continue  # can't order — skip, don't guess
                 reports.append({
-                    "entity": row["name"],
-                    "invalidate": older["fact"][:120],
-                    "kept": newer["fact"][:120],
+                    "entity_uuid": row["uuid"],
+                    "older_uuid": older["uuid"],
+                    "newer_uuid": newer["uuid"],
                     "older_valid_at": older["valid_at"],
                 })
                 if not DRY_RUN:
                     await g.driver.execute_query(
-                        "MATCH ()-[r:RELATES_TO {uuid: $uuid}]-() "
+                        "MATCH ()-[r:RELATES_TO {uuid: $uuid, group_id: $group_id}]-() "
                         "SET r.invalid_at = datetime($inv), r.expired_at = datetime($now)",
-                        uuid=older["uuid"], inv=newer["valid_at"],
+                        uuid=older["uuid"], inv=newer["valid_at"], group_id=DEFAULT_GROUP_ID,
                         now=datetime.now(timezone.utc).isoformat(),
                     )
                     invalidated += 1
@@ -117,7 +118,7 @@ async def main() -> None:
 
     print(f"[janitor] contradictions found: {len(reports)}, invalidated: {invalidated}")
     for r in reports[:30]:
-        print(f"  {r['entity']}: SUPERSEDE '{r['invalidate']}' -> kept '{r['kept']}'")
+        print(json.dumps(r, sort_keys=True))
     print(f"[janitor] DONE {datetime.now(timezone.utc).isoformat()}")
 
 

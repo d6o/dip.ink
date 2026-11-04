@@ -10,7 +10,7 @@ from pathlib import Path
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
-PINNED_RELEASE = "v0.1.56"
+PINNED_RELEASE = "v0.1.57"
 
 
 def load_yaml(path: Path) -> dict:
@@ -104,6 +104,21 @@ def check_template(errors: list[str]) -> None:
 
 
 def check_release(errors: list[str]) -> None:
+    compose = load_yaml(ROOT / "docker-compose.yml")
+    services = compose.get("services", {})
+    for key in ("GROUP_ID", "NEO4J_DATABASE"):
+        scopes = [services.get(name, {}).get("environment", {}).get(key)
+                  for name in ("memory", "ingest", "healthcheck")]
+        if not scopes[0] or len(set(scopes)) != 1:
+            errors.append(f"Compose memory, ingest, and healthcheck must share {key}")
+    for key in ("NOTIFY_INSTANCE", "NOTIFY_REPEAT_HOURS"):
+        values = [services.get(name, {}).get("environment", {}).get(key) for name in ("alerts", "healthcheck")]
+        if not values[0] or len(set(values)) != 1:
+            errors.append(f"Compose alert jobs must share {key}")
+    janitor = services.get("contradiction-janitor", {})
+    if (janitor.get("profiles") != ["manual"] or janitor.get("restart") != "no"
+            or janitor.get("command") != ["python", "/app/loops/contradiction_janitor.py"]):
+        errors.append("Compose janitor must be manual-only and one-shot")
     images_path = ROOT / ".github" / "workflows" / "images.yml"
     try:
         images = load_yaml(images_path)

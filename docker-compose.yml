@@ -1,7 +1,7 @@
 # dip.ink — the whole memory stack on one docker host.
 #
 #   cp .env.example .env   # fill in keys + your private wiki repo
-#   docker compose up -d         # pulls the immutable v0.1.56 runtime
+#   docker compose up -d         # pulls the immutable v0.1.57 runtime
 #
 # Services:
 #   neo4j                  graph database (Graphiti's backend)
@@ -10,7 +10,7 @@
 #   gaps                    weekly: mine the query log for memory gaps, file a report note
 #   alerts                  every 30 min: memory server and ingest checks
 #   healthcheck             daily: deep end-to-end pipeline verification
-#   contradiction-janitor  monthly: report-only contradiction analysis by default
+#   contradiction-janitor  manual profile only: report-only analysis
 #
 # The CURATOR (the agent that promotes inbox notes into wiki pages) runs in CI
 # on the wiki repo itself — see curator/README.md. Everything else is here.
@@ -36,6 +36,8 @@ x-graph-env: &graph-env
   DISTILL_MODEL: ${DISTILL_MODEL:-}
   DISTILL_MODEL_LADDER: ${DISTILL_MODEL_LADDER:-}
   GROUP_ID: ${GROUP_ID:-main}
+  NEO4J_DATABASE: ${NEO4J_DATABASE:-neo4j}
+  NOTIFY_INSTANCE: ${NOTIFY_INSTANCE:-dip.ink memory}
 
 x-server-env: &server-env
   <<: *graph-env
@@ -72,7 +74,7 @@ services:
       retries: 10
 
   memory:
-    image: ghcr.io/d6o/dip.ink/memory:v0.1.56
+    image: ghcr.io/d6o/dip.ink/memory:v0.1.57
     restart: unless-stopped
     depends_on:
       neo4j:
@@ -97,7 +99,7 @@ services:
       - "8080:8080"
 
   ingest:
-    image: ghcr.io/d6o/dip.ink/memory:v0.1.56
+    image: ghcr.io/d6o/dip.ink/memory:v0.1.57
     restart: unless-stopped
     entrypoint: ["/bin/sh", "-c"]
     # Clone-fresh + resumable batch every INGEST_INTERVAL seconds. The graph
@@ -131,7 +133,7 @@ services:
       ADD_EPISODE_RETRIES: ${ADD_EPISODE_RETRIES:-4}
 
   gaps:
-    image: ghcr.io/d6o/dip.ink/memory:v0.1.56
+    image: ghcr.io/d6o/dip.ink/memory:v0.1.57
     restart: unless-stopped
     entrypoint: ["/bin/sh", "-c"]
     command:
@@ -147,7 +149,7 @@ services:
       DRY_RUN: ${GAPS_DRY_RUN:-0}
 
   alerts:
-    image: ghcr.io/d6o/dip.ink/memory:v0.1.56
+    image: ghcr.io/d6o/dip.ink/memory:v0.1.57
     restart: unless-stopped
     entrypoint: ["/bin/sh", "-c"]
     command:
@@ -169,7 +171,7 @@ services:
       NOTIFY_REPEAT_HOURS: ${NOTIFY_REPEAT_HOURS:-12}
 
   healthcheck:
-    image: ghcr.io/d6o/dip.ink/memory:v0.1.56
+    image: ghcr.io/d6o/dip.ink/memory:v0.1.57
     restart: unless-stopped
     entrypoint: ["/bin/sh", "-c"]
     command:
@@ -196,6 +198,7 @@ services:
       MCP_INTERNAL: http://memory:8080
       ANSWER_PROBE: ${ANSWER_PROBE:-what is this memory system's note inbox called}
       HEALTHCHECK_INTERVAL: ${HEALTHCHECK_INTERVAL:-86400}
+      NOTIFY_REPEAT_HOURS: ${NOTIFY_REPEAT_HOURS:-12}
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
       FRESH_WRITE_HOURS: ${FRESH_WRITE_HOURS:-48}
@@ -207,23 +210,15 @@ services:
       INDEX_GRACE_HOURS: ${INDEX_GRACE_HOURS:-6}
 
   contradiction-janitor:
-    image: ghcr.io/d6o/dip.ink/memory:v0.1.56
-    restart: unless-stopped
-    entrypoint: ["/bin/sh", "-c"]
-    # Report-only by default. Set JANITOR_DRY_RUN=0 only after reviewing output.
-    command:
-      - |
-        while true; do
-          sleep "$${JANITOR_INTERVAL:-2592000}"
-          python /app/loops/contradiction_janitor.py \
-            || echo "[contradiction-janitor] report failed; retrying next interval"
-        done
+    image: ghcr.io/d6o/dip.ink/memory:v0.1.57
+    profiles: ["manual"]
+    restart: "no"
+    command: ["python", "/app/loops/contradiction_janitor.py"]
     depends_on:
       neo4j:
         condition: service_healthy
     environment:
       <<: *graph-env
-      JANITOR_INTERVAL: ${JANITOR_INTERVAL:-2592000}
       TOP_N: ${JANITOR_TOP_N:-50}
       DRY_RUN: ${JANITOR_DRY_RUN:-1}
 

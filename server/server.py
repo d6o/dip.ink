@@ -251,7 +251,8 @@ def _wiki_status() -> tuple[dict, dict]:
 
 async def _graph_status() -> tuple[dict, dict]:
     group_id = os.environ.get("GROUP_ID", "main")
-    component = {"ready": False, "error": None}
+    component = {"ready": False, "error": None, "group_id": group_id,
+                 "database": os.environ.get("NEO4J_DATABASE", "neo4j")}
     ingest = {
         "total": 0,
         "done": 0,

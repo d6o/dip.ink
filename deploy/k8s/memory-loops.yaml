@@ -2,8 +2,7 @@
 #
 #  - memory-gaps (weekly, Mon 06:00): mines the combined server's query log for
 #    zero-hit / low-relevance queries and drops a memory-gaps report note.
-#  - contradiction-janitor (monthly, 1st 05:00, DRY_RUN first): LLM pass over
-#    dense entities' current facts. Report-only until DRY_RUN is explicitly 0.
+#  - contradiction-janitor: suspended template for explicit manual reports only.
 #  - memory-alerts (every 30min): pending-ingest and server health checks.
 #    Firing alerts go to Telegram when TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID are
 #    set (deduplicated; reminder every NOTIFY_REPEAT_HOURS). The job also fails.
@@ -29,7 +28,7 @@ spec:
           restartPolicy: Never
           containers:
             - name: gaps
-              image: ghcr.io/d6o/dip.ink/memory:v0.1.56
+              image: ghcr.io/d6o/dip.ink/memory:v0.1.57
               command: ["python", "/app/loops/memory_gaps.py"]
               envFrom:
                 - configMapRef:
@@ -49,6 +48,7 @@ metadata:
   namespace: dipink
 spec:
   schedule: "0 5 1 * *"
+  suspend: true
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 2
   failedJobsHistoryLimit: 2
@@ -61,7 +61,7 @@ spec:
           restartPolicy: Never
           containers:
             - name: janitor
-              image: ghcr.io/d6o/dip.ink/memory:v0.1.56
+              image: ghcr.io/d6o/dip.ink/memory:v0.1.57
               command: ["python", "/app/loops/contradiction_janitor.py"]
               envFrom:
                 - configMapRef:
@@ -103,7 +103,7 @@ spec:
           restartPolicy: Never
           containers:
             - name: alerts
-              image: ghcr.io/d6o/dip.ink/memory:v0.1.56
+              image: ghcr.io/d6o/dip.ink/memory:v0.1.57
               command: ["python", "/app/loops/memory_alerts.py"]
               envFrom:
                 - configMapRef:
@@ -174,7 +174,7 @@ spec:
                 - {name: notes, mountPath: /notes}
           containers:
             - name: healthcheck
-              image: ghcr.io/d6o/dip.ink/memory:v0.1.56
+              image: ghcr.io/d6o/dip.ink/memory:v0.1.57
               command: ["python", "/app/loops/memory_healthcheck.py"]
               envFrom:
                 - configMapRef:

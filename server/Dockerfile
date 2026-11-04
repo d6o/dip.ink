@@ -20,9 +20,10 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY core.py wiki.py graph.py answer_qualifiers.py credential_method_qualifiers.py server.py ingest.py ingest_metrics.py ingest_failures.py chat_fallback.py vector_search.py vector_indexes.py vector_eval.py ./
+COPY core.py wiki.py graph.py answer_qualifiers.py credential_method_qualifiers.py server.py ingest.py ingest_metrics.py ingest_failures.py chat_fallback.py vector_search.py vector_indexes.py vector_eval.py evaluate_answers.py ./
 COPY loops/ ./loops/
 COPY tests/ ./tests/
+COPY evaluation_cases/ ./evaluation_cases/
 
 # Wiki-side unit tests run at build time (no network, no keys).
 RUN OPENAI_API_KEY=test-only \

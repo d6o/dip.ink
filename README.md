@@ -76,7 +76,12 @@ The three workflows (`curator` hourly, `synthesis` weekly, `reviewqueue` daily) 
 
 ### 2. Deploy the memory stack
 
-Public runtime images use **immutable tags**, not a moving `latest` tag. The current public release pin is v0.1.56.
+Public runtime images use **immutable tags**, not a moving `latest` tag. The current public release pin is v0.1.57.
+
+Release v0.1.57 checks healthcheck group/database consistency and fixes scoped notification state and connection cleanup.
+The janitor is manual-only by default. New read-only tools inspect zero-edge metadata and blocked/source comparisons.
+A versioned 30-case synthetic evaluation separates deterministic validation from private live capture and human review.
+See the [operations checklist](docs/v0.1.57-operations.md) and [evaluation guide](docs/eval/README.md).
 
 Release v0.1.56 removes the six lexical answer guards introduced after v0.1.46.
 Older grounding, provenance, subject, date, project, observation, and credential-method checks remain.
@@ -236,7 +241,7 @@ That starts:
 | `gaps` | — | weekly: mine the query log for memory gaps |
 | `alerts` | — | every 30 min: dead-man checks (server, ingest lag); optional Telegram notifications |
 | `healthcheck` | — | daily: deep end-to-end pipeline verification |
-| `contradiction-janitor` | — | monthly: report-only contradiction analysis by default |
+| `contradiction-janitor` | — | manual profile only; not started by default |
 
 Compose and Kubernetes expose the same intended maintenance jobs and the same supported configuration surface (model ladders, distiller overrides, wiki embed provider, metrics path, pool sizes). Documented exceptions are intentional: the curator runs in the memory repo's CI (not Compose/k8s), and `PI_MODELS_JSON` is a Pi-runner variable, not a memory-server env.
 
@@ -355,7 +360,7 @@ dip.ink/
 │   ├── claude-code/        ← skill + PreCompact hook
 │   └── pi/                 ← memory extension (native tools), /recordnotes prompt,
 │                             compact/exit gate extension
-├── docker-compose.yml      ← the whole stack on one host (pinned v0.1.56 images)
+├── docker-compose.yml      ← the whole stack on one host (pinned v0.1.57 images)
 ├── .env.example
 ├── .github/workflows/      ← required CI + immutable image publication
 ├── ci/                     ← CI helpers (YAML/k8s/contracts, Neo4j integration runner, Pi typecheck)
@@ -383,7 +388,7 @@ dip.ink/
 
 ## Production (k8s)
 
-`deploy/k8s/` mirrors the compose stack for a cluster: Neo4j Deployment + PVC, the memory-server Deployment, the 15-min ingest CronJob, and the maintenance CronJobs. Images are published to GHCR by this repo's CI and **pinned to `v0.1.56`**.
+`deploy/k8s/` mirrors the compose stack for a cluster: Neo4j Deployment + PVC, the memory-server Deployment, the 15-min ingest CronJob, and the maintenance CronJobs. Images are published to GHCR by this repo's CI and **pinned to `v0.1.57`**.
 
 The Secret example lives **outside** the apply set so a directory apply cannot overwrite real credentials with placeholders:
 
@@ -420,9 +425,9 @@ Metric labels are bounded-cardinality only (`tool`, `outcome`, `confidence`, `gr
 
 - Required CI (`.github/workflows/ci.yml`) gates server unit tests, a real Neo4j 5.26.2 integration job, curator supervisor tests, template wikilint/index, workflow/YAML/kustomize smoke, Pi extension typecheck, and both Docker image builds.
 - Image publication (`.github/workflows/images.yml`) runs on `main` (moving `main` + immutable full-git-SHA tags) and on `v*` tags (semver + SHA). It does **not** publish `latest`.
-- Public manifests and template workflows pin `ghcr.io/d6o/dip.ink/{memory,pi-runner}:v0.1.56`.
+- Public manifests and template workflows pin `ghcr.io/d6o/dip.ink/{memory,pi-runner}:v0.1.57`.
 
-Release sequence for maintainers: push main → wait CI green → tag `v0.1.56` → wait image publication green → sync private instances / deploy.
+Release sequence for maintainers: push main → wait CI green → tag `v0.1.57` → wait image publication green → sync private instances / deploy.
 
 ## Operational notes (learned the hard way)
 
