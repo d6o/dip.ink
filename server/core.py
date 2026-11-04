@@ -114,6 +114,7 @@ _STATE_GAUGE_NAMES = (
     "dipink_review_queue_open",
     "dipink_ingest_pending_notes",
     "dipink_ingest_partial_notes",
+    "dipink_ingest_quarantined_notes",
     "dipink_ingest_lag_seconds",
 )
 STATE_GAUGES = {
@@ -220,6 +221,7 @@ def update_state_metrics(snapshot: dict) -> None:
         "dipink_review_queue_open": float(queues.get("review_queue_open") or 0),
         "dipink_ingest_pending_notes": float(ingest.get("pending") or 0),
         "dipink_ingest_partial_notes": float(ingest.get("partial") or 0),
+        "dipink_ingest_quarantined_notes": float(ingest.get("quarantined") or 0),
         "dipink_ingest_lag_seconds": float(ingest.get("lag_seconds") or 0.0),
     }
     for name, value in values.items():

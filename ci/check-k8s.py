@@ -9,7 +9,7 @@ from typing import Any
 
 import yaml
 
-PINNED_MEMORY = "ghcr.io/d6o/dip.ink/memory:v0.1.55"
+PINNED_MEMORY = "ghcr.io/d6o/dip.ink/memory:v0.1.56"
 APP_NAMESPACE = "dipink"
 
 

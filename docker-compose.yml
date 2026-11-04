@@ -1,7 +1,7 @@
 # dip.ink — the whole memory stack on one docker host.
 #
 #   cp .env.example .env   # fill in keys + your private wiki repo
-#   docker compose up -d         # pulls the immutable v0.1.55 runtime
+#   docker compose up -d         # pulls the immutable v0.1.56 runtime
 #
 # Services:
 #   neo4j                  graph database (Graphiti's backend)
@@ -28,6 +28,9 @@ x-graph-env: &graph-env
   LLM_MODEL: ${LLM_MODEL:-gpt-4.1-mini}
   # Empty ladders inherit the corresponding single-model value in server code.
   LLM_MODEL_LADDER: ${LLM_MODEL_LADDER:-}
+  LLM_STRUCTURED_OUTPUT_MODE: ${LLM_STRUCTURED_OUTPUT_MODE:-json_object}
+  INGEST_STRUCTURED_RETRIES: ${INGEST_STRUCTURED_RETRIES:-1}
+  INGEST_MAX_FAILURES: ${INGEST_MAX_FAILURES:-3}
   DISTILL_BASE_URL: ${DISTILL_BASE_URL:-}
   DISTILL_API_KEY: ${DISTILL_API_KEY:-}
   DISTILL_MODEL: ${DISTILL_MODEL:-}
@@ -69,7 +72,7 @@ services:
       retries: 10
 
   memory:
-    image: ghcr.io/d6o/dip.ink/memory:v0.1.55
+    image: ghcr.io/d6o/dip.ink/memory:v0.1.56
     restart: unless-stopped
     depends_on:
       neo4j:
@@ -94,7 +97,7 @@ services:
       - "8080:8080"
 
   ingest:
-    image: ghcr.io/d6o/dip.ink/memory:v0.1.55
+    image: ghcr.io/d6o/dip.ink/memory:v0.1.56
     restart: unless-stopped
     entrypoint: ["/bin/sh", "-c"]
     # Clone-fresh + resumable batch every INGEST_INTERVAL seconds. The graph
@@ -128,7 +131,7 @@ services:
       ADD_EPISODE_RETRIES: ${ADD_EPISODE_RETRIES:-4}
 
   gaps:
-    image: ghcr.io/d6o/dip.ink/memory:v0.1.55
+    image: ghcr.io/d6o/dip.ink/memory:v0.1.56
     restart: unless-stopped
     entrypoint: ["/bin/sh", "-c"]
     command:
@@ -144,7 +147,7 @@ services:
       DRY_RUN: ${GAPS_DRY_RUN:-0}
 
   alerts:
-    image: ghcr.io/d6o/dip.ink/memory:v0.1.55
+    image: ghcr.io/d6o/dip.ink/memory:v0.1.56
     restart: unless-stopped
     entrypoint: ["/bin/sh", "-c"]
     command:
@@ -166,7 +169,7 @@ services:
       NOTIFY_REPEAT_HOURS: ${NOTIFY_REPEAT_HOURS:-12}
 
   healthcheck:
-    image: ghcr.io/d6o/dip.ink/memory:v0.1.55
+    image: ghcr.io/d6o/dip.ink/memory:v0.1.56
     restart: unless-stopped
     entrypoint: ["/bin/sh", "-c"]
     command:
@@ -204,7 +207,7 @@ services:
       INDEX_GRACE_HOURS: ${INDEX_GRACE_HOURS:-6}
 
   contradiction-janitor:
-    image: ghcr.io/d6o/dip.ink/memory:v0.1.55
+    image: ghcr.io/d6o/dip.ink/memory:v0.1.56
     restart: unless-stopped
     entrypoint: ["/bin/sh", "-c"]
     # Report-only by default. Set JANITOR_DRY_RUN=0 only after reviewing output.

@@ -12,6 +12,10 @@ data:
   # corresponding single-model extraction setting in server code.
   LLM_MODEL: "gpt-4.1-mini"
   LLM_MODEL_LADDER: ""
+  # Custom extraction providers can opt into json_schema after verification.
+  LLM_STRUCTURED_OUTPUT_MODE: "json_object"
+  INGEST_STRUCTURED_RETRIES: "1"
+  INGEST_MAX_FAILURES: "3"
   DISTILL_MODEL: ""
   DISTILL_MODEL_LADDER: ""
   GRAPH_FUSION: "1"

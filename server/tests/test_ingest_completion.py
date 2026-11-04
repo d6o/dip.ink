@@ -20,9 +20,26 @@ class FakeDriver:
         self.episodes = list(episodes or [])
         self.calls: list[tuple[str, dict]] = []
         self.marked: list[str] = []
+        self.failures: dict[tuple[str, str], dict] = {}
 
     async def execute_query(self, query: str, **params):
         self.calls.append((query, params))
+        if "DipinkIngestFailure" in query:
+            key = (params.get("group_id"), params.get("slug"))
+            if query.startswith("MERGE"):
+                old = self.failures.get(key, {})
+                count = old.get("failure_count", 0) + 1 if old.get("content_hash") == params["content_hash"] else 1
+                self.failures[key] = dict(params, failure_count=count)
+                return [{"failure_count": count}], None, None
+            if "DELETE f" in query:
+                self.failures.pop(key, None)
+            elif "SET f.failure_count = 0" in query:
+                if key in self.failures:
+                    self.failures[key]["failure_count"] = 0
+                return [{"reset": int(key in self.failures)}], None, None
+            elif "RETURN f.slug" in query:
+                return [f for (group, _), f in self.failures.items() if group == params["group_id"]], None, None
+            return [], None, None
         if "RETURN e.name AS slug" in query:
             rows = []
             for episode in reversed(self.episodes):

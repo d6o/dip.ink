@@ -53,15 +53,25 @@ def bounded(text: object, limit: int = ERROR_MAX) -> str:
     return value if len(value) <= limit else value[: limit - 3] + "..."
 
 
+class StructuredOutputError(ValueError):
+    """Sanitized terminal structured-response failure; not an implicit retry signal."""
+
+    def __init__(self, kind: str):
+        self.kind = kind if kind in {"json_invalid", "schema", "output_truncated", "empty"} else "schema"
+        super().__init__(self.kind)
+
+
 def failure_kind(error: BaseException) -> str:
     """A short, stable class for a failed LLM call or note."""
+    if isinstance(error, StructuredOutputError):
+        return error.kind
     name = type(error).__name__
     text = str(error).lower()
     status = getattr(error, "status_code", None)
     if name == "EmptyResponseError" or "empty response" in text:
         return "empty"
     if name == "JSONDecodeError":
-        return "json_truncated" if "unterminated" in text or "expecting" in text else "json_invalid"
+        return "json_invalid"  # Parser wording does not establish output truncation.
     if name == "ValidationError" or "validation error" in text:
         return "schema"
     if status == 429 or "ratelimit" in name.lower() or "429" in text:

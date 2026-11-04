@@ -39,16 +39,6 @@ from starlette.routing import Route
 from chat_fallback import OrderedModelFallback, is_recoverable_provider_error, parse_model_ladder
 from answer_qualifiers import copy_state_supporting_sources, operational_supporting_sources, qualifier_problem, qualifier_requirements
 from credential_method_qualifiers import credential_method_problem, credential_services
-from temporal_negative_qualifiers import temporal_negative_problem, temporal_negative_required
-from resource_scope_qualifiers import resource_scope_problem, resource_scope_required
-from network_vantage_qualifiers import network_vantage_problem, network_vantage_required
-from release_scope_qualifiers import release_scope_problem, release_scope_required, RELEASE_SCOPE_SUFFIX
-from storage_authority_qualifiers import (
-    storage_authority_problem, storage_authority_required, STORAGE_AUTHORITY_REASON, STORAGE_AUTHORITY_SUFFIX,
-)
-from sandbox_contract_qualifiers import (
-    sandbox_contract_problem, sandbox_contract_required, SANDBOX_CONTRACT_REASON, SANDBOX_CONTRACT_SUFFIX,
-)
 from ingest import DEFAULT_GROUP_ID, build_graphiti
 from vector_search import install_read_search
 from graphiti_core.search.search_config_recipes import COMBINED_HYBRID_SEARCH_RRF
@@ -90,10 +80,6 @@ GROUNDING_COUNTS = {
     "project_mismatch": 0,
     "subject_mismatch": 0,
     "qualifier_mismatch": 0,
-    "network_vantage_mismatch": 0,
-    "release_scope_mismatch": 0,
-    "storage_authority_mismatch": 0,
-    "sandbox_contract_mismatch": 0,
     "error": 0,
 }
 
@@ -518,11 +504,11 @@ def _snapshot_dates(question: str, answer: str, packet: dict, sources: list[str]
     return dates
 
 
-def _qualify_snapshot(result: dict, dates: dict[str, str], *, release_scope: bool = False) -> None:
+def _qualify_snapshot(result: dict, dates: dict[str, str]) -> None:
     """Label all cited observation dates without asserting live state."""
     stamp = ", ".join(sorted(set(dates.values())))
     prefix = f"Recorded evidence (source dates: {stamp}): "
-    suffix = RELEASE_SCOPE_SUFFIX if release_scope else " Live state is not verified."
+    suffix = " Live state is not verified."
     body = str(result["answer"])[:max(0, 1999 - len(prefix) - len(suffix))].rstrip()
     if body and body[-1] not in ".!?":
         body += "."
@@ -789,8 +775,8 @@ async def _wiki_semantic_hits(
         return []
 
 
-async def _source_validation_context(packet: dict) -> dict[str, str]:
-    """Read coherent indexed source bodies for private qualifier validation.
+async def _credential_validation_context(packet: dict) -> dict[str, str]:
+    """Read coherent indexed source bodies for credential-method validation.
 
     The packet already bounds the number of source identities. This does not
     scan files, follow paths, access a credential store, or add a model call.
@@ -806,20 +792,8 @@ async def _source_validation_context(packet: dict) -> dict[str, str]:
     try:
         return await asyncio.to_thread(fetch)
     except Exception as error:
-        log.warning("source validation unavailable error_type=%s", type(error).__name__)
+        log.warning("credential source validation unavailable error_type=%s", type(error).__name__)
         return {name: "" for name in names}
-
-
-async def _credential_validation_context(packet: dict) -> dict[str, str]:
-    # Keep the credential boundary available for its existing callers.
-    return await _source_validation_context(packet)
-
-
-def _validation_cited_texts(packet: dict, sources: list[str]) -> dict[str, str]:
-    full = packet.get("source_validation_texts")
-    if full is not None:
-        return {source: str(full.get(source) or "") for source in sources}
-    return _credential_cited_texts(packet, sources)
 
 
 def _credential_cited_texts(packet: dict, sources: list[str]) -> dict[str, str]:
@@ -888,17 +862,6 @@ async def _assemble_packet(
     }
     if answer_evidence and credential_services(query):
         packet["credential_validation_texts"] = await _credential_validation_context(packet)
-    if answer_evidence and (temporal_negative_required(query) or resource_scope_required(query)
-                            or network_vantage_required(query) or release_scope_required(query)
-                            or storage_authority_required(query) or sandbox_contract_required(query)):
-        packet["source_validation_texts"] = (
-            packet["credential_validation_texts"] if "credential_validation_texts" in packet
-            else await _source_validation_context(packet)
-        )
-    if answer_evidence and release_scope_required(query):
-        # Keep the original retrieved identities across subject filtering.
-        # Private bodies can veto a stale claim without adding provenance.
-        packet["release_scope_retrieved_sources"] = list(_allowed_provenance(packet))
     return packet
 
 
@@ -982,8 +945,6 @@ You will get a QUESTION and a RETRIEVAL PACKET (JSON with facts, entities, a sou
 22. Different gates and ticket numbers need their own evidence. A revoked inference client does not lift a workload rollout hold. If no verified new evidence is present for a requested gate, say that the packet provides none; do not infer that the gate cleared.
 
 23. A method must explicitly support the requested service and operation. User-Agent fixture compliance for Kubernetes metadata does not prove Infisical credential-read support. An internal credential loader is not an approved client. Reviewed source, a patch draft, or a published audit is not an installed native method or live header proof. If installed supported capability is absent or unverified, report that boundary rather than recommending a neighboring tool or the failing CLI behavior.
-
-24. For release scope questions, keep the proposal, completed dev receipt, and production readiness separate. A later source date does not prove completion. Use explicit body evidence for the same app, revision, method, resources, phase, and supersession. A dated record of successful checks is not a new live check or caller permission.
 
 Reply with ONLY a JSON object:
 {"answer": "..." | null, "confidence": "high|medium|low|not_found", "sources": ["slug", ...], "superseded_note": "..." (omit if none), "escalate": true|false}"""
@@ -1113,49 +1074,6 @@ def _validate_distilled_answer(
             "escalate": True,
         }, False, "rejected"
 
-    sandbox_validation = sandbox_contract_required(question)
-    if sandbox_validation:
-        # All raw citations need full private bodies before any display cap.
-        # Retrieved uncited bodies can veto, but cannot add provenance.
-        full = packet.get("source_validation_texts") or {}
-        sandbox_error = sandbox_contract_problem(
-            question, answer,
-            {source: str(full.get(source) or "") for source in cited_sources},
-            retrieved_texts=full,
-        )
-        if sandbox_error:
-            return {
-                "answer": None, "confidence": "not_found", "sources": [], "escalate": True,
-                "superseded_note": sandbox_error,
-            }, True, "sandbox_contract_mismatch"
-
-    release_validation = release_scope_required(question)
-    if release_validation:
-        # Only retrieved identities enter this private validation view. The
-        # full draft and every raw citation precede all display caps.
-        full = packet.get("source_validation_texts") or {}
-        # Subject-matched labels retain their private bodies for vetoes.
-        # They do not become citation provenance or readable model evidence.
-        retrieved_names = set(packet.get("release_scope_retrieved_sources") or allowed) | {
-            str(hit.get("name") or "") for hit in packet.get("temporal_candidates") or []
-        }
-        source_dates = {source: _source_time(source) for source in retrieved_names if _source_time(source)}
-        # Keep all retrieved bodies available for subject-specific vetoes.
-        # An unrelated source date must not hide a relevant later receipt.
-        # The public temporal packet still controls positive eligibility.
-        release_error = release_scope_problem(
-            question, answer,
-            {source: str(full.get(source) or "") for source in cited_sources},
-            source_dates={source: _iso(when) for source, when in source_dates.items()},
-            retrieved_texts={source: str(full.get(source) or "") for source in retrieved_names},
-            current=_current_state_question(question),
-        )
-        if release_error:
-            return {
-                "answer": None, "confidence": "not_found", "sources": [], "escalate": True,
-                "superseded_note": release_error,
-            }, True, "release_scope_mismatch"
-
     subjects = _answer_subjects(question)
     if subjects and _subject_support_missing(_subject_evidence_packet(packet, subjects), subjects, cited_sources):
         return {
@@ -1203,51 +1121,14 @@ def _validate_distilled_answer(
             "answer": None, "confidence": "not_found", "sources": [], "escalate": True,
             "superseded_note": "Complete cited source text is unavailable for credential-method validation.",
         }, True, "qualifier_mismatch"
-    validation_texts = _validation_cited_texts(packet, cited_sources)
-    network_validation = network_vantage_required(question)
-    network_error = network_vantage_problem(
-        question, answer, validation_texts if "source_validation_texts" in packet else {},
-    )
-    if network_error:
-        return {
-            "answer": None, "confidence": "not_found", "sources": [], "escalate": True,
-            "superseded_note": network_error,
-        }, True, "network_vantage_mismatch"
-    scoped_validation = temporal_negative_required(question) or resource_scope_required(question)
-    if scoped_validation and "source_validation_texts" in packet and any(
-        not text.strip() for text in validation_texts.values()
-    ):
-        return {
-            "answer": None, "confidence": "not_found", "sources": [], "escalate": True,
-            "superseded_note": "Complete cited source text is unavailable for scoped validation.",
-        }, True, "qualifier_mismatch"
-    qualifier_error = (
-        temporal_negative_problem(question, answer, validation_texts)
-        or resource_scope_problem(question, answer, validation_texts)
-        or credential_method_problem(question, answer, credential_texts)
-        or qualifier_problem(question, answer, cited_texts)
+    qualifier_error = credential_method_problem(question, answer, credential_texts) or qualifier_problem(
+        question, answer, cited_texts,
     )
     if qualifier_error:
         return {
             "answer": None, "confidence": "not_found", "sources": [], "escalate": True,
             "superseded_note": qualifier_error,
         }, True, "qualifier_mismatch"
-
-    storage_validation = storage_authority_required(question)
-    if storage_validation:
-        # Full private bodies retain all retrieved vetoes before public caps.
-        # Mapping keys, source dates, and other guards cannot grant authority.
-        full = packet.get("source_validation_texts") or {}
-        storage_error = storage_authority_problem(
-            question, answer,
-            {source: str(full.get(source) or "") for source in cited_sources},
-            retrieved_texts=full,
-        )
-        if storage_error:
-            return {
-                "answer": None, "confidence": "not_found", "sources": [], "escalate": True,
-                "superseded_note": storage_error,
-            }, True, "storage_authority_mismatch"
 
     project_problem = question and _project_mismatch(question, answer, sources, packet)
     if project_problem:
@@ -1279,11 +1160,6 @@ def _validate_distilled_answer(
         and re.search(r"\b(?:status|remaining|gone|removed|retained)\b", question, re.I)
     ):
         observation_dates = _snapshot_dates(question, answer, packet, cited_sources)
-        if release_validation and observation_dates is None:
-            # Release revisions need not be hashes or semantic versions.
-            # These dates label source records, not deployment event times.
-            observation_dates = {source: _iso(_source_time(source)) for source in cited_sources
-                                 if _source_time(source)}
         if observation_dates == {}:
             return {
                 "answer": None, "confidence": "not_found", "sources": [], "escalate": True,
@@ -1309,12 +1185,12 @@ def _validate_distilled_answer(
                 "answer": None, "confidence": "not_found", "sources": [], "escalate": True,
             }, False, "rejected"
         if observation_dates is not None:
-            _qualify_snapshot(result, observation_dates, release_scope=release_validation)
+            _qualify_snapshot(result, observation_dates)
             result["as_of"] = max(observation_dates.values())
         else:
             as_of = max(dates[source] for source in referenced)
             prefix = f"Recorded as of {as_of}: "
-            suffix = RELEASE_SCOPE_SUFFIX if release_validation else " Live state is not verified."
+            suffix = " Live state is not verified."
             body = answer[:2000 - len(prefix) - len(suffix)].rstrip()
             if body and body[-1] not in ".!?":
                 body = body[:2000 - len(prefix) - len(suffix) - 1] + "."
@@ -1325,14 +1201,11 @@ def _validate_distilled_answer(
         action = "downgraded" if conf == "high" else action
 
     elif observation_dates is not None:
-        _qualify_snapshot(result, observation_dates, release_scope=release_validation)
-        if release_validation:
-            result["as_of"] = max(observation_dates.values())
+        _qualify_snapshot(result, observation_dates)
         action = "downgraded" if conf == "high" else action
 
-    if (credential_services(question) or scoped_validation or network_validation
-            or release_validation or storage_validation or sandbox_validation):
-        # A memory record does not verify external state or caller authority.
+    if credential_services(question):
+        # A memory capability record is not current caller authorization.
         result["escalate"] = True
         result["confidence"] = "medium" if result["confidence"] == "high" else result["confidence"]
         action = "downgraded" if conf == "high" else action
@@ -1340,22 +1213,6 @@ def _validate_distilled_answer(
     note = parsed.get("superseded_note")
     if note and str(note).strip().lower() not in ("none", "null", "n/a"):
         result["superseded_note"] = str(note)[:500]
-    if storage_validation:
-        # A display cap must not remove a condition or protection limit.
-        if answer not in result["answer"] or len(result["answer"]) + len(STORAGE_AUTHORITY_SUFFIX) > 2000:
-            return {
-                "answer": None, "confidence": "not_found", "sources": [], "escalate": True,
-                "superseded_note": STORAGE_AUTHORITY_REASON,
-            }, True, "storage_authority_mismatch"
-        result["answer"] += STORAGE_AUTHORITY_SUFFIX
-    if sandbox_validation:
-        # A cap cannot remove a feature, scope role, or protection qualifier.
-        if answer not in result["answer"] or len(result["answer"]) + len(SANDBOX_CONTRACT_SUFFIX) > 2000:
-            return {
-                "answer": None, "confidence": "not_found", "sources": [], "escalate": True,
-                "superseded_note": SANDBOX_CONTRACT_REASON,
-            }, True, "sandbox_contract_mismatch"
-        result["answer"] += SANDBOX_CONTRACT_SUFFIX
     result["answer"] = result["answer"][:2000]
     return result, True, action
 
@@ -1393,7 +1250,7 @@ async def _graph_answer_impl(question: str, is_test: bool = False) -> dict:
         if current_state:
             packet["temporal_context"] = _temporal_context(packet)
         distill_packet = _current_evidence_packet(packet) if current_state else {
-            key: value for key, value in packet.items() if key not in {"temporal_candidates", "credential_validation_texts", "source_validation_texts", "release_scope_retrieved_sources"}
+            key: value for key, value in packet.items() if key not in {"temporal_candidates", "credential_validation_texts"}
         }
         packet_json = json.dumps(distill_packet, ensure_ascii=False)
         packet_tokens_est = len(packet_json) // 4

@@ -76,7 +76,15 @@ The three workflows (`curator` hourly, `synthesis` weekly, `reviewqueue` daily) 
 
 ### 2. Deploy the memory stack
 
-Public runtime images use **immutable tags**, not a moving `latest` tag. The current public release pin is v0.1.55.
+Public runtime images use **immutable tags**, not a moving `latest` tag. The current public release pin is v0.1.56.
+
+Release v0.1.56 removes the six lexical answer guards introduced after v0.1.46.
+Older grounding, provenance, subject, date, project, observation, and credential-method checks remain.
+Ingest supports configurable structured output, bounded corrective feedback, schema validation, and recoverable failure quarantine.
+See [ingest reliability and recovery](server/INGEST_RELIABILITY.md) for rollout settings and explicit retry commands.
+No general LLM judge is added.
+
+**Historical notes below:** the answer-guard descriptions for v0.1.50–v0.1.55 describe retired behavior, not current guarantees.
 
 Release v0.1.55 adds bounded checks for selected sandbox-contract questions.
 One source record must retain every requested feature and the same method, task, app, root, phase, and scope.
@@ -347,7 +355,7 @@ dip.ink/
 │   ├── claude-code/        ← skill + PreCompact hook
 │   └── pi/                 ← memory extension (native tools), /recordnotes prompt,
 │                             compact/exit gate extension
-├── docker-compose.yml      ← the whole stack on one host (pinned v0.1.55 images)
+├── docker-compose.yml      ← the whole stack on one host (pinned v0.1.56 images)
 ├── .env.example
 ├── .github/workflows/      ← required CI + immutable image publication
 ├── ci/                     ← CI helpers (YAML/k8s/contracts, Neo4j integration runner, Pi typecheck)
@@ -375,7 +383,7 @@ dip.ink/
 
 ## Production (k8s)
 
-`deploy/k8s/` mirrors the compose stack for a cluster: Neo4j Deployment + PVC, the memory-server Deployment, the 15-min ingest CronJob, and the maintenance CronJobs. Images are published to GHCR by this repo's CI and **pinned to `v0.1.55`**.
+`deploy/k8s/` mirrors the compose stack for a cluster: Neo4j Deployment + PVC, the memory-server Deployment, the 15-min ingest CronJob, and the maintenance CronJobs. Images are published to GHCR by this repo's CI and **pinned to `v0.1.56`**.
 
 The Secret example lives **outside** the apply set so a directory apply cannot overwrite real credentials with placeholders:
 
@@ -412,9 +420,9 @@ Metric labels are bounded-cardinality only (`tool`, `outcome`, `confidence`, `gr
 
 - Required CI (`.github/workflows/ci.yml`) gates server unit tests, a real Neo4j 5.26.2 integration job, curator supervisor tests, template wikilint/index, workflow/YAML/kustomize smoke, Pi extension typecheck, and both Docker image builds.
 - Image publication (`.github/workflows/images.yml`) runs on `main` (moving `main` + immutable full-git-SHA tags) and on `v*` tags (semver + SHA). It does **not** publish `latest`.
-- Public manifests and template workflows pin `ghcr.io/d6o/dip.ink/{memory,pi-runner}:v0.1.55`.
+- Public manifests and template workflows pin `ghcr.io/d6o/dip.ink/{memory,pi-runner}:v0.1.56`.
 
-Release sequence for maintainers: push main → wait CI green → tag `v0.1.55` → wait image publication green → sync private instances / deploy.
+Release sequence for maintainers: push main → wait CI green → tag `v0.1.56` → wait image publication green → sync private instances / deploy.
 
 ## Operational notes (learned the hard way)
 

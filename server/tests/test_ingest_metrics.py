@@ -52,7 +52,7 @@ class UnionTests(unittest.TestCase):
 
 class FailureKindTests(unittest.TestCase):
     def test_kinds(self):
-        self.assertEqual(ingest_metrics.failure_kind(json.JSONDecodeError("Unterminated string", "x", 1)), "json_truncated")
+        self.assertEqual(ingest_metrics.failure_kind(json.JSONDecodeError("Unterminated string", "x", 1)), "json_invalid")
         self.assertEqual(ingest_metrics.failure_kind(ingest.EmptyResponseError("LLM returned an empty response")), "empty")
         err = Exception("boom")
         err.status_code = 503
@@ -64,6 +64,7 @@ class ClientInstrumentationTests(unittest.TestCase):
         client = ingest.CompactSchemaClient.__new__(ingest.CompactSchemaClient)
         client.client = SimpleNamespace(chat=SimpleNamespace(completions=FakeCompletions(replies)))
         client.temperature = 0
+        client.structured_retries = 0
         client.model_ladder = ingest.OrderedModelFallback(["m1"], context="test")
         client._build_response_format = lambda model: None
         client._strip_code_fences = lambda text: text
@@ -97,14 +98,14 @@ class ClientInstrumentationTests(unittest.TestCase):
 
     def test_truncated_json_is_recorded_and_still_raised(self):
         metrics = ingest_metrics.NoteMetrics(slug="s", body_chars=10)
-        with self.assertRaises(json.JSONDecodeError):
+        with self.assertRaises(ingest_metrics.StructuredOutputError):
             self.run_call(self.make_client([completion('{"a": "unterminated', finish="length")]), metrics)
         call = metrics.llm_calls[0]
-        self.assertEqual(call["outcome"], "json_truncated")
+        self.assertEqual(call["outcome"], "output_truncated")
         self.assertEqual(call["finish"], "length")
         summary = metrics.summary(outcome="fail", error=json.JSONDecodeError("Unterminated", "x", 0))
         self.assertEqual(summary["llm_truncated"], 1)
-        self.assertEqual(summary["llm_failures"], {"json_truncated": 1})
+        self.assertEqual(summary["llm_failures"], {"output_truncated": 1})
         self.assertEqual(summary["by_prompt"]["extract_nodes"]["fail"], 1)
 
     def test_no_metrics_context_changes_nothing(self):
@@ -183,7 +184,9 @@ class IngestNoteRecordTests(unittest.TestCase):
             with mock.patch.object(ingest_metrics, "persist", fake_persist), \
                  mock.patch.object(ingest_metrics, "prior_attempts", fake_prior), \
                  mock.patch.object(ingest_metrics, "emit", emitted.append), \
-                 mock.patch.object(ingest, "_mark_episode_complete", mark):
+                 mock.patch.object(ingest, "_mark_episode_complete", mark), \
+                 mock.patch.object(ingest.ingest_failures, "clear", mock.AsyncMock()), \
+                 mock.patch.object(ingest.ingest_failures, "record", mock.AsyncMock(return_value=1)):
                 g = SimpleNamespace(driver=object(), add_episode=add_ok)
                 asyncio.run(ingest._ingest_note(g, ts, "slug-a", path, group_id="g"))
                 g.add_episode = add_fail
@@ -193,7 +196,7 @@ class IngestNoteRecordTests(unittest.TestCase):
         self.assertEqual([r["outcome"] for r in persisted], ["ok", "fail"])
         self.assertEqual(persisted[0]["attempt"], 3)
         self.assertEqual((persisted[0]["nodes"], persisted[0]["edges"]), (2, 1))
-        self.assertEqual(persisted[1]["error_kind"], "json_truncated")
+        self.assertEqual(persisted[1]["error_kind"], "json_invalid")
         self.assertNotIn("hello world", json.dumps(persisted))
         self.assertEqual(len(emitted), 2)
 
@@ -323,7 +326,7 @@ class PayloadFreeErrorTests(unittest.IsolatedAsyncioTestCase):
         error=self.validation_error();out=io.StringIO()
         with mock.patch.object(ingest,'_prepare_note_for_reingest',new=mock.AsyncMock()), \
              mock.patch.object(ingest,'_ingest_note',new=mock.AsyncMock(side_effect=error)), redirect_stderr(out):
-            result=await ingest._run_pending_batch(SimpleNamespace(),{},[(datetime.now(timezone.utc),'fixture',Path('/tmp/unused'))],group_id='fixture',prefix='fixture')
+            result=await ingest._run_pending_batch(SimpleNamespace(),SimpleNamespace(quarantined=set()),[(datetime.now(timezone.utc),'fixture',Path('/tmp/unused'))],group_id='fixture',prefix='fixture')
         self.assertNotIn(self.MARKER,out.getvalue())
         self.assertIn('ValidationError (schema)',out.getvalue())
         self.assertEqual(result,(0,1,False))

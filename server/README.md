@@ -67,6 +67,10 @@ One process, one MCP endpoint (`/mcp`), all tools. One image, three roles:
   The API also preserves the legacy `capture-captured`, `capture-session`, and
   `capture-topic` aliases. Empty or absent frontmatter remains valid.
 
+## Structured ingest
+
+See [structured ingest and recoverable quarantine](INGEST_RELIABILITY.md) for output modes, bounded corrective retries, metrics, and operator recovery.
+
 ## graph side behavior
 
 Optional [indexed vector retrieval](VECTOR_RETRIEVAL.md) accelerates graph reads on Neo4j 5.26.2. Explicit commands create and validate indexes; quality checks gate enablement. Ingestion matching remains exact.
