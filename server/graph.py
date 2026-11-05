@@ -456,7 +456,7 @@ _SNAPSHOT_ID_RE = re.compile(
     r"\bv\d+(?:\.\d+){1,3}\b|\b[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\b"
     r"|\bsha256:[0-9a-f]{12,64}\b|(?<![\w-])[0-9a-f]{7,40}(?![\w-])", re.I
 )
-_DEPLOYMENT_WORD_RE = re.compile(r"\b(?:deployment|deploys?|deployed|rollout|release|revision|worker|container)\b", re.I)
+_DEPLOYMENT_WORD_RE = re.compile(r"\b(?:deployment|deploys?|deployed|rollout|release|revision|worker|container|docker|oci)\b", re.I)
 # Keep punctuation inside names/paths/tags. The same tokenizer selects answer
 # identifiers and checks source support; embedded versions are never compared alone.
 _IDENTIFIER_TOKEN_RE = re.compile(r"[\w./:@+-]+")

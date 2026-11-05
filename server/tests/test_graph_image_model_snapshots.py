@@ -34,6 +34,7 @@ class ImageModelSnapshotTests(unittest.IsolatedAsyncioTestCase):
     def test_plain_image_generation_and_package_paths_do_not_imply_deployment(self):
         for identifier in ("vendor/model-v4.1-vector", "provider/model-v2.7-beta", "vendor/model:4.1",
                            "release/model-v4.1", "vendor/worker-v4.1-vector", "package-v4.1.tar.gz",
+                           "vendor/docker-v4.1-vector", "vendor/oci-v4.1-vector",
                            "/opt/models/vendor/model-v4.1-vector.json"):
             with self.subTest(identifier=identifier):
                 text = f"The image pipeline used `{identifier}`."
@@ -54,6 +55,33 @@ class ImageModelSnapshotTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIsNotNone(result["answer"])
                 self.assertEqual(action, "downgraded")
                 self.assertIn("Live state is not verified", result["answer"])
+
+    def test_docker_and_oci_artifacts_need_support_in_default_mode(self):
+        for technology in ("Docker", "OCI"):
+            for identifier in ("registry.example/team/app:v1.2.3", "registry.example/team/app@sha256:" + "a" * 64):
+                with self.subTest(technology=technology, identifier=identifier):
+                    question = f"How was the {technology} image started?"
+                    text = f"Use {identifier}."
+                    self.assertFalse(graph._current_state_question(question))
+                    wrong = packet(text.replace("/app", "/other"), DEPLOY_SOURCE)
+                    result, _, action = graph._validate_distilled_answer(draft(text, [DEPLOY_SOURCE]), wrong, question)
+                    self.assertIsNone(result["answer"])
+                    self.assertEqual(action, "qualifier_mismatch")
+                    supported = packet(text, DEPLOY_SOURCE)
+                    result, _, action = graph._validate_distilled_answer(draft(text, [DEPLOY_SOURCE]), supported, question)
+                    self.assertEqual(action, "downgraded")
+                    self.assertEqual(result["observation_dates"], {DEPLOY_SOURCE: "2026-10-04T12:00:00Z"})
+                    self.assertIn("Live state is not verified", result["answer"])
+
+    def test_container_technology_in_answer_also_establishes_context(self):
+        question = "How was the application started?"
+        self.assertFalse(graph._current_state_question(question))
+        for technology in ("Docker", "OCI"):
+            text = f"Use the {technology} image registry.example/team/app:v1.2.3."
+            result, _, action = graph._validate_distilled_answer(
+                draft(text), packet(text.replace("/app", "/other")), question)
+            self.assertIsNone(result["answer"])
+            self.assertEqual(action, "qualifier_mismatch")
 
     def test_shared_version_fragment_cannot_support_another_complete_identifier(self):
         text = "The deployment used vendor/model-v4.1-vector."
@@ -93,7 +121,7 @@ class ImageModelSnapshotTests(unittest.IsolatedAsyncioTestCase):
         # The vault path is not a credential value. No vault or provider request occurs.
         evidence = ("Diego's OpenRouter API key is stored in Infisical at /services/openrouter/API_KEY. "
                     "A past image-generation project used recraft/recraft-v4.1-vector. "
-                    "Its request used chat/completions with modalities [image, text] and a user message.")
+                    "The request supplied a model identifier and an image prompt in a JSON body.")
         p = packet(evidence)
         parsed = draft(evidence)
         self.assertFalse(graph._current_state_question(QUESTION))
