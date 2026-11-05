@@ -456,7 +456,25 @@ _SNAPSHOT_ID_RE = re.compile(
     r"\bv\d+(?:\.\d+){1,3}\b|\b[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\b"
     r"|\bsha256:[0-9a-f]{12,64}\b|(?<![\w-])[0-9a-f]{7,40}(?![\w-])", re.I
 )
-_DEPLOYMENT_WORD_RE = re.compile(r"\b(?:deployment|deploys?|deployed|rollout|release|revision|worker|image)\b", re.I)
+_DEPLOYMENT_WORD_RE = re.compile(r"\b(?:deployment|deploys?|deployed|rollout|release|revision|worker|container)\b", re.I)
+# Keep punctuation inside names/paths/tags. The same tokenizer selects answer
+# identifiers and checks source support; embedded versions are never compared alone.
+_IDENTIFIER_TOKEN_RE = re.compile(r"[\w./:@+-]+")
+_TAGGED_ARTIFACT_RE = re.compile(
+    r"(?:[\w.-]+(?::\d+)?/)+[\w.-]+:[\w][\w.-]*"
+    r"|[\w.-]+:v?\d+(?:\.\d+){1,3}[\w.-]*", re.I
+)
+
+
+def _identifier_tokens(text: str) -> set[str]:
+    return {match.group().rstrip(".:").casefold() for match in _IDENTIFIER_TOKEN_RE.finditer(text)}
+
+
+def _snapshot_identifiers(text: str) -> set[str]:
+    return {token for token in _identifier_tokens(text)
+            if _SNAPSHOT_ID_RE.search(token) or _TAGGED_ARTIFACT_RE.fullmatch(token)}
+
+
 _OPERATIONAL_ROLE_RE = re.compile(r"\bproject\s+lead\b|\blead\s+(?:address|identity|session)\b|\b(?:rollout|admission|workload)\b.*\bhold\b", re.I)
 
 
@@ -467,7 +485,9 @@ def _snapshot_dates(question: str, answer: str, packet: dict, sources: list[str]
     the answer needs qualification but dated supporting evidence is absent.
     Every deployment identifier needs a dated cited source that contains it.
     """
-    values = _SNAPSHOT_ID_RE.findall(answer) if _DEPLOYMENT_WORD_RE.search(question + " " + answer) else []
+    deployment_context = any(_DEPLOYMENT_WORD_RE.fullmatch(token)
+                             for token in _identifier_tokens(question + " " + answer))
+    values = _snapshot_identifiers(answer) if deployment_context else set()
     role_query = bool(_OPERATIONAL_ROLE_RE.search(question))
     copy_state_query = bool(re.search(r"\b(?:backups?|archives?|copies|copy)\b", question, re.I)
                             and re.search(r"\b(?:status|remaining|gone|removed|retained)\b", question, re.I))
@@ -476,10 +496,9 @@ def _snapshot_dates(question: str, answer: str, packet: dict, sources: list[str]
     texts = _readable_source_texts(packet)
     dates = {}
     if values:
-        for value in values:
-            holders = [source for source in sources if _source_time(source) and re.search(
-                r"(?<![\w-])" + re.escape(value) + r"(?![\w-])", texts.get(source, ""), re.I
-            )]
+        source_tokens = {source: _identifier_tokens(texts.get(source, "")) for source in sources}
+        for value in sorted(values):
+            holders = [source for source in sources if _source_time(source) and value in source_tokens[source]]
             if not holders:
                 return {}
             for source in holders:
