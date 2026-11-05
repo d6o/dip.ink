@@ -20,7 +20,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY core.py wiki.py graph.py answer_qualifiers.py credential_method_qualifiers.py server.py ingest.py ingest_metrics.py ingest_failures.py chat_fallback.py vector_search.py vector_indexes.py vector_eval.py evaluate_answers.py paired_retrieval_eval.py ./
+COPY core.py wiki.py graph.py answer_qualifiers.py credential_method_qualifiers.py server.py ingest.py ingest_metrics.py ingest_failures.py chat_fallback.py vector_search.py vector_indexes.py vector_eval.py evaluate_answers.py paired_retrieval_eval.py offline_candidates.py ./
 COPY loops/ ./loops/
 COPY tests/ ./tests/
 COPY evaluation_cases/ ./evaluation_cases/

@@ -52,10 +52,12 @@ This uses an exact cosine query over the supplied document vectors and the share
 - Apply the same 20,000-character readable-evidence cap and 2,500-character per-item cap. Here the shared cap includes fact text as well as source bodies. Metadata is separate.
 - Run the existing subject, current-state, qualifier, provenance, date, project, and snapshot checks. Recompute eligibility; do not trust caller-supplied eligibility or expected-answer fields.
 - Reconstruct credential-method validation context from the same frozen corpus. Complete validation bodies stay out of model input, as in production.
-- Use the exact production system/user prompt, one explicit answer model, temperature zero, 400 output tokens, and a fixed seed. No fallback or automatic retry occurs.
+- Use the exact production system/user prompt, one explicit answer model, temperature zero, and a fixed seed. The default output budget is 400 tokens; any explicit experimental budget must stay equal across retrieval arms. No fallback or automatic retry occurs.
 - Alternate arm order deterministically by case index. Provider nondeterminism, batching, and external state can still matter.
 
 Exclusion is identity-based. It cannot remove an artifact quote inside an otherwise retained note, or reliably identify artifact influence in a fact attributed to another source. Review the frozen evidence for those cases. Do not rewrite the corpus or add a lexical classifier to hide contamination.
+
+For offline FTS5/BM25, relevance-ranker trials, and controlled reader-model changes, see [the separate experiment guide](offline-keyword-ranker-reader.md). Reader trials reuse one prepared packet per case; do not mix them with retrieval changes.
 
 ## Private paired capture
 

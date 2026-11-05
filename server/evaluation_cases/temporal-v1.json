@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "dataset_version": "synthetic-bitemporal-1",
+  "synthetic": true,
+  "purpose": "Reference expectations and API gap inventory, not a passing live benchmark.",
+  "interval_rule": "Both valid-time and known-time intervals are half-open: start inclusive, end exclusive.",
+  "records": [
+    {"id": "routing-original-initial", "subject": "routing", "fact_id": "original", "valid_at": "2026-01-01T00:00:00Z", "invalid_at": null, "known_at": "2026-01-02T00:00:00Z", "known_until": "2026-03-10T00:00:00Z"},
+    {"id": "routing-original-revised", "subject": "routing", "fact_id": "original", "valid_at": "2026-01-01T00:00:00Z", "invalid_at": "2026-02-01T00:00:00Z", "known_at": "2026-03-10T00:00:00Z", "known_until": null},
+    {"id": "routing-replacement", "subject": "routing", "fact_id": "replacement", "valid_at": "2026-02-01T00:00:00Z", "invalid_at": null, "known_at": "2026-03-10T00:00:00Z", "known_until": null},
+    {"id": "future-start-record", "subject": "future-start", "fact_id": "scheduled", "valid_at": "2026-04-01T00:00:00Z", "invalid_at": null, "known_at": "2026-03-01T00:00:00Z", "known_until": null},
+    {"id": "future-end-record", "subject": "future-end", "fact_id": "still-valid", "valid_at": "2026-01-01T00:00:00Z", "invalid_at": "2026-04-01T00:00:00Z", "known_at": "2026-01-02T00:00:00Z", "known_until": null},
+    {"id": "late-arrival-record", "subject": "arrival", "fact_id": "late", "valid_at": "2026-01-01T00:00:00Z", "invalid_at": null, "known_at": "2026-03-01T00:00:00Z", "known_until": null},
+    {"id": "undated-record", "subject": "undated", "fact_id": "unknown-start", "valid_at": null, "invalid_at": null, "known_at": "2026-03-01T00:00:00Z", "known_until": null}
+  ],
+  "cases": [
+    {"id": "initial-state", "subject": "routing", "valid_as_of": "2026-01-15T00:00:00Z", "known_as_of": "2026-01-15T00:00:00Z", "expected_fact_ids": ["original"], "api_status": "gap", "gap": "No public known-as-of query or historical record-version reconstruction."},
+    {"id": "before-late-correction", "subject": "routing", "valid_as_of": "2026-02-15T00:00:00Z", "known_as_of": "2026-02-15T00:00:00Z", "expected_fact_ids": ["original"], "api_status": "gap", "gap": "Later invalidation knowledge must not leak into an earlier known-at answer."},
+    {"id": "after-late-correction", "subject": "routing", "valid_as_of": "2026-02-15T00:00:00Z", "known_as_of": "2026-03-15T00:00:00Z", "expected_fact_ids": ["replacement"], "api_status": "gap", "gap": "Supersession metadata alone does not prove both time dimensions are queried."},
+    {"id": "history-after-correction", "subject": "routing", "valid_as_of": "2026-01-15T00:00:00Z", "known_as_of": "2026-03-15T00:00:00Z", "expected_fact_ids": ["original"], "api_status": "gap", "gap": "A superseded fact can remain valid for a historical valid-time query."},
+    {"id": "future-start-not-yet-valid", "subject": "future-start", "valid_as_of": "2026-03-15T00:00:00Z", "known_as_of": "2026-03-15T00:00:00Z", "expected_fact_ids": [], "api_status": "gap", "gap": "The current flag checks absent invalid_at, not whether valid_at has begun."},
+    {"id": "future-end-still-valid", "subject": "future-end", "valid_as_of": "2026-03-15T00:00:00Z", "known_as_of": "2026-03-15T00:00:00Z", "expected_fact_ids": ["still-valid"], "api_status": "gap", "gap": "A future invalid_at currently makes current false before its validity end."},
+    {"id": "valid-end-boundary", "subject": "future-end", "valid_as_of": "2026-04-01T00:00:00Z", "known_as_of": "2026-04-02T00:00:00Z", "expected_fact_ids": [], "api_status": "gap", "gap": "No explicit public valid-as-of interval query to verify the end boundary."},
+    {"id": "unknown-before-arrival", "subject": "arrival", "valid_as_of": "2026-01-15T00:00:00Z", "known_as_of": "2026-02-01T00:00:00Z", "expected_fact_ids": [], "api_status": "gap", "gap": "A source that arrives late cannot establish what the system knew before arrival."},
+    {"id": "known-after-arrival", "subject": "arrival", "valid_as_of": "2026-01-15T00:00:00Z", "known_as_of": "2026-03-02T00:00:00Z", "expected_fact_ids": ["late"], "api_status": "gap", "gap": "Source slug dates are not transaction/knowledge time."},
+    {"id": "missing-valid-start", "subject": "undated", "valid_as_of": "2026-03-15T00:00:00Z", "known_as_of": "2026-03-15T00:00:00Z", "expected_fact_ids": null, "api_status": "gap", "gap": "Missing valid_at means unknown validity, not a proven unbounded start."}
+  ]
+}

@@ -57,6 +57,10 @@ Do not claim causal improvement from independently distilled arms. Keep the same
 
 Use the [offline paired wiki/hybrid guide](paired-retrieval.md) to compare frozen retrieval packets with identical answer settings and shared validation. This is separate from guard review and does not change production retrieval.
 
+## Controlled follow-up experiments
+
+The [offline keyword/ranker/reader guide](offline-keyword-ranker-reader.md) adds SQLite FTS5 candidate experiments and explicit reader comparisons on frozen evidence. The [temporal specification](temporal-spec.md) records unsupported bitemporal query semantics as gaps, not API successes.
+
 ## Retained historical experiments
 
 - [2026-10-11 vector recall study](2026-10-11-ingest-vector-recall.md): operation-level retrieval study, still referenced by the ingest adapter and vector operations guide.

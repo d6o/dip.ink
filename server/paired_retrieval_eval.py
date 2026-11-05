@@ -1,7 +1,7 @@
 """Offline paired retrieval experiment. Not registered as a production tool.
 
-Caller supplies frozen packets/corpus/vectors and one fixed-model completion
-callback. No graph client, index refresh, provider discovery, or retry is used.
+Caller supplies frozen packets/corpus/vectors and a completion callback with
+explicitly pinned settings. No graph client, index refresh, provider discovery, or retry is used.
 Artifacts are private; the functions never print questions, packets, or answers.
 """
 from __future__ import annotations
@@ -32,8 +32,11 @@ class AnswerSettings:
     seed: int = 0
 
     def __post_init__(self):
-        if not self.model or self.temperature != 0 or self.max_tokens != 400:
-            raise ValueError("Use one explicit model with temperature=0 and max_tokens=400")
+        if (not isinstance(self.model, str) or not self.model or self.temperature != 0
+                or isinstance(self.temperature, bool) or not isinstance(self.max_tokens, int)
+                or isinstance(self.max_tokens, bool) or not 1 <= self.max_tokens <= 16000
+                or not isinstance(self.seed, int) or isinstance(self.seed, bool)):
+            raise ValueError("Use an explicit model, temperature=0, bounded max_tokens, and an integer seed")
 
 
 def corpus_map(documents, embedding_model):
@@ -137,13 +140,40 @@ def prepare(question, frozen, docs, exclusions):
 
 async def run_pairs(cases, documents, *, embedding_model, settings, complete, output,
                     exclusions, corpus_version, timeout=600):
+    return await _capture_pairs(cases, documents, embedding_model=embedding_model,
+        settings_by_arm={arm: settings for arm in ARMS}, complete=complete, output=output,
+        exclusions=exclusions, corpus_version=corpus_version, timeout=timeout, experiment="retrieval")
+
+
+async def run_readers(cases, documents, *, embedding_model, control, candidate, complete, output,
+                      exclusions, corpus_version, timeout=600):
+    """Compare two pinned readers on one stored packet per case, without retrieval.
+
+    Each case has packet (singular), the full question/vector metadata, and an
+    optional scalar retrieval_ms. Reader model/budget differences are explicit.
+    """
+    cases = copy.deepcopy(cases)
+    for case in cases:
+        packet = case.pop("packet")
+        case["packets"] = {"control": packet, "candidate": copy.deepcopy(packet)}
+        if "retrieval_ms" in case:
+            case["retrieval_ms"] = {arm: case["retrieval_ms"] for arm in ("control", "candidate")}
+    return await _capture_pairs(cases, documents, embedding_model=embedding_model,
+        settings_by_arm={"control": control, "candidate": candidate}, complete=complete, output=output,
+        exclusions=exclusions, corpus_version=corpus_version, timeout=timeout, experiment="reader")
+
+
+async def _capture_pairs(cases, documents, *, embedding_model, settings_by_arm, complete, output,
+                         exclusions, corpus_version, timeout, experiment):
     """Capture every case/arm, including errors and abstentions, privately.
 
     complete(**kwargs) must return {content: full raw text, model: actual model,
     finish_reason?: str}. It must disable its own retries and response logging.
-    The same settings and production prompt are used in both arms. No fallback.
+    Retrieval arms share settings. Reader trials explicitly vary settings on one
+    prepared packet. Both use the unchanged production prompt. No fallback.
     """
     cases = copy.deepcopy(cases)
+    arms = tuple(settings_by_arm)
     system_prompt = graph._DISTILL_SYSTEM
     if not 1 <= len(cases) <= 100 or not 1 <= timeout <= 900:
         raise ValueError("Invalid experiment bounds")
@@ -152,7 +182,7 @@ async def run_pairs(cases, documents, *, embedding_model, settings, complete, ou
     docs = corpus_map(documents, embedding_model)
     exclusions = set(exclusions)
     for case in cases:
-        if not isinstance(case.get("question"), str) or not case["question"].strip() or set(case["packets"]) != set(ARMS):
+        if not isinstance(case.get("question"), str) or not case["question"].strip() or set(case["packets"]) != set(arms):
             raise ValueError("Full questions and both frozen packets are required")
         for timing in case.get("retrieval_ms", {}).values():
             if not isinstance(timing, (int, float)) or isinstance(timing, bool) or not math.isfinite(timing) or timing < 0:
@@ -164,17 +194,21 @@ async def run_pairs(cases, documents, *, embedding_model, settings, complete, ou
             raise ValueError("Query embedding model mismatch")
         if any(packet.get("query", case["question"]) != case["question"] for packet in case["packets"].values()):
             raise ValueError("Frozen packet question mismatch")
-        if case["packets"]["wiki_only"].get("facts") or case["packets"]["wiki_only"].get("entities"):
+        if experiment == "retrieval" and (case["packets"]["wiki_only"].get("facts") or case["packets"]["wiki_only"].get("entities")):
             raise ValueError("Wiki-only input must not contain graph facts or entities")
+        if experiment == "reader" and hash_json(case["packets"][arms[0]]) != hash_json(case["packets"][arms[1]]):
+            raise ValueError("Reader packets must be identical")
     meta = {"type": "run", "run_id": uuid.uuid4().hex, "corpus_version": corpus_version,
             "corpus_sha256": hash_json(documents), "corpus_documents": len(documents), "input_sha256": hash_json(cases),
             "runner_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
             "prompt_sha256": hashlib.sha256(system_prompt.encode()).hexdigest(),
             "validator_sha256": hashlib.sha256(Path(graph.__file__).read_bytes()).hexdigest(),
-            "embedding_model": embedding_model, "settings": asdict(settings), "case_count": len(cases),
+            "embedding_model": embedding_model, "experiment": experiment,
+            "settings": asdict(settings_by_arm[arms[0]]) if experiment == "retrieval" else None,
+            "settings_by_arm": {arm: asdict(settings_by_arm[arm]) for arm in arms}, "case_count": len(cases),
             "body_cap": BODY_CAP, "exclusions": sorted(exclusions),
             "exclusions_missing_from_corpus": sorted(exclusions - set(docs))}
-    counts = {arm: {"answer": 0, "abstention": 0, "error": 0} for arm in ARMS}
+    counts = {arm: {"answer": 0, "abstention": 0, "error": 0} for arm in arms}
     mismatch_cases = 0
     model_calls = 0
     model_overrides = 0
@@ -183,16 +217,23 @@ async def run_pairs(cases, documents, *, embedding_model, settings, complete, ou
         file.write(json.dumps(meta) + "\n"); file.flush()
         for index, case in enumerate(cases):
             models = []
+            prepared = None
             # Alternate order deterministically to expose, not hide, order effects.
-            order = ARMS if index % 2 == 0 else tuple(reversed(ARMS))
+            order = arms if index % 2 == 0 else tuple(reversed(arms))
             for arm in order:
+                settings = settings_by_arm[arm]
                 started = time.monotonic()
                 frozen = case["packets"][arm]
                 row = {"type": "arm", "id": case["id"], "arm": arm, "question": case["question"],
                        "frozen_packet_sha256": hash_json(frozen), "query_vector_sha256": case["query_vector_sha256"],
                        "retrieval_ms": case.get("retrieval_ms", {}).get(arm), "answer_ms": 0}
                 try:
-                    validation, model_packet, abstain, report = prepare(case["question"], frozen, docs, exclusions)
+                    if experiment == "reader":
+                        if prepared is None:
+                            prepared = prepare(case["question"], frozen, docs, exclusions)
+                        validation, model_packet, abstain, report = copy.deepcopy(prepared)
+                    else:
+                        validation, model_packet, abstain, report = prepare(case["question"], frozen, docs, exclusions)
                     row.update(packet=model_packet, packet_sha256=hash_json(model_packet),
                                packet_chars=len(json.dumps(model_packet, ensure_ascii=False)), exclusion_report=report,
                                preparation_ms=round((time.monotonic() - started) * 1000))
@@ -227,7 +268,7 @@ async def run_pairs(cases, documents, *, embedding_model, settings, complete, ou
                 row["duration_ms"] = round((time.monotonic() - started) * 1000)
                 counts[arm][row["status"]] += 1
                 file.write(json.dumps(row, ensure_ascii=False) + "\n"); file.flush()
-            if len(set(models)) > 1:
+            if experiment == "retrieval" and len(set(models)) > 1:
                 mismatch_cases += 1
     return {"case_count": len(cases), "expected_arm_receipts": 2 * len(cases), "counts": counts,
             "reported_model_mismatch_cases": mismatch_cases, "model_calls": model_calls,
