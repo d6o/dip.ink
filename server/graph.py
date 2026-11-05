@@ -352,7 +352,7 @@ def _subject_evidence_packet(packet: dict, subjects: list[str]) -> dict:
     # new candidate cannot disappear and make an older fact look current.
     candidates = {}
     for hit in [*(packet.get("temporal_candidates") or []), *(packet.get("semantic_notes") or [])]:
-        if not str(hit.get("content") or "").strip() and hit.get("relevant", True) and relevant(
+        if not str(hit.get("content") or "").strip() and hit.get("current") is not False and hit.get("relevant", True) and relevant(
             str(hit.get("name") or "") + " " + str(hit.get("description") or "")
         ):
             name = str(hit.get("name") or "")
@@ -654,10 +654,10 @@ def _source_texts(packet: dict) -> dict[str, str]:
         if fact.get("current") is not False and fact.get("source_slug"):
             texts.setdefault(str(fact["source_slug"]), []).append(str(fact.get("fact") or ""))
     excerpt = packet.get("source_excerpt") or {}
-    if excerpt.get("slug") and str(excerpt.get("content") or "").strip():
+    if excerpt.get("current") is not False and excerpt.get("slug") and str(excerpt.get("content") or "").strip():
         texts.setdefault(str(excerpt["slug"]), []).append(str(excerpt["content"]))
     for hit in packet.get("semantic_notes") or []:
-        if hit.get("name") and str(hit.get("content") or "").strip():
+        if hit.get("current") is not False and hit.get("name") and str(hit.get("content") or "").strip():
             texts.setdefault(str(hit["name"]), []).append(str(hit["content"]))
     return {slug: "\n".join(values) for slug, values in texts.items()}
 
@@ -673,11 +673,11 @@ def _temporal_context(packet: dict) -> dict:
             dated[slug] = when
     excerpt = packet.get("source_excerpt") or {}
     slug = str(excerpt.get("slug") or "")
-    if _source_time(slug):
+    if excerpt.get("current") is not False and _source_time(slug):
         dated[slug] = _source_time(slug)
     for hit in packet.get("semantic_notes") or []:
         slug = str(hit.get("name") or "")
-        if _source_time(slug) and hit.get("relevant", True):
+        if hit.get("current") is not False and _source_time(slug) and hit.get("relevant", True):
             dated[slug] = _source_time(slug)
     # Subject-matching labels only veto old evidence. They never enter
     # _source_texts, provenance, or the readable packet sent to the model.
@@ -717,11 +717,11 @@ def _current_evidence_packet(packet: dict) -> dict:
             if fact.get("current") is not False and fact.get("source_slug") in eligible
         ],
         "entities": [],
-        "source_excerpt": excerpt if excerpt.get("slug") in eligible and str(excerpt.get("content") or "").strip() else None,
+        "source_excerpt": excerpt if excerpt.get("current") is not False and excerpt.get("slug") in eligible and str(excerpt.get("content") or "").strip() else None,
         "semantic_notes": [
             {key: hit[key] for key in ("name", "description", "content") if key in hit}
             for hit in packet.get("semantic_notes") or []
-            if hit.get("name") in eligible and str(hit.get("content") or "").strip()
+            if hit.get("current") is not False and hit.get("name") in eligible and str(hit.get("content") or "").strip()
         ],
         "temporal_context": temporal,
         **({"subject_context": packet["subject_context"]} if packet.get("subject_context") else {}),
@@ -825,6 +825,99 @@ def _credential_cited_texts(packet: dict, sources: list[str]) -> dict[str, str]:
     return {source: readable.get(source, "") for source in sources}
 
 
+ANSWER_FACT_SOURCES = 4
+ANSWER_SOURCE_CHARS = 2500
+
+
+def _fact_body_excerpt(body: str, query: str) -> str:
+    """Select verbatim context windows across a compound question's terms."""
+    if len(body) <= ANSWER_SOURCE_CHARS:
+        return body.strip()
+    baseline = _answer_body_excerpt(body, query, ANSWER_SOURCE_CHARS)
+    # Preserve the existing copy/operational excerpt selection when it applies.
+    if _OPERATIONAL_ROLE_RE.search(query) or re.search(r"\b(?:backups?|archives?|copies|copy)\b", query, re.I):
+        return baseline
+    terms = {word.rstrip("s") for word in re.findall(r"\w{4,}", query.casefold())}
+    # Overlap retains context at window boundaries. No source text is rewritten.
+    windows = [(start, body[start:start + 1000]) for start in range(0, len(body), 800)]
+    selected, covered, remaining = [], set(), ANSWER_SOURCE_CHARS
+    while windows and remaining > 0:
+        def score(item):
+            words = {word.rstrip("s") for word in re.findall(r"\w{4,}", item[1].casefold())}
+            return (len((words & terms) - covered), len(words & terms), -item[0])
+        chosen = max(windows, key=score)
+        if score(chosen)[0] == 0:
+            break
+        windows.remove(chosen)
+        fragment = chosen[1][:max(0, remaining - (7 if selected else 0))]
+        if not fragment:
+            break
+        selected.append((chosen[0], fragment))
+        covered.update(word.rstrip("s") for word in re.findall(r"\w{4,}", fragment.casefold()))
+        remaining -= len(fragment) + (7 if len(selected) > 1 else 0)
+    return "\n[...]\n".join(text for _, text in sorted(selected))[:ANSWER_SOURCE_CHARS] if selected else baseline
+
+
+async def _hydrate_fact_sources(packet: dict, query: str) -> None:
+    """Add at most four distinct fact-provenance excerpts to existing source fields.
+
+    Current facts precede superseded facts, then retrieval order is retained.
+    Existing readable excerpts are reused. No filesystem scan or model call occurs.
+    """
+    by_source = {}
+    for fact in packet.get("facts") or []:
+        slug = str(fact.get("source_slug") or "")
+        if slug:
+            by_source.setdefault(slug, []).append(fact.get("current") is not False)
+    current = {slug: any(flags) for slug, flags in by_source.items()}
+    ordered = sorted(by_source, key=lambda slug: not current[slug])[:ANSWER_FACT_SOURCES]
+    excerpt = packet.get("source_excerpt") or {}
+    if excerpt.get("content"):
+        excerpt["content"] = str(excerpt["content"])[:ANSWER_SOURCE_CHARS]
+    hits = {}
+    for hit in packet.get("semantic_notes") or []:
+        name = str(hit.get("name") or "")
+        if name not in hits or (not hits[name].get("content") and hit.get("content")):
+            hits[name] = dict(hit)
+            if hits[name].get("content"):
+                hits[name]["content"] = str(hits[name]["content"])[:ANSWER_SOURCE_CHARS]
+    # Reuse the richer readable view once when an episode and semantic hit overlap.
+    overlap = hits.get(str(excerpt.get("slug") or ""))
+    if overlap and excerpt.get("content") and overlap.get("content"):
+        if len(overlap["content"]) > len(excerpt["content"]):
+            excerpt["content"] = overlap["content"]
+        overlap.pop("content")
+    # A body must not promote a source whose retrieved facts are all superseded.
+    for slug, is_current in current.items():
+        if slug in hits:
+            hits[slug]["current"] = is_current
+        if excerpt.get("slug") == slug:
+            excerpt["current"] = is_current
+    missing = [slug for slug in ordered if not (
+        (excerpt.get("slug") == slug and excerpt.get("content")) or hits.get(slug, {}).get("content")
+    )]
+
+    def fetch():
+        import wiki
+        result = {}
+        for slug in missing:
+            try:
+                body = str((wiki.idx.get(slug) or {}).get("body") or "")
+                if body.strip():
+                    result[slug] = _fact_body_excerpt(body, query)
+            except Exception as error:
+                log.warning("fact source hydration unavailable error_type=%s", type(error).__name__)
+        return result
+
+    bodies = await asyncio.to_thread(fetch) if missing else {}
+    for slug, content in bodies.items():
+        hits[slug] = {**hits.get(slug, {}), "name": slug, "type": "source", "content": content,
+                      "current": current[slug]}
+    # Provenance context precedes incidental semantic matches; identities stay unique.
+    packet["semantic_notes"] = [hits.pop(slug) for slug in ordered if slug in hits]
+    packet["semantic_notes"].extend(hits.values())
+
+
 async def _assemble_packet(
     query: str,
     k: int,
@@ -879,6 +972,8 @@ async def _assemble_packet(
         # graph_get_note using the name.
         "semantic_notes": semantic_notes,
     }
+    if answer_evidence:
+        await _hydrate_fact_sources(packet, query)
     if answer_evidence and credential_services(query):
         packet["credential_validation_texts"] = await _credential_validation_context(packet)
     return packet
@@ -964,6 +1059,8 @@ You will get a QUESTION and a RETRIEVAL PACKET (JSON with facts, entities, a sou
 22. Different gates and ticket numbers need their own evidence. A revoked inference client does not lift a workload rollout hold. If no verified new evidence is present for a requested gate, say that the packet provides none; do not infer that the gate cleared.
 
 23. A method must explicitly support the requested service and operation. User-Agent fixture compliance for Kubernetes metadata does not prove Infisical credential-read support. An internal credential loader is not an approved client. Reviewed source, a patch draft, or a published audit is not an installed native method or live header proof. If installed supported capability is absent or unverified, report that boundary rather than recommending a neighboring tool or the failing CLI behavior.
+
+24. Quoted questions, hypothetical examples, test fixtures, and diagnoses of wrong answers do not establish operator history. Use original source context for positive historical claims. Source bodies can contain older statements; fact validity and temporal_context still constrain current claims. If the original context does not establish a requested detail, state that it is not established rather than adopting an example as history.
 
 Reply with ONLY a JSON object:
 {"answer": "..." | null, "confidence": "high|medium|low|not_found", "sources": ["slug", ...], "superseded_note": "..." (omit if none), "escalate": true|false}"""

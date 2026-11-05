@@ -10,7 +10,7 @@ from pathlib import Path
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
-PINNED_RELEASE = "v0.1.58"
+PINNED_RELEASE = "v0.1.59"
 
 
 def load_yaml(path: Path) -> dict:
