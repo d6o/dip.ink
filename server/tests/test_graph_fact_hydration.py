@@ -184,5 +184,13 @@ class FactHydrationTests(unittest.IsolatedAsyncioTestCase):
              patch.object(graph, "_get_graph", AsyncMock(return_value=g)):
             evidence = await graph._assemble_packet(QUESTION, 5)
         self.assertEqual(idx.reads, [])
+        config = g.search_.call_args.kwargs["config"]
+        original = graph.COMBINED_HYBRID_SEARCH_RRF
+        self.assertIsNone(config.community_config)
+        self.assertIsNotNone(original.community_config)
+        self.assertEqual(config.limit, 5)
+        for field in ("edge_config", "node_config", "episode_config"):
+            self.assertEqual(getattr(config, field), getattr(original, field))
+            self.assertIsNot(getattr(config, field), getattr(original, field))
         self.assertEqual(set(evidence), {"query", "facts", "entities", "source_excerpt", "semantic_notes"})
         self.assertNotIn("PRIVATE_SOURCE_BODY", json.dumps(evidence))

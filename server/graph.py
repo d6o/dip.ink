@@ -935,7 +935,9 @@ async def _assemble_packet(
     retrieval quality. The trim stays rejected. graph_answer distills the
     full packet server-side and is the token-compression mechanism instead."""
     g = await _get_graph()
-    config = COMBINED_HYBRID_SEARCH_RRF.model_copy(update={"limit": k})
+    # The public packet consumes edges, nodes, and episodes, not communities.
+    # Copy deeply so this request cannot change upstream or ingestion recipes.
+    config = COMBINED_HYBRID_SEARCH_RRF.model_copy(deep=True, update={"limit": k, "community_config": None})
     # graph search + wiki semantic search run concurrently (fusion)
     res, semantic_notes = await asyncio.gather(
         g.search_(query, config=config, group_ids=[DEFAULT_GROUP_ID]),

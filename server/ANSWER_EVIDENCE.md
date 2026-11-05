@@ -2,6 +2,8 @@
 
 `graph_answer` now hydrates graph fact provenance, not only semantic search hits. It reads coherent bodies from the existing in-process `wiki.idx.get` snapshot. It does not scan source files, start another wiki process, or add an embedding or LLM call.
 
+Normal packet assembly disables community search on a deep per-request recipe copy because the public packet does not consume community results. Edge, node, episode, and ranking settings remain unchanged; upstream global recipes are untouched.
+
 ## Selection and budget
 
 - Select at most **four distinct fact source slugs**.

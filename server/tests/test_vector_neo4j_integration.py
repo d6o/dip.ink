@@ -93,6 +93,21 @@ class VectorNeo4jIntegrationTests(unittest.IsolatedAsyncioTestCase):
                             self.assertEqual(len(result.edge_reranker_scores), len(result.edges))
                             self.assertEqual(len(result.node_reranker_scores), len(result.nodes))
 
+                        # Production assembly discards communities, so it must not query them.
+                        queries.clear()
+                        resolve = graph._resolve_episode_slugs
+                        async def scoped_resolve(g, edges):
+                            return await resolve(g, edges, group_id=group)
+                        with patch.object(graph, "DEFAULT_GROUP_ID", group), patch.object(graph, "FUSION", False), \
+                             patch.object(graph, "_resolve_episode_slugs", side_effect=scoped_resolve):
+                            assembled = await graph._assemble_packet("private", 3)
+                        self.assertTrue(assembled["facts"])
+                        self.assertTrue(all(fact["source_slug"] == "fixture-note-slug" for fact in assembled["facts"]))
+                        self.assertTrue(assembled["entities"])
+                        self.assertFalse(any("community" in query.lower() for query in queries))
+                        self.assertIsNotNone(COMBINED_HYBRID_SEARCH_RRF.community_config)
+                        self.assertEqual(set(assembled), {"query", "facts", "entities", "source_excerpt", "semantic_notes"})
+
                         # The real search path must still use exact fallback for explicit filters.
                         filters = SearchFilters(node_labels=["Person"], invalid_at=[[
                             DateFilter(comparison_operator=ComparisonOperator.is_null),

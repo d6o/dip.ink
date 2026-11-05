@@ -53,6 +53,10 @@ All cases remain in the denominator: answers, abstentions, errors, missing recei
 
 Do not claim causal improvement from independently distilled arms. Keep the same full questions, source snapshot, reviewed expectations, and configuration. Cache state, provider/model changes, ingest activity, and sampling affect results. Record these conditions separately. The runner does not bypass caches, modify source data, or reconstruct truncated historical questions.
 
+## Paired retrieval experiment
+
+Use the [offline paired wiki/hybrid guide](paired-retrieval.md) to compare frozen retrieval packets with identical answer settings and shared validation. This is separate from guard review and does not change production retrieval.
+
 ## Retained historical experiments
 
 - [2026-10-11 vector recall study](2026-10-11-ingest-vector-recall.md): operation-level retrieval study, still referenced by the ingest adapter and vector operations guide.
