@@ -1,6 +1,10 @@
 # Reproducible answer evaluation
 
-## Current evaluation
+## Primary product benchmark: present-state freshness
+
+Use the [present-state contract](present-state-spec.md) to test whether the latest supported configuration beats repeated old evidence without special question wording. Its compact generator provides 14 scenarios with raw source inputs and separate grader metadata. Backend trials are unrun; fixture checks are not architecture results.
+
+## Existing lookup and reader diagnostics (unchanged)
 
 The [versioned dataset](../../server/evaluation_cases/synthetic-memory-v1.json) contains 30 synthetic cases across temporal changes, similar projects, absent facts, and new notes. Its [builder](../../server/evaluation_cases/make_synthetic.py) is deterministic and uses no private input.
 

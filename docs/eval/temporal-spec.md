@@ -1,5 +1,7 @@
 # Synthetic temporal evaluation specification
 
+This is a secondary research/gap specification. The primary product promotion contract is now [present-state freshness](present-state-spec.md), not historical point-in-time querying. The fixture and its existing gap labels remain unchanged.
+
 The [fixture](../../server/evaluation_cases/temporal-v1.json) contains ten synthetic query expectations. It covers supersession, late corrections, late-arrival notes, future validity starts/ends, interval boundaries, and missing validity metadata.
 
 This is a specification and gap inventory, **not a passing live benchmark**. Every case has `api_status: gap`. Fixture consistency tests validate an independent reference calculation; they do not certify current memory API semantics.
