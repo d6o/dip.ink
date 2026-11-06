@@ -100,7 +100,7 @@ def prepare(question, frozen, docs, exclusions):
     for key in ("temporal_context", "subject_context", "required_qualifiers", "credential_validation_texts"):
         packet.pop(key, None)
     # Use the same original body and excerpt selector for readable overlapping
-    # sources in both arms. Names-only candidates remain names-only vetoes.
+    # sources in both arms. Names-only candidates remain metadata, not state authority.
     for item, name in ([(packet["source_excerpt"], packet["source_excerpt"]["slug"])] if packet["source_excerpt"] else []) + [
         (hit, hit["name"]) for hit in packet["semantic_notes"]
     ]:

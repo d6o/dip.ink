@@ -17,8 +17,9 @@ Unknown `valid_at` is not assumed to mean an unbounded past. That fixture's expe
 
 ## Current implementation gaps
 
-- `_valid_at_window` sets `current` from absence of `invalid_at`. It does not evaluate a future validity start or future invalidation boundary.
-- `_temporal_context` uses source slug dates and a 24-hour newest-source window. Source dates are not transaction time.
+- The fixture's diagnostic explanations describe v0.1.60. v0.1.61 now evaluates known validity bounds at request time, so future starts/ends no longer use presence alone.
+- Missing validity bounds retain legacy open-bound behavior; that compatibility flag is not proof of validity. Malformed nonempty bounds fail closed.
+- v0.1.61 removes the 24-hour source-age eligibility cut. Source dates remain provenance, not effective or transaction time.
 - The current public API does not expose a full `valid_as_of` plus `known_as_of` query contract.
 - Supersession and expiry metadata are useful, but their presence/counts do not prove correct reconstruction of prior knowledge states.
 

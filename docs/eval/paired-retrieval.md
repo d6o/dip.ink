@@ -48,7 +48,7 @@ This uses an exact cosine query over the supplied document vectors and the share
 - Apply the same explicit exclusions to both frozen packets. Remove sources outside the declared corpus as well.
 - Exclusions happen after candidate selection, with **no refill in either arm**. Report excluded identities and missing-corpus sources. This cannot undo ranking displacement by excluded artifacts.
 - Unattributed entity summaries are omitted from both arms: their contributing source identities are unavailable for safe exclusion.
-- Rebuild already-readable source excerpts from the same frozen source bodies with the shared excerpt helper. Names-only candidates stay names-only. This controls excerpt selection as well as the corpus; frozen graph facts remain unchanged until the cap.
+- Rebuild already-readable source excerpts from the same frozen source bodies with the shared excerpt helper. Names-only candidates stay names-only; they do not expire older readable state evidence. This controls excerpt selection as well as the corpus; frozen graph facts remain unchanged until the cap.
 - Apply the same 20,000-character readable-evidence cap and 2,500-character per-item cap. Here the shared cap includes fact text as well as source bodies. Metadata is separate.
 - Run the existing subject, current-state, qualifier, provenance, date, project, and snapshot checks. Recompute eligibility; do not trust caller-supplied eligibility or expected-answer fields.
 - Reconstruct credential-method validation context from the same frozen corpus. Complete validation bodies stay out of model input, as in production.

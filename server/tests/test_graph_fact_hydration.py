@@ -152,9 +152,12 @@ class FactHydrationTests(unittest.IsolatedAsyncioTestCase):
         evidence["temporal_context"] = graph._temporal_context(evidence)
         current = graph._current_evidence_packet(evidence)
         self.assertIn(fresh, current["temporal_context"]["eligible_sources"])
-        for excluded in (MODEL, superseded, DIAG):
-            self.assertNotIn(excluded, current["temporal_context"]["eligible_sources"])
-            self.assertNotIn(excluded, graph._readable_source_texts(current))
+        self.assertNotIn(superseded, current["temporal_context"]["eligible_sources"])
+        self.assertNotIn(superseded, graph._readable_source_texts(current))
+        # Capture age/diagnosis labels do not decide active state; the reader
+        # must interpret them without promoting examples into operator history.
+        self.assertIn(MODEL, current["temporal_context"]["eligible_sources"])
+        self.assertIn(DIAG, current["temporal_context"]["eligible_sources"])
         self.assertIn(fresh, graph._allowed_provenance(current))
 
     async def test_superseded_overlapping_episode_cannot_restore_current_eligibility(self):
@@ -167,14 +170,14 @@ class FactHydrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(graph._temporal_context(evidence)["eligible_sources"], [])
         self.assertIn(DIAG, graph._readable_source_texts(evidence))
 
-    async def test_newer_unreadable_candidate_still_vetoes_stale_readable_context(self):
+    async def test_newer_unreadable_candidate_cannot_expire_readable_context(self):
         newer = "2026-12-01-120000-canvasbridge-latest"
         idx = Index({MODEL: "CanvasBridge recorded historical context."})
         evidence = packet([fact(MODEL)], [{"name": newer, "description": "CanvasBridge update"}])
         with patch.dict("sys.modules", {"wiki": SimpleNamespace(idx=idx)}):
             await graph._hydrate_fact_sources(evidence, QUESTION)
         evidence = graph._subject_evidence_packet(evidence, ["canvasbridge"])
-        self.assertEqual(graph._temporal_context(evidence)["eligible_sources"], [])
+        self.assertEqual(graph._temporal_context(evidence)["eligible_sources"], [MODEL])
 
     async def test_graph_search_packet_does_not_hydrate_fact_sources(self):
         edge = SimpleNamespace(fact="CanvasBridge key reference.", episodes=[SimpleNamespace(name=MODEL)], invalid_at=None)

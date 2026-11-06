@@ -242,8 +242,8 @@ const TOOLS: ToolSpec[] = [
     label: "Memory Graph Search",
     description:
       "Search the operator's knowledge graph. Returns a STRUCTURED PACKET: the top atomic " +
-      "FACTS — each with its source-note slug and a current/superseded flag (`current=false` " +
-      "= outdated) — top ENTITIES, an excerpt of the top SOURCE NOTE, " +
+      "FACTS — each with its source-note slug and a validity flag (`current=false` " +
+      "= outside known validity bounds or malformed timing; missing bounds do not prove validity) — top ENTITIES, an excerpt of the top SOURCE NOTE, " +
       "plus semantic_notes (the wiki's embedding hits, fused in). Use for BREADTH — " +
       "exploring a topic, resuming a project — or when graph_answer escalates.",
     promptSnippet:

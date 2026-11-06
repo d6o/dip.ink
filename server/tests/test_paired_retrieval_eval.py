@@ -80,7 +80,7 @@ class PairedEvaluationTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(row["question"], cases[0]["question"])
                 self.assertIn(ARTIFACT, row["exclusion_report"]["excluded_sources"])
                 self.assertNotIn("ARTIFACT_PRIVATE_BODY", json.dumps(row))
-                self.assertEqual(row["grounding_action"], "accepted")
+                self.assertEqual(row["grounding_action"], "downgraded")
                 self.assertIn("fixture records", row["raw_answer"])
             self.assertEqual(cases, before)
             self.assertEqual(len(calls), 2)
@@ -118,8 +118,8 @@ class PairedEvaluationTests(unittest.IsolatedAsyncioTestCase):
         frozen["temporal_candidates"] = [{"name": "2026-12-01-120000-later", "description": "CanvasBridge later record"}]
         docs["2026-12-01-120000-later"] = {"body": ""}
         _, model_packet, abstain, _ = paired.prepare("What is CanvasBridge's current version?", frozen, docs, {ARTIFACT})
-        self.assertTrue(abstain)
-        self.assertEqual(model_packet["temporal_context"]["eligible_sources"], [])
+        self.assertFalse(abstain)
+        self.assertEqual(model_packet["temporal_context"]["eligible_sources"], [SOURCE])
 
     async def test_raw_completion_is_not_truncated_by_validation_display_cap(self):
         raw = json.dumps({"answer": "CanvasBridge " + "x" * 3000, "confidence": "high", "sources": [SOURCE]})

@@ -22,9 +22,9 @@ This is excerpt selection, not semantic verification. Windows can omit a needed 
 
 Hydrated excerpts use the existing `semantic_notes` structure and original source names. They participate in the existing readable-provenance, subject, date, project, and snapshot checks. The top retrieved episode remains available; it is no longer the only readable evidence when fact sources can be read.
 
-A source whose retrieved facts are all superseded receives `current: false` in its answer-only excerpt metadata. It remains readable for historical questions but cannot regain current eligibility through hydration. Sources with both current and superseded facts remain mixed context; a body is not proof that every statement remains current.
+A source whose retrieved facts are all outside known validity bounds (or have malformed bounds) receives `current: false` in its answer-only excerpt metadata. It remains readable for historical questions but cannot regain current eligibility through hydration. Sources with mixed facts remain mixed context; a body is not proof that every statement remains current.
 
-The existing current-source window and newer-unreadable-source veto remain. Stale excerpts do not replace newer eligible evidence. A newer diagnostic note can still affect existing temporal selection; this change does not classify note genres or override the established date policy.
+v0.1.61 removes the global capture-age window and newer-unreadable-source veto. A source label or capture date cannot establish a completed change. All eligible readable state context remains available to the existing reader, which must use scoped completion/effective evidence and abstain on unresolved conflicts. This does not add a note-genre classifier. See [latest-supported-state policy](LATEST_STATE.md).
 
 The existing distiller receives one generic instruction: quoted questions, hypothetical examples, test fixtures, and diagnoses do not establish operator history. Positive historical claims require original context, and source bodies must not override fact validity. This instruction is not an independent semantic judge or a guarantee of model compliance.
 

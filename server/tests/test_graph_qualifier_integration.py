@@ -187,11 +187,12 @@ class CurrentRoleDateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["as_of"], "2026-10-13T01:00:00Z")
         self.assertNotIn("2026-10-13T02:00:00Z", result["answer"])
 
-    def test_temporal_eligibility_still_rejects_obsolete_role_support(self):
+    def test_newer_unrelated_note_does_not_expire_role_support(self):
         old = "2026-10-01-010000-tokenbook-role-and-hold"
         notes = {old: self.ROLE + " " + self.HOLD, self.UNRELATED: "TokenBook uses a local server."}
         result, _, _ = graph._validate_distilled_answer(self.draft([old, self.UNRELATED]), self.packet(notes), self.QUESTION)
-        self.assertIsNone(result["answer"])
+        self.assertIsNotNone(result["answer"])
+        self.assertEqual(result["observation_dates"], {old: "2026-10-01T01:00:00Z"})
         self.assertTrue(result["escalate"])
 
     def test_current_role_and_hold_can_have_separate_supporting_dates(self):

@@ -7,7 +7,7 @@ name: images
 # Main publishes a moving `main` development tag plus an immutable full-git-SHA
 # tag. A `v*` release tag publishes that exact tag, its normalized SemVer tag,
 # and the same immutable full-git-SHA tag. The workflow deliberately does not
-# publish `latest`; public manifests pin v0.1.60 (or an immutable SHA) and move
+# publish `latest`; public manifests pin v0.1.61 (or an immutable SHA) and move
 # only through an explicit release.
 #
 # Path filters are intentionally omitted so a pure-docs release commit can still
@@ -121,7 +121,7 @@ jobs:
             "$MEMORY_IMAGE" -m unittest \
             test_graph_grounding test_graph_named_dates test_graph_named_projects \
             test_graph_subject_evidence test_graph_temporal \
-            test_graph_observation_qualifiers test_graph_image_model_snapshots test_graph_fact_hydration test_paired_retrieval_eval \
+            test_graph_observation_qualifiers test_graph_image_model_snapshots test_graph_fact_hydration test_paired_retrieval_eval test_latest_supported_state \
             test_graph_qualifier_integration test_graph_credential_methods \
             test_answer_guard_replay test_ingest_structured test_ingest_quarantine \
             test_ingest_completion test_ingest_metrics \

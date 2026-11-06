@@ -45,13 +45,13 @@ class TemporalSpecTests(unittest.TestCase):
                 self.assertEqual(query["api_status"], "gap")
                 self.assertTrue(query["gap"])
 
-    def test_future_validity_observations_are_documented_limitations_not_claimed_fixes(self):
+    def test_request_time_flags_handle_future_bounds_without_claiming_asof_api(self):
         future_start = graph._valid_at_window(SimpleNamespace(valid_at="2099-01-01", invalid_at=None))
         future_end = graph._valid_at_window(SimpleNamespace(valid_at="2026-01-01", invalid_at="2099-01-01"))
-        # Preserve the current implementation. This test explicitly records why
-        # it cannot count as success for the fixture's valid-as-of semantics.
-        self.assertTrue(future_start["current"])
-        self.assertFalse(future_end["current"])
+        # Request-time interval flags are corrected. They do not implement the
+        # fixture's explicit valid-as-of plus known-as-of query contract.
+        self.assertFalse(future_start["current"])
+        self.assertTrue(future_end["current"])
         gaps = {case["id"]: case["api_status"] for case in self.fixture["cases"]}
         self.assertEqual(gaps["future-start-not-yet-valid"], "gap")
         self.assertEqual(gaps["future-end-still-valid"], "gap")
