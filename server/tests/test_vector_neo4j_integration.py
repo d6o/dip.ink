@@ -95,11 +95,7 @@ class VectorNeo4jIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
                         # Production assembly discards communities, so it must not query them.
                         queries.clear()
-                        resolve = graph._resolve_episode_slugs
-                        async def scoped_resolve(g, edges):
-                            return await resolve(g, edges, group_id=group)
-                        with patch.object(graph, "DEFAULT_GROUP_ID", group), patch.object(graph, "FUSION", False), \
-                             patch.object(graph, "_resolve_episode_slugs", side_effect=scoped_resolve):
+                        with patch.object(graph, "DEFAULT_GROUP_ID", group), patch.object(graph, "FUSION", False):
                             assembled = await graph._assemble_packet("private", 3)
                         self.assertTrue(assembled["facts"])
                         self.assertTrue(all(fact["source_slug"] == "fixture-note-slug" for fact in assembled["facts"]))

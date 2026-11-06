@@ -14,6 +14,25 @@ from ingest import DipInkNeo4jDriver
 
 @unittest.skipUnless(os.environ.get("NEO4J_INTEGRATION") == "1", "requires isolated Neo4j fixture")
 class ValidityQueryIntegrationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_runtime_group_resolves_only_its_own_episode_slug(self):
+        group, other = "slug-fixture-" + uuid4().hex, "slug-other-" + uuid4().hex
+        episode = "episode-" + uuid4().hex
+        driver = DipInkNeo4jDriver(os.environ["NEO4J_URI"], os.environ.get("NEO4J_USER", "neo4j"),
+                                   os.environ["NEO4J_PASSWORD"], database=os.environ.get("NEO4J_DATABASE", "neo4j"))
+        try:
+            await driver.execute_query("CREATE (:Episodic {uuid: $uuid, group_id: $group, name: 'scoped-source'}) "
+                                       "CREATE (:Episodic {uuid: $uuid, group_id: $other, name: 'other-source'})",
+                                       uuid=episode, group=group, other=other)
+            client = SimpleNamespace(driver=driver)
+            edge = SimpleNamespace(episodes=[episode])
+            with patch.object(graph, "DEFAULT_GROUP_ID", group):
+                self.assertEqual(await graph._resolve_episode_slugs(client, [edge]), {episode: "scoped-source"})
+            self.assertEqual(await graph._resolve_episode_slugs(client, [edge], group_id=other), {episode: "other-source"})
+        finally:
+            await driver.execute_query("MATCH (e:Episodic {uuid: $uuid}) WHERE e.group_id IN [$group, $other] DETACH DELETE e",
+                                       uuid=episode, group=group, other=other)
+            await driver.close()
+
     async def test_changes_does_not_report_future_activation_or_future_supersession(self):
         group = "interval-fixture-" + uuid4().hex
         driver = DipInkNeo4jDriver(os.environ["NEO4J_URI"], os.environ.get("NEO4J_USER", "neo4j"),

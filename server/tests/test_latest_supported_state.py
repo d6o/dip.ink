@@ -99,6 +99,59 @@ class LatestSupportedPolicyTests(unittest.IsolatedAsyncioTestCase):
         # No model accuracy claim follows from this mocked uncertainty control.
 
 
+class RuntimeGroupScopeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_search_and_slug_resolution_use_the_same_runtime_group(self):
+        calls = []
+
+        async def query(cypher, **params):
+            calls.append(params)
+            names = {"isolated-group": {"episode-1": "2026-03-02-120000-completed-switch"},
+                     "original-group": {"episode-1": "wrong-original-source"}}[params["group_id"]]
+            return [{"uuid": uuid, "name": names[uuid]} for uuid in params["uuids"] if uuid in names], None, None
+
+        edge = SimpleNamespace(fact="Completed switch fact.", episodes=["episode-1"], valid_at="2026-03-01T00:00:00Z", invalid_at=None)
+        client = SimpleNamespace(driver=SimpleNamespace(execute_query=AsyncMock(side_effect=query)),
+                                 search_=AsyncMock(return_value=SimpleNamespace(edges=[edge], nodes=[], episodes=[])))
+        with patch.object(graph, "DEFAULT_GROUP_ID", "isolated-group"), patch.object(graph, "FUSION", False), \
+             patch.object(graph, "_get_graph", AsyncMock(return_value=client)):
+            packet = await graph._assemble_packet("Which transport does the service use?", 5)
+        self.assertEqual(client.search_.call_args.kwargs["group_ids"], ["isolated-group"])
+        self.assertEqual(calls[0]["group_id"], "isolated-group")
+        self.assertEqual(packet["facts"][0]["source_slug"], "2026-03-02-120000-completed-switch")
+        self.assertNotIn("wrong-original-source", json.dumps(packet))
+
+    async def test_completed_switch_fact_source_reaches_current_reader_beside_old_excerpts(self):
+        source = "2026-03-02-120000-completed-switch"
+        old = [f"2026-01-15-0000{i:02d}-old-state" for i in range(40)]
+        edge = SimpleNamespace(fact="The service switched its production transport to beta.", episodes=["switch"],
+                               valid_at="2026-03-01T00:00:00Z", invalid_at=None)
+        client = SimpleNamespace(
+            driver=SimpleNamespace(execute_query=AsyncMock(return_value=([{"uuid": "switch", "name": source}], None, None))),
+            search_=AsyncMock(return_value=SimpleNamespace(edges=[edge], nodes=[], episodes=[
+                SimpleNamespace(name=old[0], content="The service used transport alpha on January 10.")])))
+        bodies = {source: "Completed change: on March 1 the service's production transport switched from alpha to beta.",
+                  "wrong-original-source": "PRIVATE_OTHER_GROUP_BODY"}
+        bodies.update({name: "The service used transport alpha on January 10." for name in old})
+        idx = SimpleNamespace(get=lambda name: {"body": bodies[name]},
+                              search=lambda query, k: [{"name": name, "score": .8} for name in old[:k]])
+        async def inspect(question, encoded):
+            visible = json.loads(encoded)
+            texts = graph._readable_source_texts(visible)
+            self.assertIn(source, visible["temporal_context"]["eligible_sources"])
+            self.assertIn("switched from alpha to beta", texts[source])
+            self.assertIn(source, {fact["source_slug"] for fact in visible["facts"]})
+            self.assertTrue(any(name in texts for name in old))
+            return {"answer": "The service uses transport beta.", "confidence": "high", "sources": [source]}
+        with patch.dict("sys.modules", {"wiki": SimpleNamespace(idx=idx)}), patch.object(graph, "FUSION", True), \
+             patch.object(graph, "DEFAULT_GROUP_ID", "switch-group"), patch.object(graph, "_get_graph", AsyncMock(return_value=client)), \
+             patch.object(graph, "_distill", side_effect=inspect), patch.object(graph, "_record_query"):
+            result = await graph._graph_answer_impl("Which transport does the service use in production?")
+        self.assertEqual(result["sources"], [source])
+        self.assertIn("transport beta", result["answer"])
+        self.assertEqual(client.driver.execute_query.call_args.kwargs["group_id"], "switch-group")
+        self.assertEqual(client.search_.call_args.kwargs["group_ids"], ["switch-group"])
+
+
 class ValidityIntervalTests(unittest.IsolatedAsyncioTestCase):
     def test_known_bounds_and_boundaries(self):
         now = datetime(2026, 11, 6, 12, tzinfo=timezone.utc)
@@ -130,6 +183,7 @@ class ValidityIntervalTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(graph, "_get_graph", AsyncMock(return_value=SimpleNamespace(driver=driver))), patch.object(graph, "_record_query"):
             await graph.graph_changes("fixture", 14)
         new, ended = driver.execute_query.call_args_list
+        self.assertEqual(new.kwargs["group_id"], ended.kwargs["group_id"])
         self.assertIn("r.valid_at <= datetime($as_of)", new.args[0])
         self.assertIn("r.invalid_at > datetime($as_of)", new.args[0])
         self.assertIn("r.invalid_at <= datetime($as_of)", ended.args[0])

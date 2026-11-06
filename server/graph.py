@@ -137,11 +137,13 @@ def _episode_slug(edge, slug_map: dict | None = None) -> str:
 
 
 async def _resolve_episode_slugs(
-    g, edges, group_id: str = DEFAULT_GROUP_ID
+    g, edges, group_id: str | None = None
 ) -> dict[str, str]:
     """Batch-resolve edge episode uuids → episode names (note slugs) in ONE
     Cypher query. Fixes the empty-source_slug problem: facts previously cited
     "" because search edges carry uuid strings, not hydrated episodes."""
+    # Resolve at call time; tests and isolated runs can change the module group.
+    group_id = DEFAULT_GROUP_ID if group_id is None else group_id
     uuids = {ep for e in edges
              for ep in (getattr(e, "episodes", None) or [])[:1]
              if isinstance(ep, str)}
@@ -920,10 +922,11 @@ async def _assemble_packet(
     g = await _get_graph()
     # The public packet consumes edges, nodes, and episodes, not communities.
     # Copy deeply so this request cannot change upstream or ingestion recipes.
+    group_id = DEFAULT_GROUP_ID
     config = COMBINED_HYBRID_SEARCH_RRF.model_copy(deep=True, update={"limit": k, "community_config": None})
     # graph search + wiki semantic search run concurrently (fusion)
     res, semantic_notes = await asyncio.gather(
-        g.search_(query, config=config, group_ids=[DEFAULT_GROUP_ID]),
+        g.search_(query, config=config, group_ids=[group_id]),
         _wiki_semantic_hits(
             query, 25 if current_state else (8 if answer_evidence else 3),
             hydrate=current_state, answer_evidence=answer_evidence,
@@ -932,7 +935,7 @@ async def _assemble_packet(
     nodes = list(res.nodes or [])[:8]
     edges = list(res.edges or [])[:12]
     episodes = list(res.episodes or [])[:2]
-    slug_map = await _resolve_episode_slugs(g, edges)
+    slug_map = await _resolve_episode_slugs(g, edges, group_id=group_id)
 
     observed_at = datetime.now(timezone.utc)
     facts = [{
@@ -1455,6 +1458,7 @@ async def graph_changes(subject: str, since_days: int = 14) -> dict:
     one call instead of five searches. `subject` is matched against entity
     names and fact text."""
     days = max(1, min(int(since_days), 120))
+    group_id = DEFAULT_GROUP_ID
     g = await _get_graph()
     observed_at = datetime.now(timezone.utc).isoformat()
     new_rows, _, _ = await g.driver.execute_query(
@@ -1467,7 +1471,7 @@ async def graph_changes(subject: str, since_days: int = 14) -> dict:
         "RETURN DISTINCT r.fact AS fact, toString(r.valid_at) AS valid_at, "
         "       (r.invalid_at IS NULL OR r.invalid_at > datetime($as_of)) AS current "
         "ORDER BY valid_at DESC LIMIT 25",
-        s=subject, days=days, group_id=DEFAULT_GROUP_ID, as_of=observed_at, routing_="r",
+        s=subject, days=days, group_id=group_id, as_of=observed_at, routing_="r",
     )
     superseded_rows, _, _ = await g.driver.execute_query(
         "MATCH (a:Entity {group_id: $group_id})-[r:RELATES_TO]-(b:Entity {group_id: $group_id}) "
@@ -1479,7 +1483,7 @@ async def graph_changes(subject: str, since_days: int = 14) -> dict:
         "RETURN DISTINCT r.fact AS fact, toString(r.valid_at) AS valid_at, "
         "       toString(r.invalid_at) AS invalid_at "
         "ORDER BY invalid_at DESC LIMIT 15",
-        s=subject, days=days, group_id=DEFAULT_GROUP_ID, as_of=observed_at, routing_="r",
+        s=subject, days=days, group_id=group_id, as_of=observed_at, routing_="r",
     )
     out = {
         "subject": subject,
